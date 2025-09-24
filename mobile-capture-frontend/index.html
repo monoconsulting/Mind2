@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Mind Receipt Capture</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <header class="header">
+            <h1>Receipt Capture</h1>
+        </header>
+        
+        <main class="main">
+            <!-- Main Capture Screen -->
+            <section id="capture-screen" class="screen active">
+                <div class="capture-actions">
+                    <button id="btn-camera" class="btn btn-primary">📷 Take Photo</button>
+                    <button id="btn-gallery" class="btn btn-secondary">🖼️ Gallery</button>
+                    <input type="file" id="file-picker" accept="image/*" multiple style="display:none;">
+                </div>
+                
+                <video id="preview-video" autoplay playsinline style="display:none;"></video>
+                <canvas id="preview-canvas" style="display:none;"></canvas>
+                
+                <div id="photo-queue" class="photo-queue">
+                    <!-- Photos will be added here -->
+                </div>
+                
+                <div class="actions" id="photo-actions" style="display:none;">
+                    <button id="btn-retake" class="btn btn-secondary">Re-take</button>
+                    <button id="btn-add-page" class="btn btn-secondary">Add Page</button>
+                    <button id="btn-finished" class="btn btn-primary">Finished</button>
+                </div>
+            </section>
+
+            <!-- Tags & Location Screen -->
+            <section id="tags-screen" class="screen">
+                <h2>Categorize Receipt</h2>
+                
+                <div class="tags-section">
+                    <h3>Select Tags</h3>
+                    <div id="tags-list" class="tags-list">
+                        <!-- Tags will be loaded from API -->
+                    </div>
+                </div>
+                
+                <div class="location-section">
+                    <h3>Location Data</h3>
+                    <p>Add location data?</p>
+                    <div class="location-buttons">
+                        <button id="btn-location-yes" class="btn btn-primary">Yes</button>
+                        <button id="btn-location-no" class="btn btn-secondary">No</button>
+                    </div>
+                </div>
+                
+                <div class="actions">
+                    <button id="btn-back" class="btn btn-secondary">Back</button>
+                    <button id="btn-submit" class="btn btn-primary">Submit Receipt</button>
+                </div>
+            </section>
+
+            <!-- Success Screen -->
+            <section id="success-screen" class="screen">
+                <div class="success-message">
+                    <h2>✅ Receipt Submitted</h2>
+                    <p>Your receipt has been uploaded successfully and is being processed.</p>
+                    <button id="btn-new-receipt" class="btn btn-primary">Submit Another Receipt</button>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

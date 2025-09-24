@@ -1,0 +1,37 @@
+openapi: 3.0.0
+info:
+  title: Receipts API (Admin)
+  version: 0.1.0
+servers:
+  - url: /ai/api
+    description: MIND v2.0 API base
+paths:
+  /receipts:
+    get:
+      summary: List receipts
+      responses:
+        '200': { description: OK }
+  /receipts/{id}:
+    get:
+      summary: Get receipt detail
+      parameters:
+        - in: path
+          name: id
+          schema: { type: string }
+          required: true
+      responses:
+        '200': { description: OK }
+    put:
+      summary: Update receipt (admin edits extracted fields)
+      parameters:
+        - in: path
+          name: id
+          schema: { type: string }
+          required: true
+      responses:
+        '200': { description: OK }
+  /receipts/monthly-summary:
+    get:
+      summary: Monthly summary
+      responses:
+        '200': { description: OK }

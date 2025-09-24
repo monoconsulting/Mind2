@@ -1,0 +1,18 @@
+/* Extra bespoke styles for DarkMind components */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  border: 1px solid var(--dm-border);
+  background: rgba(255,255,255,0.03);
+  color: var(--dm-text);
+  font-size: 12px;
+}
+.kpi {
+  display: grid;
+  gap: 6px;
+}
+.kpi .label { color: var(--dm-subt); font-size: 12px; }
+.kpi .value { font-weight: 700; font-size: 28px; }

@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'ai-api'
+    metrics_path: /ai/api/system/metrics
+    static_configs:
+      - targets: ['nginx:80']

@@ -1,0 +1,22 @@
+openapi: 3.0.0
+info:
+  title: Export API
+  version: 0.1.0
+servers:
+  - url: /ai/api
+    description: MIND v2.0 API base
+paths:
+  /export/sie:
+    get:
+      summary: Generate SIE export for date range
+      parameters:
+        - in: query
+          name: from
+          schema: { type: string, format: date }
+          required: true
+        - in: query
+          name: to
+          schema: { type: string, format: date }
+          required: true
+      responses:
+        '200': { description: OK }

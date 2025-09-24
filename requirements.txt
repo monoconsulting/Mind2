@@ -1,0 +1,14 @@
+flask
+celery
+redis
+mysql-connector-python
+prometheus-client
+pytest
+pytest-cov
+requests
+PyYAML
+pre-commit
+black
+isort
+flake8
+Pillow

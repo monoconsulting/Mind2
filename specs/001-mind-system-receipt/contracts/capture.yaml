@@ -1,0 +1,70 @@
+openapi: 3.0.0
+info:
+  title: Public Capture API
+  version: 0.1.0
+  description: Public endpoint for mobile receipt capture
+servers:
+  - url: /ai/api
+    description: MIND v2.0 API base
+paths:
+  /capture/upload:
+    post:
+      summary: Upload receipt images with metadata (public endpoint)
+      description: |
+        Public endpoint for mobile receipt capture. Accepts multi-page images
+        with tags and optional location data. No authentication required.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                images:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  description: One or more receipt image files
+                tags:
+                  type: string
+                  description: JSON array of tag strings
+                  example: '["travel", "food"]'
+                location:
+                  type: string
+                  description: JSON object with lat/lon/accuracy (optional)
+                  example: '{"lat": 59.3293, "lon": 18.0686, "acc": 10}'
+              required:
+                - images
+      responses:
+        '200':
+          description: Upload successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  receipt_id:
+                    type: string
+                    description: UUID for the receipt
+                  saved:
+                    type: array
+                    items:
+                      type: string
+                    description: List of saved file names
+        '400':
+          description: Bad request (no images provided)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: false
+                  error:
+                    type: string
+                    example: "no_images"

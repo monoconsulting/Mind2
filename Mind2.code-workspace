@@ -1,0 +1,21 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"chat.tools.edits.autoApprove": {
+			"**/.vscode/*.json": true,
+			"**/.git/**": true,
+			"**/{package.json,package-lock.json,server.xml,build.rs,web.config,.gitattributes,.env}": true,
+			"**/*.{csproj,fsproj,vbproj}": true
+		},
+		"chat.promptFilesLocations": {
+			"": true,
+			".prompts": true
+		},
+		"chatgpt.openOnStartup": true,
+		"chatgpt.commentCodeLensEnabled": true
+	}
+}

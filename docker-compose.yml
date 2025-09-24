@@ -1,0 +1,116 @@
+services:
+  ai-api:
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
+    image: mind2-ai-api:dev
+    working_dir: /app
+    volumes:
+      - ./backend/src:/app
+      - ./database/migrations:/app/database/migrations:ro
+      - ./storage:/data/storage
+      - ./inbox:/data/inbox
+    environment:
+      - PYTHONPATH=/app
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - STORAGE_DIR=/data/storage
+      - FTP_LOCAL_DIR=/data/inbox
+    command: ["gunicorn", "api.app:app", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "--timeout", "60"]
+    networks: [main]
+    profiles: [main]
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
+    image: mind2-ai-api:dev
+    command: ["celery", "-A", "services.tasks.celery_app", "worker", "--loglevel=INFO"]
+    working_dir: /app
+    volumes:
+      - ./backend/src:/app
+      - ./database/migrations:/app/database/migrations:ro
+    environment:
+      - PYTHONPATH=/app
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on: [redis]
+    networks: [main]
+    profiles: [main]
+
+  redis:
+    image: redis:7
+    ports:
+      - "6380:6379"
+    networks: [main]
+    profiles: [main]
+
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASS}
+    ports:
+      - "3310:3306"
+    networks: [main]
+    profiles: [main]
+
+  nginx:
+    image: nginx:1.25
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./mobile-capture-frontend:/usr/share/nginx/html/capture:ro
+    ports:
+      - "8008:80"
+    depends_on: [ai-api]
+    networks: [main]
+    profiles: [main]
+
+  mind-web-main-frontend:
+    build:
+      context: ./main-system/app-frontend
+      dockerfile: Dockerfile
+    image: mind2-admin-frontend:dev
+    working_dir: /app
+    depends_on: [ai-api]
+    networks: [main]
+    profiles: [main]
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9091:9090"
+    networks: [main, monitoring]
+    profiles: [monitoring]
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3003:3000"
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+    networks: [monitoring]
+    profiles: [monitoring]
+
+networks:
+  main: {}
+  monitoring: {}

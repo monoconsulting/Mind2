@@ -1,0 +1,15 @@
+/* Placeholder styles; replace with Darkmind built CSS when integrated */
+:root {
+  color-scheme: dark;
+}
+body.dm-body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif;
+  background: #0b0f1a;
+  color: #e6eaf2;
+}
+.dm-header { padding: 1rem; background: #11162a; border-bottom: 1px solid #1f2642; }
+.dm-main { padding: 1rem; }
+button { background: #2b5cff; color: white; border: none; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; }
+button:hover { background: #2048cc; }
+pre { background: #0f1426; padding: 0.75rem; border-radius: 6px; }

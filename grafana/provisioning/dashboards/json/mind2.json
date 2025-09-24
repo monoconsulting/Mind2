@@ -1,0 +1,44 @@
+{
+  "id": null,
+  "uid": "mind2-main",
+  "title": "Mind2 Overview",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "API Requests Total",
+      "gridPos": {"x": 0, "y": 0, "w": 8, "h": 8},
+      "targets": [
+        {
+          "expr": "sum(mind_api_requests_total)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "graph",
+      "title": "API Request Latency (avg)",
+      "gridPos": {"x": 8, "y": 0, "w": 16, "h": 8},
+      "targets": [
+        {
+          "expr": "avg(mind_api_request_latency_seconds_sum) / avg(mind_api_request_latency_seconds_count)",
+          "refId": "A"
+        }
+      ],
+      "lines": true
+    },
+    {
+      "type": "graph",
+      "title": "Task Executions by Status",
+      "gridPos": {"x": 0, "y": 8, "w": 24, "h": 8},
+      "targets": [
+        {"expr": "sum by(status) (mind_task_executions_total)", "refId": "A"}
+      ],
+      "lines": true
+    }
+  ],
+  "templating": {"list": []}
+}
