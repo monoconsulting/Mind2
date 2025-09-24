@@ -39,10 +39,13 @@ echo ============================================
 echo All Docker images built successfully!
 echo ============================================
 echo.
-echo Images created:
-echo - mind2-backend:latest
-echo - mind2-admin-frontend:dev
+echo Starting all containers (main + monitoring profiles)...
+docker-compose --profile main --profile monitoring up -d
+if %errorlevel% neq 0 (
+    echo ERROR: Failed to start containers!
+    pause
+    exit /b %errorlevel%
+)
 echo.
-echo Note: mobile-capture-frontend is served as static files via nginx volume mount
-echo.
+docker-compose --profile main --profile monitoring ps
 pause
