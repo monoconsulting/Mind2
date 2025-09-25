@@ -1,6 +1,6 @@
 import React from 'react'
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
-import { FiHome, FiList, FiCreditCard, FiSliders, FiUpload, FiCpu, FiLogOut, FiBarChart } from 'react-icons/fi'
+import { FiHome, FiList, FiCreditCard, FiSliders, FiUpload, FiLogOut, FiBarChart } from 'react-icons/fi'
 import Dashboard from '../ui/pages/Dashboard.jsx'
 import Receipts from '../ui/pages/Receipts.jsx'
 import CompanyCard from '../ui/pages/CompanyCard.jsx'
@@ -38,12 +38,12 @@ function Shell({ children }) {
 
   const getPageTitle = () => {
     const titles = {
-      '/': 'Dashboard',
-      '/receipts': 'Receipts',
-      '/company-card': 'Processing',
-      '/ai': 'Analytics',
-      '/export': 'System',
-      '/settings': 'Users'
+      '/': 'Översikt',
+      '/receipts': 'Kvitton',
+      '/company-card': 'Kortmatchning',
+      '/ai': 'Analys',
+      '/export': 'Export',
+      '/settings': 'Användare'
     }
     return titles[location.pathname] || 'Mind Admin'
   }
@@ -58,43 +58,43 @@ function Shell({ children }) {
       <aside className="sidebar">
         <div className="logo">
           <div className="brand-icon">M</div>
-          <div className="brand-text">MIND Admin</div>
+          <div className="brand-text">Mind Admin</div>
         </div>
 
         <nav className="flex flex-col gap-1">
           <NavButton
             icon={FiHome}
-            label="Dashboard"
+            label="Översikt"
             to="/"
             isActive={location.pathname === '/'}
           />
           <NavButton
             icon={FiList}
-            label="Receipts"
+            label="Kvitton"
             to="/receipts"
             isActive={location.pathname === '/receipts'}
           />
           <NavButton
             icon={FiCreditCard}
-            label="Processing"
+            label="Kortmatchning"
             to="/company-card"
             isActive={location.pathname === '/company-card'}
           />
           <NavButton
             icon={FiBarChart}
-            label="Analytics"
+            label="Analys"
             to="/ai"
             isActive={location.pathname === '/ai'}
           />
           <NavButton
             icon={FiUpload}
-            label="System"
+            label="Export"
             to="/export"
             isActive={location.pathname === '/export'}
           />
           <NavButton
             icon={FiSliders}
-            label="Users"
+            label="Användare"
             to="/settings"
             isActive={location.pathname === '/settings'}
           />
@@ -107,8 +107,8 @@ function Shell({ children }) {
                 A
               </div>
               <div className="text-sm">
-                <div className="text-white font-medium">Admin User</div>
-                <div className="text-gray-400 text-xs">Admin</div>
+                <div className="text-white font-medium">Administratör</div>
+                <div className="text-gray-400 text-xs">Systemansvarig</div>
               </div>
             </div>
             <button
@@ -116,7 +116,7 @@ function Shell({ children }) {
               onClick={handleLogout}
             >
               <FiLogOut className="text-lg" />
-              <span className="font-medium">Logout</span>
+              <span className="font-medium">Logga ut</span>
             </button>
           </div>
         </div>
@@ -127,7 +127,7 @@ function Shell({ children }) {
           <div className="page-title">{getPageTitle()}</div>
           <div className="user-menu">
             <div className="text-sm">
-              Overview of receipt processing system status and metrics
+              Överblick över status för kvittohanteringen och centrala nyckeltal
             </div>
           </div>
         </header>

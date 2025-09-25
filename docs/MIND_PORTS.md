@@ -7,7 +7,7 @@ Active profiles and ports:
 - Redis: 6380 (host) → 6379 (container)
 - Prometheus: 9091 (host) → 9090 (container)
 - Grafana: 3003 (host) → 3000 (container)
-
+- Frontend: 5169 (host) → 3000 (container)
 Deprecated in v2.0:
 - PHP UI: 8004
 - PHP API: 8009
