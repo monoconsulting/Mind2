@@ -6,10 +6,11 @@ export const api = {
     const headers = new Headers(opts.headers || {})
     if (token) headers.set('Authorization', `Bearer ${token}`)
     const res = await fetch(path, { ...opts, headers })
-    if (res.status === 401) {
-      try { localStorage.removeItem(TOKEN_KEY) } catch {}
-      if (typeof window !== 'undefined') window.location.href = '/login'
-    }
+    // Temporarily disabled aggressive logout behavior that causes navigation issues
+    // if (res.status === 401) {
+    //   try { localStorage.removeItem(TOKEN_KEY) } catch {}
+    //   if (typeof window !== 'undefined') window.location.href = '/login'
+    // }
     return res
   },
   async login(username, password) {

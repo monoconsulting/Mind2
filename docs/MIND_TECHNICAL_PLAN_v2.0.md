@@ -15,6 +15,7 @@ Syfte: Detta dokument är redigerbart av AI/människor. Följ reglerna:
 
 | Version | Datum      | Förändring |
 |---------|------------|------------|
+| 2.1.1   | 2025-09-24 | Korrigerade frontend-sökväg från `frontend/` till `main-system/app-frontend/` för att matcha den faktiska kodstrukturen. Uppdaterade design till mörkt tema med röd Mind-branding. |
 | 2.1     | 2025-09-23 | Korrigerade sökvägar för backend- och frontend-kod för att matcha den faktiska kodbasen. Flyttade changelog till toppen. |
 | 2.0     | 2025-09-19 | MÅLBILD utan PHP: ren Python‑stack, kanoniska migrationer (unified→ai→invoice), endpoints och portar uppdaterade; deprecations tydliggjorda |
 | 1.0     | 2025-09-18 | Python‑admin/AI beskrivet; kvar fanns PHP‑delar i överblicken |
@@ -62,7 +63,7 @@ Deprecated i v2.1: `8004` (PHP UI), `8009` (PHP API), `8087` (phpMyAdmin). Dessa
 | Worker | `celery-worker` | `backend/src/services/` | Kör `process_ocr`, `process_classification`, `process_invoice_document` m.fl. |
 | Redis | `mind-redis` | – | Broker/result backend för Celery |
 | MySQL | `mind-mysql` | `database/migrations/*` | Kanonisk schemaordning, se §5 |
-| Frontend | `mind-web-main-frontend` | `frontend/` build | Talar endast med `/ai/api` |
+| Frontend | `mind-web-main-frontend` | `main-system/app-frontend/` build | Talar endast med `/ai/api` - MÖRKT TEMA med röd Mind-branding |
 | Monitoring | `prometheus`, `grafana`, `*-exporter` | `monitoring/*` | Paneler för AI‑pipeline, DB/Redis |
 
 ## 4. Dataflöden
