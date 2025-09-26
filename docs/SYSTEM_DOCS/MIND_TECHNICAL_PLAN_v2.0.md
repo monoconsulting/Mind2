@@ -68,7 +68,7 @@ Deprecated i v2.1: `8004` (PHP UI), `8009` (PHP API), `8087` (phpMyAdmin). Dessa
 
 ## 4. Dataflöden
 
-1) Ingest: Mobilapp/FTP lämnar filer + metadata. FTP‑importer skriver till `unified_files` (`file_type='receipt'`), sätter statusflaggor och filhash. JSON‑metadata parsas till avsedda fält/`manual_tags` enligt backlog.
+1) Ingest: Mobilapp/FTP lämnar filer + metadata. FTP‑importer skriver till `unified_files` (`file_type=tag_id`), sätter statusflaggor och filhash. JSON‑metadata parsas till avsedda fält/`manual_tags` enligt backlog.
 2) Kö: API/worker lägger jobb i `ai_processing_queue`. Celery hämtar, kör OCR/klassificering/moderation/objekt/faces och uppdaterar `unified_files` + `ai_processing_history`.
 3) Dashboards: `GET /ai/api/system/status`, `/ai/api/system/stats`, `/ai/api/processing/jobs`, `/ai/api/receipts/monthly-summary` läser MySQL/Redis och returnerar verkliga värden.
 4) FirstCard: `POST /ai/api/reconciliation/firstcard/import` fyller `invoice_documents` + `invoice_lines`; `.../match` scorer mot kvitton; manuella `confirm/reject` uppdaterar matchstatus och historik.

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mind2 System Documentation</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Mind2 System Documentation</h1>
+            <p>Omfattande dokumentation och testrapporter för Mind2-systemet</p>
+        </div>
+    </header>
+
+    <nav>
+        <div class="container">
+            <ul>
+                <li><a href="index.html">Hem</a></li>
+                <li><a href="test-results.html">Testresultat</a></li>
+                <li><a href="test/">Testfiler</a></li>
+                <li><a href="test-results/">Testrapporter</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="container">
+        <main>
+            <section class="card">
+                <h2>Systemöversikt</h2>
+                <p>Mind2 är ett avancerat system för hantering av kvitton och dokument med FTP-import,
+                automatisk OCR-bearbetning och AI-baserad dataextraktion.</p>
+            </section>
+
+            <section class="system-info">
+                <div class="info-item">
+                    <h3>System Status</h3>
+                    <p>Aktiv och operationell</p>
+                </div>
+                <div class="info-item">
+                    <h3>Senaste Update</h3>
+                    <p id="last-update">Laddas...</p>
+                </div>
+                <div class="info-item">
+                    <h3>Totala Tester</h3>
+                    <p id="total-tests">Laddas...</p>
+                </div>
+                <div class="info-item">
+                    <h3>Testframgång</h3>
+                    <p id="test-success-rate">Laddas...</p>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Systemkomponenter</h2>
+                <ul>
+                    <li><strong>Backend API:</strong> Python Flask-baserad API för systemkärnan</li>
+                    <li><strong>Frontend:</strong> React-baserad användargränssnitt</li>
+                    <li><strong>Database:</strong> PostgreSQL för datalagring</li>
+                    <li><strong>FTP Import:</strong> Automatisk import av dokument via FTP</li>
+                    <li><strong>OCR Processing:</strong> Automatisk textextraktion från bilder</li>
+                    <li><strong>AI Integration:</strong> Smart dataextraktion och kategorisering</li>
+                </ul>
+            </section>
+
+            <section class="card">
+                <h2>Snabblänkar</h2>
+                <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+                    <a href="test-results.html" class="btn">Visa Testresultat</a>
+                    <a href="test/" class="btn">Bläddra Testfiler</a>
+                    <a href="test-results/" class="btn">Testrapporter</a>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 Mind2 System Documentation. Genererad automatiskt.</p>
+        </div>
+    </footer>
+
+    <script src="js/main.js"></script>
+</body>
+</html>

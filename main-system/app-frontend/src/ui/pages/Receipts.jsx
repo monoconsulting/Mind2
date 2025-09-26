@@ -14,7 +14,8 @@ import {
   FiCalendar,
   FiTag,
   FiChevronLeft,
-  FiChevronRight
+  FiChevronRight,
+  FiMapPin
 } from 'react-icons/fi'
 import { api } from '../api'
 
@@ -317,10 +318,8 @@ function usePreviewImage({ previewUrl, receiptId }) {
   React.useEffect(() => {
     let cancelled = false;
     let objectUrl = null;
+    // Only use original image endpoint, no preview
     const sources = [];
-    if (previewUrl) {
-      sources.push(previewUrl);
-    }
     if (receiptId) {
       sources.push(`/ai/api/receipts/${receiptId}/image`);
     }
@@ -372,7 +371,8 @@ function usePreviewImage({ previewUrl, receiptId }) {
 }
 
 function ReceiptPreview({ receipt, onPreview, onCache }) {
-  const { src, loading, error } = usePreviewImage({ previewUrl: receipt.preview_url, receiptId: receipt.id });
+  // Only use original image, no preview_url
+  const { src, loading, error } = usePreviewImage({ receiptId: receipt.id });
 
   React.useEffect(() => {
     if (typeof onCache === 'function') {
@@ -520,6 +520,109 @@ function ExportModal({ open, filters, onClose }) {
   )
 }
 
+function MapModal({ open, receipt, onClose }) {
+  if (!open || !receipt) {
+    return null;
+  }
+
+  const handleBackdrop = (event) => {
+    if (event.target === event.currentTarget) {
+      onClose();
+    }
+  };
+
+  const location = receipt.location;
+  const lat = location?.lat;
+  const lon = location?.lon;
+  const accuracy = location?.accuracy;
+  const hasCoordinates = lat != null && lon != null && lat !== 0 && lon !== 0;
+
+  // Google Maps URL for embedding
+  const mapUrl = hasCoordinates
+    ? `https://www.google.com/maps/embed/v1/place?key=YOUR_API_KEY&q=${lat},${lon}&zoom=15`
+    : null;
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-label={`Karta för kvitto ${receipt.id}`} onClick={handleBackdrop}>
+      <div className="modal modal-lg" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Plats för kvitto</h3>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Stäng karta">
+            <FiX />
+          </button>
+        </div>
+        <div className="modal-body" style={{ height: '500px', padding: 0 }}>
+          {hasCoordinates ? (
+            <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+              {/* OpenStreetMap iframe */}
+              <iframe
+                width="100%"
+                height="100%"
+                style={{ border: 0, borderRadius: '8px' }}
+                src={`https://www.openstreetmap.org/export/embed.html?bbox=${lon-0.01},${lat-0.01},${lon+0.01},${lat+0.01}&layer=mapnik&marker=${lat},${lon}`}
+                title={`Karta för kvitto ${receipt.id}`}
+              />
+              {/* Coordinate overlay */}
+              <div style={{
+                position: 'absolute',
+                top: '10px',
+                left: '10px',
+                background: 'rgba(255, 255, 255, 0.9)',
+                padding: '8px 12px',
+                borderRadius: '6px',
+                fontSize: '12px',
+                fontFamily: 'monospace',
+                boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+              }}>
+                <div>Lat: {lat.toFixed(6)}</div>
+                <div>Lng: {lon.toFixed(6)}</div>
+                {accuracy && <div>Noggrannhet: ±{accuracy}m</div>}
+              </div>
+              {/* External link button */}
+              <div style={{
+                position: 'absolute',
+                bottom: '10px',
+                right: '10px'
+              }}>
+                <a
+                  href={`https://www.google.com/maps?q=${lat},${lon}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-primary btn-sm"
+                  style={{ fontSize: '12px' }}
+                >
+                  Google Maps
+                </a>
+              </div>
+            </div>
+          ) : (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              height: '100%',
+              background: '#f5f5f5',
+              borderRadius: '8px'
+            }}>
+              <div style={{ textAlign: 'center' }}>
+                <FiMapPin size={48} style={{ color: '#ccc', marginBottom: '16px' }} />
+                <div style={{ fontSize: '16px', color: '#666' }}>
+                  Ingen platsdata tillgänglig för detta kvitto
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button type="button" className="btn btn-primary" onClick={onClose}>
+            Stäng
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function PreviewModal({ previewState, onClose, onDownload }) {
   if (!previewState.receipt) {
@@ -609,6 +712,8 @@ export default function Receipts() {
   const [filters, setFilters] = React.useState(initialFilters)
   const [isFilterOpen, setFilterOpen] = React.useState(false)
   const [isExportOpen, setExportOpen] = React.useState(false)
+  const [isMapOpen, setMapOpen] = React.useState(false)
+  const [selectedReceiptForMap, setSelectedReceiptForMap] = React.useState(null)
   const [previewState, setPreviewState] = React.useState(initialPreviewState)
   const previewCache = React.useRef(new Map())
 
@@ -826,18 +931,26 @@ export default function Receipts() {
     });
   };
 
+  const handleShowMap = (receipt) => {
+    setSelectedReceiptForMap(receipt);
+    setMapOpen(true);
+  };
+
+  const closeMap = () => {
+    setMapOpen(false);
+    setSelectedReceiptForMap(null);
+  };
+
   React.useEffect(() => {
     if (!previewState.receipt || !previewState.loading) {
       return;
     }
     let cancelled = false;
     let objectUrl = null;
-    const endpoints = [];
     const { receipt } = previewState;
-    if (receipt.preview_url) {
-      endpoints.push(receipt.preview_url);
-    }
-    endpoints.push(`/ai/api/receipts/${receipt.id}/image?quality=high&size=full&rotate=portrait`);
+    const cacheBuster = Date.now();
+    // Only use original image endpoint
+    const endpoints = [`/ai/api/receipts/${receipt.id}/image?cb=${cacheBuster}`];
 
     const loadImage = async () => {
       for (const endpoint of endpoints) {
@@ -995,9 +1108,9 @@ export default function Receipts() {
                       />
                     </td>
                     <td>
-                      <div className="font-medium">{formatDate(receipt.purchase_date || receipt.purchase_datetime)}</div>
-                      {receipt.purchase_datetime && (
-                        <div className="text-xs text-gray-400">{receipt.purchase_datetime}</div>
+                      <div className="font-medium">{formatDate(receipt.file_creation_timestamp)}</div>
+                      {receipt.file_creation_timestamp && (
+                        <div className="text-xs text-gray-400">{receipt.file_creation_timestamp}</div>
                       )}
                     </td>
                     <td>
@@ -1024,9 +1137,9 @@ export default function Receipts() {
                         <button
                           type="button"
                           className="btn btn-secondary btn-sm"
-                          onClick={() => handlePreview(receipt, { src: previewCache.current.get(receipt.id) || null, error: null })}>
-                          <FiEye />
-                          Visa
+                          onClick={() => handleShowMap(receipt)}>
+                          <FiMapPin />
+                          Plats
                         </button>
                         <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleDownload(receipt)}>
                           <FiDownload />
@@ -1077,6 +1190,7 @@ export default function Receipts() {
       )}
 
       <ExportModal open={isExportOpen} filters={filters} onClose={() => setExportOpen(false)} />
+      <MapModal open={isMapOpen} receipt={selectedReceiptForMap} onClose={closeMap} />
       <PreviewModal previewState={previewState} onClose={closePreview} onDownload={handleDownload} />
     </div>
   )

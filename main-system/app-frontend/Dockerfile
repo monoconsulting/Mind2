@@ -3,13 +3,13 @@ FROM node:18-alpine AS builder
 WORKDIR /app
 
 # Copy application manifest and lock file
-COPY main-system/app-frontend/package.json main-system/app-frontend/package-lock.json* ./
+COPY package.json package-lock.json* ./
 
 # Install dependencies
 RUN npm install
 
 # Copy the rest of the frontend source code
-COPY main-system/app-frontend/ .
+COPY . .
 
 # Build the application
 RUN npm run build
@@ -18,7 +18,7 @@ RUN npm run build
 FROM nginx:1.25-alpine
 
 # Copy the custom Nginx configuration
-COPY main-system/app-frontend/nginx.conf /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 # Copy the built static files from the builder stage
 COPY --from=builder /app/dist /usr/share/nginx/html

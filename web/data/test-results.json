@@ -1,0 +1,33 @@
+{
+  "tests": [
+    {
+      "testFile": "2025-09-26_08-34-48_receipt_image_full_test.spec.ts",
+      "description": "Complete Playwright test with video recording for receipt image orientation. Tests thumbnails, modal display, file downloads with 1900x1200 viewport.",
+      "successPercentage": 50,
+      "score": 6,
+      "maxScore": 12,
+      "reportLink": "test-results/2025-09-26_08-34-48_complete_test_report.html",
+      "testFileLink": "test/2025-09-26_08-34-48_receipt_image_full_test.spec.ts",
+      "mediaLinks": [
+        "test-results/media/2025-09-26_08-34-48_debug_no_table.png",
+        "test-results/receipt-image-full-test-Re-174ff-are-in-portrait-orientation-chromium/video.webm",
+        "test-results/receipt-image-full-test-Re-1dab4-lay-in-portrait-orientation-chromium/video.webm",
+        "test-results/receipt-image-full-test-Re-4a2f8-verify-original-size-2-6MB--chromium/video.webm",
+        "test-results/receipt-image-full-test-Re-01916-unctionality-for-thumbnails-chromium/video.webm"
+      ],
+      "timestamp": "2025-09-26T08:54:47.100283"
+    },
+    {
+      "testFile": "2025-09-26_08-16-41_receipt_image_orientation_test.py",
+      "description": "Test for receipt image orientation in portrait mode",
+      "successPercentage": 66.7,
+      "score": 4,
+      "maxScore": 6,
+      "reportLink": "test-results/2025-09-26_08-16-41_receipt_image_orientation_test_report.html",
+      "testFileLink": "test/2025-09-26_08-16-41_receipt_image_orientation_test.py",
+      "timestamp": "2025-09-26T08:20:40.498622"
+    }
+  ],
+  "created": "2025-09-26T07:55:28.295804",
+  "version": "1.0"
+}

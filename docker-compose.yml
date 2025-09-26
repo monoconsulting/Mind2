@@ -99,8 +99,8 @@ services:
 
   mind-web-main-frontend:
     build:
-      context: .
-      dockerfile: ./main-system/app-frontend/Dockerfile
+      context: ./main-system/app-frontend
+      dockerfile: Dockerfile
     image: mind2-admin-frontend:dev
     depends_on: [ai-api]
     networks: [main]
