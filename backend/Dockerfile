@@ -1,22 +1,26 @@
+# Use an official Python runtime as a parent image
 FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
 
+# Set the working directory in the container
 WORKDIR /app
 
-# Install build deps (if any wheels needed) and clean up
-RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential \
- && rm -rf /var/lib/apt/lists/*
+# Copy the requirements file and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy and install Python dependencies
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# Copy the entrypoint script and make it executable
+COPY backend/entrypoint.sh .
+RUN chmod +x ./entrypoint.sh
 
-# Copy app code (will be overridden by volume in dev, but present for image)
-COPY backend/src /app
+# Copy the rest of the backend source code
+COPY backend/src/ .
 
+# Expose the port the app runs on
 EXPOSE 5000
 
-CMD ["python", "/app/api/app.py"]
+# Run the entrypoint script
+ENTRYPOINT ["./entrypoint.sh"]

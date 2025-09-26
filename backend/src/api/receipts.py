@@ -440,6 +440,72 @@ def get_receipt_image(rid: str):
         source = _find_receipt_image_path(rid)
         if source is None:
             return jsonify({"error": "no_image"}), 404
+
+        # Check for quality/size parameters
+        quality = request.args.get('quality', 'normal')
+        size = request.args.get('size', 'normal')
+        rotate = request.args.get('rotate', 'auto')
+
+        # If high quality requested or rotation needed, process the image
+        if quality == 'high' or size == 'full' or rotate in ['auto', 'portrait']:
+            if Image is None:
+                # PIL not available, return original
+                return send_file(str(source), mimetype="image/jpeg")
+
+            try:
+                from PIL import ExifTags
+                with Image.open(source) as img:
+                    # First handle EXIF rotation
+                    try:
+                        exif = img._getexif()
+                        if exif:
+                            for tag, value in exif.items():
+                                if tag in ExifTags.TAGS and ExifTags.TAGS[tag] == 'Orientation':
+                                    if value == 3:
+                                        img = img.rotate(180, expand=True)
+                                    elif value == 6:
+                                        img = img.rotate(270, expand=True)
+                                    elif value == 8:
+                                        img = img.rotate(90, expand=True)
+                                    break
+                    except (AttributeError, KeyError):
+                        pass
+
+                    # Always force portrait orientation for receipts
+                    width, height = img.size
+                    if width > height:
+                        # Rotate to portrait
+                        img = img.rotate(90, expand=True)
+
+                    # Convert to RGB if needed
+                    if img.mode != "RGB":
+                        img = img.convert("RGB")
+
+                    # For full size, keep original dimensions
+                    # Only resize if explicitly not full size
+                    if size != 'full' and quality != 'high':
+                        # Only thumbnail for non-full requests
+                        max_dim = 2400
+                        img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+
+                    # Save with maximum quality for high quality requests
+                    from io import BytesIO
+                    output = BytesIO()
+
+                    if quality == 'high':
+                        # Maximum quality, no compression
+                        img.save(output, "JPEG", quality=100, optimize=False, subsampling=0)
+                    else:
+                        img.save(output, "JPEG", quality=90, optimize=True)
+
+                    output.seek(0)
+                    return send_file(output, mimetype="image/jpeg", as_attachment=False)
+
+            except Exception as e:
+                # If processing fails, return original
+                print(f"Image processing error: {e}")
+                pass
+
         return send_file(str(source), mimetype="image/jpeg")
     except Exception as e:
         return jsonify({"error": str(e)}), 500

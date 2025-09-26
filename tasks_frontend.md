@@ -1,13 +1,22 @@
 # Tasks for frontend
 
+| TASK ID | PAGE     | TITLE                                    | DESCRIPTION                                                                                         | STATUS |
+| ------- | -------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------- | ------ |
+| 1.      | Receipts | Design kvittolistan                      | På kvittosidan ska listan följa samma designprinciper som övrig adminlayout                         | Pågår  |
+| 2.      | Receipts | Hämta från FTP                           | Säkerställ att FTP-knappen triggar backendflödet och uppdaterar listan                              | Pågår  |
+| 3.      | Receipts | Förhandsgranskning                       | Återställ eller implementera förhandsgranskning av kvittobilder                                     | Pågår  |
+| 4.      | Receipts | Populera lista med verklig data          | Läs in data från databasen via API och fyll alla relevanta fält utan mockdata                       | Pågår  |
+| 5.      | Receipts | Filterpanel                              | Verifiera att filterknappen öppnar fungerande filter och påverkar resultaten                        | Pågår  |
+| 6.      | Receipts | Sök och filtrera                         | Sökfältet ska filtrera kvitton baserat på företag, belopp eller filnamn                              | Pågår  |
+| 7.      | Receipts | Exportera                                | Kontrollera att exportfunktionen skapar nedladdning baserat på valda datum eller filter              | Pågår  |
 
-
-| TASK ID | PAGE     | TITLE                                     | DESCRIPTION                                                  | STATUS |
-| ------- | -------- | ----------------------------------------- | ------------------------------------------------------------ | ------ |
-| 1.      | Receipts | Design lista receipts                     | På Kvitton så finns en lista. Den grafiska designen ska korrigeras på denna så att den matchar övrig design. |        |
-| 2.      | Receipts | Hämta från FTP - se till att den fungerar |                                                              |        |
-| 3.      | Receipts | Preview fungerar ej                       | Ingen preview finns på bilder - det finns en funktion på detta sedan tidigare. Undersök om du hittar den annars skapa en ny |        |
-| 4.      | Receipts | Listan populeras inte                     | Hämta all data från databasen (om det finns någon ) och populera alla fält. Ingen mockdata är tillåten |        |
-| 5.      | Receipts | Filter                                    | Testa så filterknappen fungerar                              |        |
-| 6.      | Receipts | Sök och filtrera                          | Testa så sök och fungera-rutan fungerar                      |        |
-| 7.      | Receipts | Exportera                                 | Testa så exporten fungerar                                   |        |
+| TASK ID | PAGE     | TITLE                           | DESCRIPTION                                                  | STATUS |
+| ------- | -------- | ------------------------------- | ------------------------------------------------------------ | ------ |
+| 1.      | Receipts | Design kvittolistan             | På kvittosidan ska listan följa samma designprinciper som övrig adminlayout | KLAR   |
+| 2.      | Receipts | Hämta från FTP                  | Säkerställ att FTP-knappen triggar backendflödet och uppdaterar listan | KLAR   |
+| 3.      | Receipts | Förhandsgranskning              | Återställ eller implementera förhandsgranskning av kvittobilder | KLAR   |
+| 4.      | Receipts | Populera lista med verklig data | Läs in data från databasen via API och fyll alla relevanta fält utan mockdata | KLAR   |
+| 5.      | Receipts | Filterpanel                     | Verifiera att filterknappen öppnar fungerande filter och påverkar resultaten | KLAR   |
+| 6.      | Receipts | Sök och filtrera                | Sökfältet ska filtrera kvitton baserat på företag, belopp eller filnamn | KLAR   |
+| 7.      | Receipts | Exportera                       | Kontrollera att exportfunktionen skapar nedladdning baserat på valda datum eller filter | KLAR   |
+| 8.      |          |                                 |                                                              |        |

@@ -4,10 +4,7 @@ services:
       context: .
       dockerfile: ./backend/Dockerfile
     image: mind2-ai-api:dev
-    working_dir: /app
     volumes:
-      - ./backend/src:/app
-      - ./database/migrations:/app/database/migrations:ro
       - ./storage:/data/storage
       - ./inbox:/data/inbox
     environment:
@@ -25,7 +22,16 @@ services:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - STORAGE_DIR=/data/storage
       - FTP_LOCAL_DIR=/data/inbox
-    command: ["gunicorn", "api.app:app", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "--timeout", "60"]
+      - FTP_HOST=${FTP_HOST}
+      - FTP_PORT=${FTP_PORT}
+      - FTP_USER=${FTP_USER}
+      - FTP_PASS=${FTP_PASS}
+      - FTP_REMOTE_DIR=${FTP_REMOTE_DIR}
+      - FTP_LOCAL_MOVE_DIR=${FTP_LOCAL_MOVE_DIR}
+      - FTP_TLS=${FTP_TLS}
+      - FTP_PASSIVE=${FTP_PASSIVE}
+      - FTP_ALLOWED_EXT=${FTP_ALLOWED_EXT}
+      - FTP_DELETE_AFTER=${FTP_DELETE_AFTER}
     networks: [main]
     profiles: [main]
 
@@ -33,12 +39,8 @@ services:
     build:
       context: .
       dockerfile: ./backend/Dockerfile
-    image: mind2-ai-api:dev
+    image: mind2-ai-api:dev # Use the same image as the api
     command: ["celery", "-A", "services.tasks.celery_app", "worker", "--loglevel=INFO"]
-    working_dir: /app
-    volumes:
-      - ./backend/src:/app
-      - ./database/migrations:/app/database/migrations:ro
     environment:
       - PYTHONPATH=/app
       - DB_HOST=mysql
@@ -71,6 +73,19 @@ services:
     networks: [main]
     profiles: [main]
 
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_USER: root
+      PMA_PASSWORD: root
+    ports:
+      - "8087:80"
+    depends_on: [mysql]
+    networks: [main]
+    profiles: [main]
+
   nginx:
     image: nginx:1.25
     volumes:
@@ -78,16 +93,15 @@ services:
       - ./mobile-capture-frontend:/usr/share/nginx/html/capture:ro
     ports:
       - "8008:80"
-    depends_on: [ai-api]
+    depends_on: [ai-api, mind-web-main-frontend]
     networks: [main]
     profiles: [main]
 
   mind-web-main-frontend:
     build:
-      context: ./main-system/app-frontend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./main-system/app-frontend/Dockerfile
     image: mind2-admin-frontend:dev
-    working_dir: /app
     depends_on: [ai-api]
     networks: [main]
     profiles: [main]
