@@ -273,8 +273,18 @@ def fetch_from_local_inbox() -> FetchResult:
             if 'tags' in metadata:
                 _insert_file_tags(file_id, metadata['tags'])
 
-            # Set AI status
+            # Set AI status and trigger OCR automatically
             set_ai_status(file_id, "new")
+
+            # Auto-trigger OCR processing
+            try:
+                from services.tasks import process_ocr
+                if process_ocr is not None:
+                    set_ai_status(file_id, "queued")
+                    process_ocr.delay(file_id)
+                    logger.info(f"LOCAL DEBUG: OCR queued for {p.name}")
+            except Exception as e:
+                logger.warning(f"LOCAL DEBUG: Could not queue OCR for {p.name}: {e}")
 
             downloaded.append((file_id, p.name))
 
@@ -409,8 +419,18 @@ def fetch_from_ftp() -> FetchResult:
                 if 'tags' in metadata:
                     _insert_file_tags(file_id, metadata['tags'])
 
-                # Set AI status
+                # Set AI status and trigger OCR automatically
                 set_ai_status(file_id, "new")
+
+                # Auto-trigger OCR processing
+                try:
+                    from services.tasks import process_ocr
+                    if process_ocr is not None:
+                        set_ai_status(file_id, "queued")
+                        process_ocr.delay(file_id)
+                        logger.info(f"FTP DEBUG: OCR queued for {name}")
+                except Exception as e:
+                    logger.warning(f"FTP DEBUG: Could not queue OCR for {name}: {e}")
 
                 downloaded.append((file_id, name))
                 logger.info(f"FTP DEBUG: Successfully saved {name}")

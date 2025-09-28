@@ -48,66 +48,188 @@ def _list_images(base: str | Path, receipt_id: str) -> List[Path]:
 
 
 def _get_ocr_engine() -> Optional["PaddleOCR"]:
+    import logging
+    logger = logging.getLogger(__name__)
+
     global _OCR_ENGINE
     if _OCR_ENGINE is None and PaddleOCR is not None:
+        lang = os.getenv("OCR_LANG", "sv+en")
+        use_angle_cls = os.getenv("OCR_USE_ANGLE_CLS", "true").lower() in ("true", "1", "t")
+        show_log = os.getenv("OCR_SHOW_LOG", "false").lower() in ("true", "1", "t")
         try:
-            _OCR_ENGINE = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
-        except Exception:  # pragma: no cover
+            logger.info("Initializing PaddleOCR with lang=%s, use_angle_cls=%s", lang, use_angle_cls)
+            # Note: show_log parameter has been removed in newer versions of PaddleOCR
+            _OCR_ENGINE = PaddleOCR(use_angle_cls=use_angle_cls, lang=lang)
+        except TypeError as exc:
+            logger.warning("PaddleOCR init failed with use_angle_cls parameter: %s; retrying without angle classifier", exc)
+            _OCR_ENGINE = PaddleOCR(lang=lang)
+        except Exception:
+            logger.exception("Failed to initialize PaddleOCR")
             _OCR_ENGINE = None
+        else:
+            logger.info("PaddleOCR initialized successfully")
     return _OCR_ENGINE
 
 
 def _extract_text_from_images(images: List[Path]) -> Dict[str, Any]:
+    import logging
+    logger = logging.getLogger(__name__)
+
     full_text: List[str] = []
     boxes: List[Dict[str, Any]] = []
 
     engine = _get_ocr_engine()
-    if not images or engine is None or Image is None:
+    if not images or Image is None:
+        logger.warning(f"OCR: No images or PIL not available. Images: {len(images) if images else 0}")
         return {"text": "", "boxes": []}
 
+    if engine is None:
+        logger.error("OCR: PaddleOCR engine not available - cannot process images")
+        return {"text": "", "boxes": []}
+
+    logger.info(f"OCR: Processing {len(images)} images")
     for img_path in images:
+        logger.info(f"OCR: Processing image {img_path}")
         try:
             with Image.open(img_path) as image:
                 width, height = image.size
-        except Exception:
+                logger.info(f"OCR: Image size {width}x{height}")
+        except Exception as e:
+            logger.error(f"OCR: Failed to open image {img_path}: {e}")
             continue
 
         try:
-            ocr_result = engine.ocr(str(img_path), cls=True) or []
-        except Exception:
+            logger.info(f"OCR: About to call engine.ocr() on {img_path}")
+            ocr_result = engine.ocr(str(img_path)) or []
+            logger.info(f"OCR: Got {len(ocr_result)} results from engine")
+        except Exception as e:
+            logger.error(f"OCR: Failed to run OCR on {img_path}: {e}")
+            import traceback
+            logger.error(f"OCR: Full traceback: {traceback.format_exc()}")
             continue
 
-        for line in ocr_result:
-            if not line:
-                continue
-            if isinstance(line[0], list) and len(line) >= 2 and isinstance(line[1], tuple):
-                box_points, (text_value, confidence) = line[0], line[1]
-            elif isinstance(line[0], list) and len(line[0]) >= 2 and isinstance(line[0][1], tuple):
-                box_points, (text_value, confidence) = line[0][0], line[0][1]
-            else:
-                continue
 
-            if not text_value:
-                continue
 
-            full_text.append(text_value)
-
-            xs = [pt[0] for pt in box_points if isinstance(pt, (list, tuple)) and len(pt) >= 2]
-            ys = [pt[1] for pt in box_points if isinstance(pt, (list, tuple)) and len(pt) >= 2]
-            if not xs or not ys or not width or not height:
-                continue
+        def append_detection(text_value, polygon, confidence):
+            if text_value is None or polygon is None:
+                return
+            try:
+                text_str = str(text_value).strip()
+            except Exception:
+                text_str = str(text_value)
+            if not text_str:
+                return
+            points = []
+            for pt in polygon:
+                if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                    try:
+                        px = float(pt[0])
+                        py = float(pt[1])
+                    except (TypeError, ValueError):
+                        continue
+                    points.append((px, py))
+            if len(points) < 2 or not width or not height:
+                return
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
             min_x, max_x = min(xs), max(xs)
             min_y, max_y = min(ys), max(ys)
+            if max_x <= min_x or max_y <= min_y:
+                return
+
+            x_norm = min_x / width
+            y_norm = min_y / height
+            w_norm = (max_x - min_x) / width
+            h_norm = (max_y - min_y) / height
+
+            if width > height:
+                rotated_x = y_norm
+                rotated_y = 1.0 - x_norm - w_norm
+                rotated_w = h_norm
+                rotated_h = w_norm
+                x_norm, y_norm, w_norm, h_norm = rotated_x, rotated_y, rotated_w, rotated_h
+
+            x_norm = max(min(x_norm, 1.0), 0.0)
+            y_norm = max(min(y_norm, 1.0), 0.0)
+            w_norm = max(min(w_norm, 1.0), 0.0)
+            h_norm = max(min(h_norm, 1.0), 0.0)
+
+            full_text.append(text_str)
             boxes.append(
                 {
-                    "field": text_value,
+                    "field": text_str,
                     "confidence": float(confidence) if confidence is not None else None,
-                    "x": max(min_x / width, 0.0),
-                    "y": max(min_y / height, 0.0),
-                    "w": max((max_x - min_x) / width, 0.0),
-                    "h": max((max_y - min_y) / height, 0.0),
+                    "x": x_norm,
+                    "y": y_norm,
+                    "w": w_norm,
+                    "h": h_norm,
                 }
             )
+
+        for ocr_result_item in ocr_result:
+            handled = False
+            if hasattr(ocr_result_item, 'json'):
+                result_data = getattr(ocr_result_item, 'json', None)
+                if result_data and isinstance(result_data, dict):
+                    res = result_data.get('res')
+                    if isinstance(res, dict):
+                        rec_texts = res.get('rec_texts', [])
+                        rec_polys = res.get('rec_polys', [])
+                        rec_scores = res.get('rec_scores', [])
+                        for i, text_value in enumerate(rec_texts):
+                            if i >= len(rec_polys):
+                                continue
+                            polygon = rec_polys[i]
+                            confidence = rec_scores[i] if i < len(rec_scores) else None
+                            append_detection(text_value, polygon, confidence)
+                        handled = True
+            if not handled and isinstance(ocr_result_item, dict):
+                res = ocr_result_item.get('res')
+                if isinstance(res, dict):
+                    rec_texts = res.get('rec_texts', [])
+                    rec_polys = res.get('rec_polys', [])
+                    rec_scores = res.get('rec_scores', [])
+                    for i, text_value in enumerate(rec_texts):
+                        if i >= len(rec_polys):
+                            continue
+                        polygon = rec_polys[i]
+                        confidence = rec_scores[i] if i < len(rec_scores) else None
+                        append_detection(text_value, polygon, confidence)
+                    handled = True
+            if handled:
+                continue
+
+            sequence = []
+            if isinstance(ocr_result_item, (list, tuple)):
+                sequence = list(ocr_result_item)
+            elif isinstance(ocr_result_item, dict):
+                maybe_sequence = ocr_result_item.get('data') or ocr_result_item.get('result')
+                if isinstance(maybe_sequence, (list, tuple)):
+                    sequence = list(maybe_sequence)
+
+            for entry in sequence:
+                polygon = None
+                text_value = None
+                confidence = None
+
+                if isinstance(entry, dict):
+                    polygon = entry.get('box') or entry.get('points') or entry.get('poly')
+                    text_value = entry.get('text') or entry.get('value') or entry.get('field')
+                    confidence = entry.get('score') or entry.get('confidence')
+                elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    polygon = entry[0]
+                    info = entry[1]
+                    if isinstance(info, (list, tuple)):
+                        if info:
+                            text_value = info[0]
+                        if len(info) > 1:
+                            confidence = info[1]
+                    elif isinstance(info, dict):
+                        text_value = info.get('text') or info.get('value') or info.get('field')
+                        confidence = info.get('score') or info.get('confidence')
+                    else:
+                        text_value = info
+                append_detection(text_value, polygon, confidence)
 
     combined_text = "\n".join(full_text)
     merchant = _extract_merchant(combined_text)
@@ -205,11 +327,11 @@ def run_ocr(receipt_id: str, storage_dir: str | Path | None = None) -> Dict[str,
     base_path = Path(base)
     receipt_path = _receipt_dir(base_path, receipt_id)
     receipt_path.mkdir(parents=True, exist_ok=True)
-    images = _list_images(receipt_path, receipt_id)
+    images = _list_images(base_path, receipt_id)
 
     ocr_result = _extract_text_from_images(images)
     boxes = ocr_result.get("boxes", [])
-    _write_boxes(receipt_path, receipt_id, boxes)
+    _write_boxes(base_path, receipt_id, boxes)
 
     line_items = ocr_result.get("line_items", [])
     if line_items:

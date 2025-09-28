@@ -67,6 +67,7 @@ def _update_file_fields(
     merchant: str | None = None,
     gross: float | None = None,
     purchase_iso: str | None = None,
+    ocr_raw: str | None = None,
 ) -> bool:
     if db_cursor is None:
         return False
@@ -82,6 +83,9 @@ def _update_file_fields(
         if purchase_iso is not None:
             sets.append("purchase_datetime=%s")
             vals.append(purchase_iso)
+        if ocr_raw is not None:
+            sets.append("ocr_raw=%s")
+            vals.append(ocr_raw)
         if not sets:
             return False
         sets.append("updated_at=NOW()")
@@ -235,19 +239,19 @@ def _infer_document_type(
         if any(token in ft for token in ("invoice", "supplier", "statement")):
             return "invoice"
     tags_lower = {t.lower() for t in (tags or [])}
-    if tags_lower & {"receipt", "expense", "meal", "travel", "kvitto"}:
+    if tags_lower & {"receipt", "expense", "meal", "travel"}:
         return "receipt"
-    if tags_lower & {"invoice", "statement", "supplier", "leverantör"}:
+    if tags_lower & {"invoice", "statement", "supplier"}:
         return "invoice"
     text = " ".join(filter(None, [merchant or "", text_blob])).lower()
     invoice_keywords = [
-        "invoice", "faktura", "due date", "betalning", "pay by", "bankgiro", "plusgiro", "ocr", "statement"
+        "invoice", "due date", "pay by", "bankgiro", "plusgiro", "ocr", "statement"
     ]
     for kw in invoice_keywords:
         if kw in text:
             return "invoice"
     receipt_keywords = [
-        "receipt", "kvitto", "thank you", "cashier", "order", "sale total", "subtotal", "vat"
+        "receipt", "thank you", "cashier", "order", "sale total", "subtotal", "vat"
     ]
     for kw in receipt_keywords:
         if kw in text:
@@ -333,6 +337,7 @@ def process_ocr(file_id: str) -> dict[str, Any]:
             merchant=result.get("merchant_name"),
             gross=float(result["gross_amount"]) if result.get("gross_amount") is not None else None,
             purchase_iso=result.get("purchase_datetime"),
+            ocr_raw=result.get("text"),  # Save the raw OCR text
         )
         ok = _update_file_status(file_id, status="ocr_done", confidence=float(result.get("confidence") or 0.9))
     else:
@@ -517,4 +522,10 @@ def process_matching(statement_id: str) -> dict[str, Any]:
         except Exception:
             pass
     return {"statement_id": statement_id, "file_id": file_id, "matched": matched}
+
+
+@celery_app.task
+def hello(name):
+    print(f"Hello, {name}!")
+    return f"Hello, {name}!"
 

@@ -9,14 +9,14 @@ from models.receipts import AccountingEntry, Receipt
 
 
 # Simple Swedish BAS defaults
-DEFAULT_EXPENSE_ACCOUNT = "5790"  # Övriga förbrukningsmaterial
-DEFAULT_CREDIT_ACCOUNT = "2440"   # Leverantörsskulder
-DEFAULT_CREDIT_ACCOUNT_CARD = "1930"  # Företagskonto (bank) for company card
+DEFAULT_EXPENSE_ACCOUNT = "5790"  # Other consumables
+DEFAULT_CREDIT_ACCOUNT = "2440"   # Supplier debts
+DEFAULT_CREDIT_ACCOUNT_CARD = "1930"  # Company account (bank) for company card
 
 VAT_ACCOUNT_BY_RATE: dict[int, str] = {
-    25: "2641",  # Debiterad ingående moms, 25%
-    12: "2642",  # Debiterad ingående moms, 12%
-    6: "2643",   # Debiterad ingående moms, 6%
+    25: "2641",  # Deducted input VAT, 25%
+    12: "2642",  # Deducted input VAT, 12%
+    6: "2643",   # Deducted input VAT, 6%
     0: "2640",   # Fallback
 }
 

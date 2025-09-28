@@ -1,0 +1,1 @@
+Please read @docs\GIT_END.md. Remember - the work tree MUST be clean. If unnecessary files is in the work tree use .gitignore. Otherwise use git add . 
