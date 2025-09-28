@@ -1,0 +1,30 @@
+[
+  {
+    "description": "1 Styck",
+    "quantity": 1,
+    "unit_price": 74.0,
+    "total": 74.0,
+    "vat_rate": 0
+  },
+  {
+    "description": "SEK",
+    "quantity": 1,
+    "unit_price": 313.0,
+    "total": 313.0,
+    "vat_rate": 0
+  },
+  {
+    "description": "SEK",
+    "quantity": 1,
+    "unit_price": 313.0,
+    "total": 313.0,
+    "vat_rate": 0
+  },
+  {
+    "description": "SEK",
+    "quantity": 1,
+    "unit_price": 313.0,
+    "total": 313.0,
+    "vat_rate": 0
+  }
+]

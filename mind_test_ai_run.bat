@@ -1,0 +1,1 @@
+npx playwright test web/tests/ai.spec.ts --ui --ui-port=9338 --project=chromium-ultrawide -u

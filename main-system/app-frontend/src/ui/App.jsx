@@ -41,7 +41,7 @@ function Shell({ children }) {
       '/': 'Översikt',
       '/receipts': 'Kvitton',
       '/company-card': 'Kortmatchning',
-      '/ai': 'Analys',
+      '/ai': 'AI',
       '/export': 'Export',
       '/settings': 'Användare'
     }
@@ -82,7 +82,7 @@ function Shell({ children }) {
           />
           <NavButton
             icon={FiBarChart}
-            label="Analys"
+            label="AI"
             to="/ai"
             isActive={location.pathname === '/ai'}
           />

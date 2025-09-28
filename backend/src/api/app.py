@@ -23,6 +23,7 @@ from api.auth import auth_bp
 from api.fetcher import fetcher_bp
 from api.ingest import ingest_bp
 from api.tags import tags_bp
+from api.ai_config import ai_config_bp
 try:
     from services.tasks import process_ocr  # type: ignore
 except Exception:  # pragma: no cover
@@ -39,6 +40,7 @@ app.register_blueprint(fetcher_bp)
 app.register_blueprint(ingest_bp)
 app.register_blueprint(rules_bp)
 app.register_blueprint(tags_bp)
+app.register_blueprint(ai_config_bp)
 
 
 # Best-effort DB auto migrations on startup (optional)

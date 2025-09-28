@@ -1,0 +1,1 @@
+Now please run @docs\GIT_START.md and follow every rule exactly!  Then start your work.

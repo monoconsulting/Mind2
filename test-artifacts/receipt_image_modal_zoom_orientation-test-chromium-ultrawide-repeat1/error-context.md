@@ -1,0 +1,333 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: M
+      - generic [ref=e7]: Mind Admin
+    - navigation [ref=e8]:
+      - button "Översikt" [ref=e9] [cursor=pointer]:
+        - img [ref=e10] [cursor=pointer]
+        - generic [ref=e13] [cursor=pointer]: Översikt
+      - button "Kvitton" [ref=e14] [cursor=pointer]:
+        - img [ref=e15] [cursor=pointer]
+        - generic [ref=e16] [cursor=pointer]: Kvitton
+      - button "Kortmatchning" [ref=e17] [cursor=pointer]:
+        - img [ref=e18] [cursor=pointer]
+        - generic [ref=e20] [cursor=pointer]: Kortmatchning
+      - button "AI" [ref=e21] [cursor=pointer]:
+        - img [ref=e22] [cursor=pointer]
+        - generic [ref=e23] [cursor=pointer]: AI
+      - button "Export" [ref=e24] [cursor=pointer]:
+        - img [ref=e25] [cursor=pointer]
+        - generic [ref=e28] [cursor=pointer]: Export
+      - button "Användare" [ref=e29] [cursor=pointer]:
+        - img [ref=e30] [cursor=pointer]
+        - generic [ref=e31] [cursor=pointer]: Användare
+    - generic [ref=e33]:
+      - generic [ref=e34]:
+        - generic [ref=e35]: A
+        - generic [ref=e36]:
+          - generic [ref=e37]: Administratör
+          - generic [ref=e38]: Systemansvarig
+      - button "Logga ut" [ref=e39] [cursor=pointer]:
+        - img [ref=e40] [cursor=pointer]
+        - generic [ref=e43] [cursor=pointer]: Logga ut
+  - generic [ref=e44]:
+    - banner [ref=e45]:
+      - generic [ref=e46]: Kvitton
+      - generic [ref=e48]: Överblick över status för kvittohanteringen och centrala nyckeltal
+    - main [ref=e49]:
+      - generic [ref=e50]:
+        - generic [ref=e52]:
+          - generic [ref=e53]:
+            - heading "Kvitton" [level=1] [ref=e54]
+            - paragraph [ref=e55]: Hantera, filtrera och exportera kvitton från kvittolistan
+          - generic [ref=e56]:
+            - button "Hämta från FTP" [ref=e57] [cursor=pointer]:
+              - img [ref=e58] [cursor=pointer]
+              - text: Hämta från FTP
+            - button "Exportera" [ref=e62] [cursor=pointer]:
+              - img [ref=e63] [cursor=pointer]
+              - text: Exportera
+            - button "Filter" [ref=e66] [cursor=pointer]:
+              - img [ref=e67] [cursor=pointer]
+              - text: Filter
+        - generic [ref=e69]:
+          - img [ref=e71]
+          - generic [ref=e73]: Visar 9 av 9 kvitton
+          - button "Stäng meddelande" [ref=e74] [cursor=pointer]:
+            - img [ref=e75] [cursor=pointer]
+        - generic [ref=e78]:
+          - generic [ref=e80]:
+            - heading "Sök och filtrera" [level=3] [ref=e81]
+            - paragraph [ref=e82]: Hitta kvitton snabbt
+          - generic [ref=e83]:
+            - generic [ref=e84]:
+              - generic [ref=e85]:
+                - img [ref=e86]
+                - textbox "Sök efter företag, filnamn eller belopp" [ref=e89]
+              - button "Sök" [ref=e90] [cursor=pointer]:
+                - img [ref=e91] [cursor=pointer]
+                - text: Sök
+              - button "Rensa" [ref=e94] [cursor=pointer]
+            - generic [ref=e95]:
+              - generic [ref=e96]: "Visa per sida:"
+              - combobox "Visa per sida:" [ref=e97]:
+                - option "10"
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+        - generic [ref=e98]:
+          - generic [ref=e100]:
+            - heading "Alla kvitton (9)" [level=3] [ref=e101]
+            - paragraph [ref=e102]: Sorterat efter senaste först
+          - table [ref=e104]:
+            - rowgroup [ref=e105]:
+              - row "Förhandsgranskning Datum Företag Exkl. moms Inkl. moms Status Filnamn Åtgärder" [ref=e106]:
+                - cell "Förhandsgranskning" [ref=e107]
+                - cell "Datum" [ref=e108]
+                - cell "Företag" [ref=e109]
+                - cell "Exkl. moms" [ref=e110]
+                - cell "Inkl. moms" [ref=e111]
+                - cell "Status" [ref=e112]
+                - cell "Filnamn" [ref=e113]
+                - cell "Åtgärder" [ref=e114]
+            - rowgroup [ref=e115]:
+              - 'row "Förhandsgranska kvitto 143327d4-d723-409a-8955-a482c84b87fd 2025-09-08 2025-09-08T08:42:33 Okänt bolag - - Manuell kontroll photo_68be7ad9d1e7c3.81863965.jpg Taggar: 2 Plats Ladda ned" [ref=e116]':
+                - cell "Förhandsgranska kvitto 143327d4-d723-409a-8955-a482c84b87fd" [ref=e117]:
+                  - button "Förhandsgranska kvitto 143327d4-d723-409a-8955-a482c84b87fd" [ref=e118] [cursor=pointer]:
+                    - img "Förhandsgranskning av kvitto 143327d4-d723-409a-8955-a482c84b87fd" [ref=e119] [cursor=pointer]
+                - cell "2025-09-08 2025-09-08T08:42:33" [ref=e120]:
+                  - generic [ref=e121]: 2025-09-08
+                  - generic [ref=e122]: 2025-09-08T08:42:33
+                - cell "Okänt bolag" [ref=e123]:
+                  - generic [ref=e124]: Okänt bolag
+                - cell "-" [ref=e125]
+                - cell "-" [ref=e126]
+                - cell "Manuell kontroll" [ref=e127]:
+                  - generic [ref=e128]: Manuell kontroll
+                - 'cell "photo_68be7ad9d1e7c3.81863965.jpg Taggar: 2" [ref=e129]':
+                  - generic [ref=e131]: "Taggar: 2"
+                - cell "Plats Ladda ned" [ref=e132]:
+                  - generic [ref=e133]:
+                    - button "Plats" [ref=e134] [cursor=pointer]:
+                      - img [ref=e135] [cursor=pointer]
+                      - text: Plats
+                    - button "Ladda ned" [ref=e138] [cursor=pointer]:
+                      - img [ref=e139] [cursor=pointer]
+                      - text: Ladda ned
+              - 'row "Förhandsgranska kvitto 8edf2571-8c53-423a-b178-e31057147696 2025-09-25 2025-09-25T12:48:12 Okänt bolag - - Manuell kontroll photo_68d51dec3d2445.62262545.jpg Taggar: 2 Plats Ladda ned" [ref=e142]':
+                - cell "Förhandsgranska kvitto 8edf2571-8c53-423a-b178-e31057147696" [ref=e143]:
+                  - button "Förhandsgranska kvitto 8edf2571-8c53-423a-b178-e31057147696" [active] [ref=e144] [cursor=pointer]:
+                    - img "Förhandsgranskning av kvitto 8edf2571-8c53-423a-b178-e31057147696" [ref=e145] [cursor=pointer]
+                - cell "2025-09-25 2025-09-25T12:48:12" [ref=e146]:
+                  - generic [ref=e147]: 2025-09-25
+                  - generic [ref=e148]: 2025-09-25T12:48:12
+                - cell "Okänt bolag" [ref=e149]:
+                  - generic [ref=e150]: Okänt bolag
+                - cell "-" [ref=e151]
+                - cell "-" [ref=e152]
+                - cell "Manuell kontroll" [ref=e153]:
+                  - generic [ref=e154]: Manuell kontroll
+                - 'cell "photo_68d51dec3d2445.62262545.jpg Taggar: 2" [ref=e155]':
+                  - generic [ref=e157]: "Taggar: 2"
+                - cell "Plats Ladda ned" [ref=e158]:
+                  - generic [ref=e159]:
+                    - button "Plats" [ref=e160] [cursor=pointer]:
+                      - img [ref=e161] [cursor=pointer]
+                      - text: Plats
+                    - button "Ladda ned" [ref=e164] [cursor=pointer]:
+                      - img [ref=e165] [cursor=pointer]
+                      - text: Ladda ned
+              - 'row "Förhandsgranska kvitto aa12d39e-32a6-4e16-80fa-552f590688b0 2025-09-12 2025-09-12T06:07:46 Okänt bolag - - Manuell kontroll photo_68c39c92096163.69462592.jpg Taggar: 2 Plats Ladda ned" [ref=e168]':
+                - cell "Förhandsgranska kvitto aa12d39e-32a6-4e16-80fa-552f590688b0" [ref=e169]:
+                  - button "Förhandsgranska kvitto aa12d39e-32a6-4e16-80fa-552f590688b0" [ref=e170] [cursor=pointer]:
+                    - img "Förhandsgranskning av kvitto aa12d39e-32a6-4e16-80fa-552f590688b0" [ref=e171] [cursor=pointer]
+                - cell "2025-09-12 2025-09-12T06:07:46" [ref=e172]:
+                  - generic [ref=e173]: 2025-09-12
+                  - generic [ref=e174]: 2025-09-12T06:07:46
+                - cell "Okänt bolag" [ref=e175]:
+                  - generic [ref=e176]: Okänt bolag
+                - cell "-" [ref=e177]
+                - cell "-" [ref=e178]
+                - cell "Manuell kontroll" [ref=e179]:
+                  - generic [ref=e180]: Manuell kontroll
+                - 'cell "photo_68c39c92096163.69462592.jpg Taggar: 2" [ref=e181]':
+                  - generic [ref=e183]: "Taggar: 2"
+                - cell "Plats Ladda ned" [ref=e184]:
+                  - generic [ref=e185]:
+                    - button "Plats" [ref=e186] [cursor=pointer]:
+                      - img [ref=e187] [cursor=pointer]
+                      - text: Plats
+                    - button "Ladda ned" [ref=e190] [cursor=pointer]:
+                      - img [ref=e191] [cursor=pointer]
+                      - text: Ladda ned
+              - 'row "Förhandsgranska kvitto 8778eab4-7af0-47b9-a38b-679fe4f9e14b 2025-09-02 2025-09-02T06:33:28 Okänt bolag - - Manuell kontroll photo_68b6739890f7a7.62128365.jpg Taggar: 2 Plats Ladda ned" [ref=e194]':
+                - cell "Förhandsgranska kvitto 8778eab4-7af0-47b9-a38b-679fe4f9e14b" [ref=e195]:
+                  - button "Förhandsgranska kvitto 8778eab4-7af0-47b9-a38b-679fe4f9e14b" [ref=e196] [cursor=pointer]:
+                    - generic [ref=e197] [cursor=pointer]: Ingen bild
+                - cell "2025-09-02 2025-09-02T06:33:28" [ref=e198]:
+                  - generic [ref=e199]: 2025-09-02
+                  - generic [ref=e200]: 2025-09-02T06:33:28
+                - cell "Okänt bolag" [ref=e201]:
+                  - generic [ref=e202]: Okänt bolag
+                - cell "-" [ref=e203]
+                - cell "-" [ref=e204]
+                - cell "Manuell kontroll" [ref=e205]:
+                  - generic [ref=e206]: Manuell kontroll
+                - 'cell "photo_68b6739890f7a7.62128365.jpg Taggar: 2" [ref=e207]':
+                  - generic [ref=e209]: "Taggar: 2"
+                - cell "Plats Ladda ned" [ref=e210]:
+                  - generic [ref=e211]:
+                    - button "Plats" [ref=e212] [cursor=pointer]:
+                      - img [ref=e213] [cursor=pointer]
+                      - text: Plats
+                    - button "Ladda ned" [ref=e216] [cursor=pointer]:
+                      - img [ref=e217] [cursor=pointer]
+                      - text: Ladda ned
+              - 'row "Förhandsgranska kvitto cc0ef1c8-a92f-4f9a-b6a8-6f5368cb34c9 2025-09-06 2025-09-06T13:49:31 Okänt bolag - - Manuell kontroll photo_68bc1fcb8fb2d1.19853966.jpg Taggar: 2 Plats Ladda ned" [ref=e220]':
+                - cell "Förhandsgranska kvitto cc0ef1c8-a92f-4f9a-b6a8-6f5368cb34c9" [ref=e221]:
+                  - button "Förhandsgranska kvitto cc0ef1c8-a92f-4f9a-b6a8-6f5368cb34c9" [ref=e222] [cursor=pointer]:
+                    - img "Förhandsgranskning av kvitto cc0ef1c8-a92f-4f9a-b6a8-6f5368cb34c9" [ref=e223] [cursor=pointer]
+                - cell "2025-09-06 2025-09-06T13:49:31" [ref=e224]:
+                  - generic [ref=e225]: 2025-09-06
+                  - generic [ref=e226]: 2025-09-06T13:49:31
+                - cell "Okänt bolag" [ref=e227]:
+                  - generic [ref=e228]: Okänt bolag
+                - cell "-" [ref=e229]
+                - cell "-" [ref=e230]
+                - cell "Manuell kontroll" [ref=e231]:
+                  - generic [ref=e232]: Manuell kontroll
+                - 'cell "photo_68bc1fcb8fb2d1.19853966.jpg Taggar: 2" [ref=e233]':
+                  - generic [ref=e235]: "Taggar: 2"
+                - cell "Plats Ladda ned" [ref=e236]:
+                  - generic [ref=e237]:
+                    - button "Plats" [ref=e238] [cursor=pointer]:
+                      - img [ref=e239] [cursor=pointer]
+                      - text: Plats
+                    - button "Ladda ned" [ref=e242] [cursor=pointer]:
+                      - img [ref=e243] [cursor=pointer]
+                      - text: Ladda ned
+              - 'row "Förhandsgranska kvitto d9773192-1185-4875-b3ae-abcf59389cff 2025-09-05 2025-09-05T18:39:06 Okänt bolag - - Manuell kontroll photo_68bb122a63d1b1.20796996.jpg Taggar: 2 Plats Ladda ned" [ref=e246]':
+                - cell "Förhandsgranska kvitto d9773192-1185-4875-b3ae-abcf59389cff" [ref=e247]:
+                  - button "Förhandsgranska kvitto d9773192-1185-4875-b3ae-abcf59389cff" [ref=e248] [cursor=pointer]:
+                    - img "Förhandsgranskning av kvitto d9773192-1185-4875-b3ae-abcf59389cff" [ref=e249] [cursor=pointer]
+                - cell "2025-09-05 2025-09-05T18:39:06" [ref=e250]:
+                  - generic [ref=e251]: 2025-09-05
+                  - generic [ref=e252]: 2025-09-05T18:39:06
+                - cell "Okänt bolag" [ref=e253]:
+                  - generic [ref=e254]: Okänt bolag
+                - cell "-" [ref=e255]
+                - cell "-" [ref=e256]
+                - cell "Manuell kontroll" [ref=e257]:
+                  - generic [ref=e258]: Manuell kontroll
+                - 'cell "photo_68bb122a63d1b1.20796996.jpg Taggar: 2" [ref=e259]':
+                  - generic [ref=e261]: "Taggar: 2"
+                - cell "Plats Ladda ned" [ref=e262]:
+                  - generic [ref=e263]:
+                    - button "Plats" [ref=e264] [cursor=pointer]:
+                      - img [ref=e265] [cursor=pointer]
+                      - text: Plats
+                    - button "Ladda ned" [ref=e268] [cursor=pointer]:
+                      - img [ref=e269] [cursor=pointer]
+                      - text: Ladda ned
+              - 'row "Förhandsgranska kvitto eaed2455-c6c2-48c6-8a28-8fa249214382 2025-09-07 2025-09-07T19:33:00 Okänt bolag - - Manuell kontroll photo_68bdc1cc97f643.62743853.jpg Taggar: 2 Plats Ladda ned" [ref=e272]':
+                - cell "Förhandsgranska kvitto eaed2455-c6c2-48c6-8a28-8fa249214382" [ref=e273]:
+                  - button "Förhandsgranska kvitto eaed2455-c6c2-48c6-8a28-8fa249214382" [ref=e274] [cursor=pointer]:
+                    - generic [ref=e275] [cursor=pointer]: Ingen bild
+                - cell "2025-09-07 2025-09-07T19:33:00" [ref=e276]:
+                  - generic [ref=e277]: 2025-09-07
+                  - generic [ref=e278]: 2025-09-07T19:33:00
+                - cell "Okänt bolag" [ref=e279]:
+                  - generic [ref=e280]: Okänt bolag
+                - cell "-" [ref=e281]
+                - cell "-" [ref=e282]
+                - cell "Manuell kontroll" [ref=e283]:
+                  - generic [ref=e284]: Manuell kontroll
+                - 'cell "photo_68bdc1cc97f643.62743853.jpg Taggar: 2" [ref=e285]':
+                  - generic [ref=e287]: "Taggar: 2"
+                - cell "Plats Ladda ned" [ref=e288]:
+                  - generic [ref=e289]:
+                    - button "Plats" [ref=e290] [cursor=pointer]:
+                      - img [ref=e291] [cursor=pointer]
+                      - text: Plats
+                    - button "Ladda ned" [ref=e294] [cursor=pointer]:
+                      - img [ref=e295] [cursor=pointer]
+                      - text: Ladda ned
+              - 'row "Förhandsgranska kvitto 4b396afc-0e9b-4021-ad41-8119651bed92 2025-09-01 2025-09-01T19:00:59 Okänt bolag - - Manuell kontroll photo_68b5d14befd6b8.95349031.jpg Taggar: 2 Plats Ladda ned" [ref=e298]':
+                - cell "Förhandsgranska kvitto 4b396afc-0e9b-4021-ad41-8119651bed92" [ref=e299]:
+                  - button "Förhandsgranska kvitto 4b396afc-0e9b-4021-ad41-8119651bed92" [ref=e300] [cursor=pointer]:
+                    - generic [ref=e301] [cursor=pointer]: Ingen bild
+                - cell "2025-09-01 2025-09-01T19:00:59" [ref=e302]:
+                  - generic [ref=e303]: 2025-09-01
+                  - generic [ref=e304]: 2025-09-01T19:00:59
+                - cell "Okänt bolag" [ref=e305]:
+                  - generic [ref=e306]: Okänt bolag
+                - cell "-" [ref=e307]
+                - cell "-" [ref=e308]
+                - cell "Manuell kontroll" [ref=e309]:
+                  - generic [ref=e310]: Manuell kontroll
+                - 'cell "photo_68b5d14befd6b8.95349031.jpg Taggar: 2" [ref=e311]':
+                  - generic [ref=e313]: "Taggar: 2"
+                - cell "Plats Ladda ned" [ref=e314]:
+                  - generic [ref=e315]:
+                    - button "Plats" [ref=e316] [cursor=pointer]:
+                      - img [ref=e317] [cursor=pointer]
+                      - text: Plats
+                    - button "Ladda ned" [ref=e320] [cursor=pointer]:
+                      - img [ref=e321] [cursor=pointer]
+                      - text: Ladda ned
+              - 'row "Förhandsgranska kvitto 9a31adf3-bfb6-4c47-870d-9da6a7054a01 2025-08-31 2025-08-31T21:22:09 Okänt bolag - - Manuell kontroll photo_68b4a0e12436a2.02743784.jpg Taggar: 9 Plats Ladda ned" [ref=e324]':
+                - cell "Förhandsgranska kvitto 9a31adf3-bfb6-4c47-870d-9da6a7054a01" [ref=e325]:
+                  - button "Förhandsgranska kvitto 9a31adf3-bfb6-4c47-870d-9da6a7054a01" [ref=e326] [cursor=pointer]:
+                    - generic [ref=e327] [cursor=pointer]: Ingen bild
+                - cell "2025-08-31 2025-08-31T21:22:09" [ref=e328]:
+                  - generic [ref=e329]: 2025-08-31
+                  - generic [ref=e330]: 2025-08-31T21:22:09
+                - cell "Okänt bolag" [ref=e331]:
+                  - generic [ref=e332]: Okänt bolag
+                - cell "-" [ref=e333]
+                - cell "-" [ref=e334]
+                - cell "Manuell kontroll" [ref=e335]:
+                  - generic [ref=e336]: Manuell kontroll
+                - 'cell "photo_68b4a0e12436a2.02743784.jpg Taggar: 9" [ref=e337]':
+                  - generic [ref=e339]: "Taggar: 9"
+                - cell "Plats Ladda ned" [ref=e340]:
+                  - generic [ref=e341]:
+                    - button "Plats" [ref=e342] [cursor=pointer]:
+                      - img [ref=e343] [cursor=pointer]
+                      - text: Plats
+                    - button "Ladda ned" [ref=e346] [cursor=pointer]:
+                      - img [ref=e347] [cursor=pointer]
+                      - text: Ladda ned
+        - generic [ref=e350]:
+          - generic [ref=e352]:
+            - generic [ref=e353]:
+              - generic [ref=e354]: "9"
+              - generic [ref=e355]: Totalt antal kvitton
+            - img [ref=e356]
+          - generic [ref=e360]:
+            - generic [ref=e361]:
+              - generic [ref=e362]: "0"
+              - generic [ref=e363]: Godkända kvitton
+            - img [ref=e364]
+          - generic [ref=e368]:
+            - generic [ref=e369]:
+              - generic [ref=e370]: 0,00 kr
+              - generic [ref=e371]: Total summa
+            - img [ref=e372]
+        - dialog "Förhandsgranska kvitto 8edf2571-8c53-423a-b178-e31057147696" [ref=e374]:
+          - generic [ref=e375]:
+            - generic [ref=e376]:
+              - heading "Förhandsgranskning" [level=3] [ref=e377]
+              - button "Stäng förhandsgranskning" [ref=e378] [cursor=pointer]:
+                - img [ref=e379] [cursor=pointer]
+            - generic [ref=e385]: Laddar bild...
+            - generic [ref=e386]:
+              - button "Ladda ned original" [disabled] [ref=e387]:
+                - img [ref=e388]
+                - text: Ladda ned original
+              - button "Stäng" [ref=e391] [cursor=pointer]
+```

@@ -53,7 +53,8 @@ const initialPreviewState = {
   imageUrl: null,
   loading: false,
   error: null,
-  revokeOnClose: false
+  revokeOnClose: false,
+  cachedImageUrl: null
 }
 
 function formatCurrency(value) {
@@ -318,10 +319,11 @@ function usePreviewImage({ previewUrl, receiptId }) {
   React.useEffect(() => {
     let cancelled = false;
     let objectUrl = null;
-    // Only use original image endpoint, no preview
     const sources = [];
     if (receiptId) {
-      sources.push(`/ai/api/receipts/${receiptId}/image`);
+      const base = '/ai/api/receipts/' + receiptId + '/image';
+      sources.push(base);
+      sources.push(base + '?size=raw');
     }
 
     if (!sources.length) {
@@ -625,6 +627,52 @@ function MapModal({ open, receipt, onClose }) {
 
 
 function PreviewModal({ previewState, onClose, onDownload }) {
+  const [ocrBoxes, setOcrBoxes] = React.useState([]);
+  const [imageLoaded, setImageLoaded] = React.useState(false);
+
+  // Reset image loaded state when receipt changes
+  React.useEffect(() => {
+    setImageLoaded(false);
+  }, [previewState.receipt?.id]);
+
+  // Fetch OCR box data when modal opens and image is ready
+  React.useEffect(() => {
+    if (!previewState.receipt || !previewState.imageUrl) {
+      setOcrBoxes([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    const fetchOcrBoxes = async () => {
+      try {
+        const res = await api.fetch(`/ai/api/receipts/${previewState.receipt.id}/ocr/boxes`);
+        if (!res.ok) {
+          console.warn(`Could not fetch OCR boxes: HTTP ${res.status}`);
+          return;
+        }
+        const data = await res.json();
+        if (!cancelled) {
+          if (Array.isArray(data)) {
+            setOcrBoxes(data);
+          } else {
+            console.warn('OCR boxes response is not an array:', data);
+            setOcrBoxes([]);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch OCR boxes:', error);
+        setOcrBoxes([]);
+      }
+    };
+
+    fetchOcrBoxes();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [previewState.receipt?.id, previewState.imageUrl]);
+
   if (!previewState.receipt) {
     return null;
   }
@@ -651,11 +699,71 @@ function PreviewModal({ previewState, onClose, onDownload }) {
               <span>Laddar bild...</span>
             </div>
           ) : previewState.imageUrl ? (
-            <img
-              src={previewState.imageUrl}
-              alt={`Förhandsgranskning av kvitto ${previewState.receipt.id}`}
-              className="preview-image"
-            />
+            <div className="preview-image-wrapper">
+                <div
+                  className="preview-image-container"
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    backgroundImage: `url(${previewState.imageUrl})`,
+                    backgroundSize: 'contain',
+                    backgroundRepeat: 'no-repeat',
+                    backgroundPosition: 'center'
+                  }}
+                  onLoad={() => {
+                    setImageLoaded(true);
+                  }}
+                >
+                  <img
+                    src={previewState.imageUrl}
+                    alt={'Förhandsgranskning av kvitto ' + previewState.receipt.id}
+                    style={{ display: 'none' }}
+                    onLoad={() => {
+                      setImageLoaded(true);
+                    }}
+                  />
+                </div>
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    pointerEvents: 'none'
+                  }}
+                >
+                  {imageLoaded && ocrBoxes && ocrBoxes.length > 0 && (
+                    <>
+                      {ocrBoxes.map((box, index) => {
+                        if (!box || typeof box.x !== 'number' || typeof box.y !== 'number' ||
+                            typeof box.w !== 'number' || typeof box.h !== 'number') {
+                          console.warn('Invalid OCR box data at index', index, ':', box);
+                          return null;
+                        }
+                        return (
+                          <div
+                            key={index}
+                            style={{
+                              position: 'absolute',
+                              left: (box.x * 100) + '%',
+                              top: (box.y * 100) + '%',
+                              width: (box.w * 100) + '%',
+                              height: (box.h * 100) + '%',
+                              backgroundColor: 'rgba(0, 123, 255, 0.2)',
+                              border: '2px solid rgba(0, 123, 255, 0.8)',
+                              borderRadius: '2px',
+                              boxShadow: '0 0 4px rgba(0, 123, 255, 0.5)',
+                              zIndex: 10
+                            }}
+                            title={box.field || ''}
+                          />
+                        );
+                      })}
+                    </>
+                  )}
+                </div>
+            </div>
           ) : (
             <div className="preview-missing">{previewState.error || 'Ingen bild tillgänglig'}</div>
           )}
@@ -880,10 +988,11 @@ export default function Receipts() {
       }
       return {
         receipt,
-        imageUrl: cachedSrc,
-        loading: !cachedSrc,
+        imageUrl: null, // Start with null to ensure loading effect triggers
+        loading: !cachedSrc, // Only load if we don't have a cached image
         error: hadError ? 'Kunde inte ladda förhandsgranskning' : null,
-        revokeOnClose: false
+        revokeOnClose: false,
+        cachedImageUrl: cachedSrc // Store cached image separately
       };
     });
   };
@@ -893,7 +1002,7 @@ export default function Receipts() {
       return;
     }
     try {
-      const res = await api.fetch(`/ai/api/receipts/${receipt.id}/image`);
+      const res = await api.fetch('/ai/api/receipts/' + receipt.id + '/image');
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
@@ -926,7 +1035,8 @@ export default function Receipts() {
         imageUrl: null,
         loading: false,
         error: null,
-        revokeOnClose: false
+        revokeOnClose: false,
+        cachedImageUrl: null
       };
     });
   };
@@ -942,15 +1052,34 @@ export default function Receipts() {
   };
 
   React.useEffect(() => {
-    if (!previewState.receipt || !previewState.loading) {
+    if (!previewState.receipt) {
       return;
     }
+
+    if (previewState.cachedImageUrl) {
+      setPreviewState((prev) => ({
+        ...prev,
+        imageUrl: prev.cachedImageUrl,
+        loading: false,
+        error: null,
+        revokeOnClose: false
+      }));
+      return;
+    }
+
+    if (!previewState.loading) {
+      return;
+    }
+
     let cancelled = false;
     let objectUrl = null;
     const { receipt } = previewState;
     const cacheBuster = Date.now();
-    // Only use original image endpoint
-    const endpoints = [`/ai/api/receipts/${receipt.id}/image?cb=${cacheBuster}`];
+    const base = '/ai/api/receipts/' + receipt.id + '/image';
+    const endpoints = [
+      base + '?cb=' + cacheBuster,
+      base + '?size=raw&cb=' + cacheBuster
+    ];
 
     const loadImage = async () => {
       for (const endpoint of endpoints) {
@@ -997,7 +1126,7 @@ export default function Receipts() {
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [previewState.receipt, previewState.loading]);
+  }, [previewState.receipt, previewState.loading, previewState.cachedImageUrl]);
 
   const dismissBanner = () => setBanner(null)
 

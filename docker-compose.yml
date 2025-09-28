@@ -40,7 +40,10 @@ services:
       context: .
       dockerfile: ./backend/Dockerfile
     image: mind2-ai-api:dev # Use the same image as the api
-    command: ["celery", "-A", "services.tasks.celery_app", "worker", "--loglevel=INFO"]
+    command: ["celery", "-A", "services.tasks.celery_app", "worker", "--loglevel=INFO", "--concurrency=4", "--soft-time-limit=240", "--time-limit=300"]
+    entrypoint: []
+    volumes:
+      - ./storage:/data/storage
     environment:
       - PYTHONPATH=/app
       - DB_HOST=mysql
@@ -50,6 +53,11 @@ services:
       - DB_PASS=${DB_PASS}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - STORAGE_DIR=/data/storage
+      - ENABLE_REAL_OCR=${ENABLE_REAL_OCR}
+      - OCR_LANG=${OCR_LANG}
+      - OCR_USE_ANGLE_CLS=${OCR_USE_ANGLE_CLS}
+      - OCR_SHOW_LOG=${OCR_SHOW_LOG}
     depends_on: [redis]
     networks: [main]
     profiles: [main]

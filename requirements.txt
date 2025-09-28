@@ -13,3 +13,7 @@ isort
 flake8
 Pillow
 gunicorn
+# Use headless OpenCV to avoid OpenGL dependencies
+opencv-python-headless==4.10.0.84
+paddlepaddle
+paddleocr

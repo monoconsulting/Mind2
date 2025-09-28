@@ -262,8 +262,6 @@ def list_receipts() -> Any:
                     net_value = float(net) if net is not None else None
                     gross_value = float(gross) if gross is not None else None
                     line_items = _count_line_items(rid)
-                    preview_path = _ensure_preview(rid)
-                    preview_url = f"/ai/api/receipts/{rid}/preview" if preview_path else None
                     items.append(
                         {
                             "id": rid,
@@ -278,7 +276,6 @@ def list_receipts() -> Any:
                             "status": status,
                             "submitted_by": submitted_by,
                             "line_item_count": line_items,
-                            "preview_url": preview_url,
                             "tags": [t for t in (tag_csv or "").split(",") if t],
                         }
                     )
@@ -299,7 +296,7 @@ def get_receipt(rid: str) -> Any:
                 cur.execute(
                     (
                         "SELECT id, merchant_name, orgnr, purchase_datetime, gross_amount, "
-                        "net_amount, ai_status, ai_confidence FROM unified_files WHERE id=%s"
+                        "net_amount, ai_status, ai_confidence, ocr_raw FROM unified_files WHERE id=%s"
                     ),
                     (rid,),
                 )
@@ -314,6 +311,7 @@ def get_receipt(rid: str) -> Any:
                         net,
                         ai_status,
                         ai_confidence,
+                        ocr_raw,
                     ) = row
                     return (
                         jsonify(
@@ -328,11 +326,13 @@ def get_receipt(rid: str) -> Any:
                                 "net_amount": (float(net) if net is not None else None),
                                 "ai_status": ai_status,
                                 "ai_confidence": ai_confidence,
+                                "ocr_raw": ocr_raw,
                             }
                         ),
                         200,
                     )
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error in get_receipt: {e}")
             pass
     # Placeholder minimal response if not found/DB error
     return jsonify({"id": rid, "status": "Placeholder"}), 200
@@ -447,8 +447,8 @@ def get_receipt_image(rid: str):
             return jsonify({"error": "no_image"}), 404
 
         quality = (request.args.get("quality") or "normal").lower()
-        size = (request.args.get("size") or "normal").lower()
-        rotate = (request.args.get("rotate") or "auto").lower()
+        size_param = (request.args.get("size") or "original").lower()
+        rotate_param = (request.args.get("rotate") or "auto").lower()
 
         if Image is None:
             return send_file(str(source))
@@ -457,7 +457,6 @@ def get_receipt_image(rid: str):
         from PIL import ImageOps
 
         with Image.open(source) as img:  # type: ignore[attr-defined]
-            # Only handle EXIF rotation, no forced rotation
             try:
                 img = ImageOps.exif_transpose(img)
             except Exception:
@@ -466,26 +465,39 @@ def get_receipt_image(rid: str):
             resample_attr = getattr(Image, "Resampling", None)
             resample_method = getattr(resample_attr, "LANCZOS", getattr(Image, "LANCZOS", Image.BICUBIC))  # type: ignore[arg-type]
 
-            target_limit = None
-            if size in {"preview", "thumbnail", "thumb"}:
-                target_limit = 720
-            elif size.startswith("max:"):
-                try:
-                    target_limit = int(size.split(":", 1)[1])
-                except (TypeError, ValueError):
-                    target_limit = None
-            else:
-                try:
-                    parsed = int(size)
-                    if parsed > 0:
-                        target_limit = parsed
-                except (TypeError, ValueError):
-                    target_limit = None
+            force_portrait = rotate_param == "portrait"
+            force_landscape = rotate_param == "landscape"
+            skip_resize = size_param in {"original", "full", "raw", "normal"}
 
-            if target_limit:
-                longest_side = max(img.size)
-                if longest_side > target_limit:
-                    img.thumbnail((target_limit, target_limit), resample=resample_method)
+            if force_portrait and img.width > img.height:
+                img = img.rotate(-90, expand=True)
+            elif force_landscape and img.height > img.width:
+                img = img.rotate(90, expand=True)
+
+            if not skip_resize:
+                target_limit = None
+                if size_param in {"preview", "thumbnail", "thumb"}:
+                    target_limit = 720
+                elif size_param.startswith("max:"):
+                    try:
+                        target_limit = int(size_param.split(":", 1)[1])
+                    except (TypeError, ValueError):
+                        target_limit = None
+                else:
+                    try:
+                        parsed = int(size_param)
+                        if parsed > 0:
+                            target_limit = parsed
+                    except (TypeError, ValueError):
+                        target_limit = None
+
+                if target_limit:
+                    longest_side = max(img.size)
+                    if longest_side > target_limit:
+                        img.thumbnail((target_limit, target_limit), resample=resample_method)
+
+            if rotate_param == "portrait" and img.width > img.height:
+                img = img.rotate(-90, expand=True)
 
             if img.mode == "RGBA":
                 background = Image.new("RGB", img.size, (255, 255, 255))
