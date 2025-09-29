@@ -2,27 +2,43 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Literal
-from pydantic import BaseModel, Field, validator
+
+from pydantic import BaseModel, Field
 
 
 class UnifiedFileBase(BaseModel):
-    """Base model for unified_files table."""
+    """Base model mirroring the unified_files table."""
+
     file_type: Literal["receipt", "invoice", "other", "Manual Review"]
     orgnr: Optional[str] = Field(None, max_length=32, description="Company Organization Number")
-    payment_type: Literal["cash", "card"]
+    payment_type: Optional[Literal["cash", "card"]] = Field(
+        None, description='Cash vs corporate card purchase classification'
+    )
     purchase_datetime: Optional[datetime] = None
-    expense_type: Literal["personal", "corporate"]
+    expense_type: Optional[Literal["personal", "corporate"]] = None
     gross_amount_original: Optional[Decimal] = Field(None, decimal_places=2)
     net_amount_original: Optional[Decimal] = Field(None, decimal_places=2)
-    exchange_rate: Decimal = Field(default=Decimal("1.00"))
-    currency: str = Field(default="SEK", max_length=222)
-    gross_amount_sek: Decimal = Field(decimal_places=0)
-    net_amount_sek: Decimal = Field(decimal_places=0)
-    company_id: int = Field(description="Reference to companies.id")
-    receipt_number: str = Field(max_length=255)
+    exchange_rate: Optional[Decimal] = Field(None, decimal_places=6)
+    currency: Optional[str] = Field("SEK", max_length=222)
+    gross_amount_sek: Optional[Decimal] = Field(None, decimal_places=2)
+    net_amount_sek: Optional[Decimal] = Field(None, decimal_places=2)
+    ai_status: Optional[str] = Field(None, max_length=32)
+    ai_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    mime_type: Optional[str] = Field(None, max_length=222)
+    ocr_raw: Optional[str] = None
+    company_id: Optional[int] = Field(None, description="Reference to companies.id")
+    receipt_number: Optional[str] = Field(None, max_length=255)
+    file_creation_timestamp: Optional[datetime] = None
     submitted_by: Optional[str] = Field(None, max_length=64)
+    original_file_id: Optional[str] = Field(None, max_length=36)
+    original_file_name: Optional[str] = Field(None, max_length=222)
+    original_file_size: Optional[int] = None
+    file_suffix: Optional[str] = Field(None, max_length=32)
+    file_category: Optional[int] = None
     original_filename: Optional[str] = Field(None, max_length=255)
+    approved_by: Optional[int] = None
     other_data: Optional[str] = Field(None, description="Additional data from receipt")
+    credit_card_match: bool = False
 
 
 class UnifiedFileAIStatus(BaseModel):
@@ -49,13 +65,14 @@ class ReceiptItem(BaseModel):
 
 class Company(BaseModel):
     """Model for company information."""
+
     name: str = Field(max_length=234)
     orgnr: str = Field(max_length=22, description="Organization number")
-    address: str = Field(max_length=222)
+    address: Optional[str] = Field(None, max_length=222)
     address2: Optional[str] = Field(None, max_length=222)
-    zip: str = Field(max_length=123)
-    city: str = Field(max_length=234)
-    country: str = Field(max_length=234)
+    zip: Optional[str] = Field(None, max_length=123)
+    city: Optional[str] = Field(None, max_length=234)
+    country: Optional[str] = Field(None, max_length=234)
     phone: Optional[str] = Field(None, max_length=234)
     www: Optional[str] = Field(None, max_length=234)
 
@@ -126,6 +143,7 @@ class ExpenseClassificationResponse(BaseModel):
     expense_type: Literal["personal", "corporate"]
     confidence: float = Field(ge=0.0, le=1.0)
     card_identifier: Optional[str] = None
+    reasoning: Optional[str] = None
 
 
 class DataExtractionRequest(BaseModel):
@@ -146,16 +164,14 @@ class DataExtractionResponse(BaseModel):
 
 
 class AccountingProposal(BaseModel):
-    """Model for AI accounting proposals."""
-    file_id: str
-    account_number: str = Field(description="Account from chart_of_accounts")
-    account_name: str
-    debit_amount: Optional[Decimal] = Field(None, decimal_places=2)
-    credit_amount: Optional[Decimal] = Field(None, decimal_places=2)
-    description: str
-    vat_code: Optional[str] = None
-    cost_center: Optional[str] = None
-    project_code: Optional[str] = None
+    """Model for AI generated accounting proposals."""
+
+    receipt_id: str
+    account_code: str = Field(max_length=32, description="Account from chart_of_accounts")
+    debit: Decimal = Field(decimal_places=2, default=Decimal("0.00"))
+    credit: Decimal = Field(decimal_places=2, default=Decimal("0.00"))
+    vat_rate: Optional[Decimal] = Field(None, decimal_places=2)
+    notes: Optional[str] = Field(None, max_length=255)
 
 
 class AccountingClassificationRequest(BaseModel):
