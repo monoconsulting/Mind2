@@ -40,5 +40,23 @@
 ## Fetcher (`/fetcher`)
 - Endpoints for fetching data from external sources. Specific routes are defined in `api/fetcher.py`.
 
+## AI Processing (`/ai`)
+### Document Classification
+- `POST /ai/classify/document`: AI1 - Classifies document type (receipt, invoice, other, Manual Review).
+- `POST /ai/classify/expense`: AI2 - Classifies expense type (personal or corporate).
+
+### Data Extraction
+- `POST /ai/extract`: AI3 - Extracts structured data from receipt/invoice to database tables.
+
+### Accounting
+- `POST /ai/classify/accounting`: AI4 - Assigns accounting entries according to BAS-2025 chart of accounts.
+
+### Credit Card Reconciliation
+- `POST /ai/match/creditcard`: AI5 - Matches receipts with credit card invoice line items.
+
+### Batch Processing & Monitoring
+- `POST /ai/process/batch`: Processes multiple files through the AI pipeline in sequence.
+- `GET /ai/status/{file_id}`: Retrieves AI processing status for a specific file.
+
 ## Admin
 - `GET /admin/ping`: A protected endpoint to check for admin authentication.
