@@ -5,14 +5,15 @@ export default defineConfig({
   timeout: 60_000,
   fullyParallel: false,
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: 'http://localhost:5169',
+    viewport: { width: 1900, height: 1200 },
+    video: 'on',
+    screenshot: 'on',
     trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
   },
   webServer: {
     command: 'npm run dev',
-    url: 'http://localhost:5173',
+    url: 'http://localhost:5169',
     reuseExistingServer: true,
   },
   projects: [

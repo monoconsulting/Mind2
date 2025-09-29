@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Testresultat - Mind2 System</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Testresultat</h1>
+            <p>Omfattande översikt av alla genomförda tester i Mind2-systemet</p>
+        </div>
+    </header>
+
+    <nav>
+        <div class="container">
+            <ul>
+                <li><a href="index.html">Hem</a></li>
+                <li><a href="test-results.html">Testresultat</a></li>
+                <li><a href="test/">Testfiler</a></li>
+                <li><a href="test-results/">Testrapporter</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="container">
+        <main>
+            <section class="card">
+                <h2>Teststatistik</h2>
+                <div class="system-info">
+                    <div class="info-item">
+                        <h3>Totala Tester</h3>
+                        <p id="total-tests-count">0</p>
+                    </div>
+                    <div class="info-item">
+                        <h3>Framgångsrika Tester</h3>
+                        <p id="passed-tests-count">0</p>
+                    </div>
+                    <div class="info-item">
+                        <h3>Misslyckade Tester</h3>
+                        <p id="failed-tests-count">0</p>
+                    </div>
+                    <div class="info-item">
+                        <h3>Genomsnittlig Framgång</h3>
+                        <p id="average-success-rate">0%</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Filter och Sök</h2>
+                <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem;">
+                    <input type="text" id="search-input" placeholder="Sök efter testnamn..." style="padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; flex: 1; min-width: 200px;">
+                    <select id="status-filter" style="padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+                        <option value="">Alla statusar</option>
+                        <option value="success">Framgångsrika</option>
+                        <option value="warning">Delvis framgångsrika</option>
+                        <option value="error">Misslyckade</option>
+                    </select>
+                    <button onclick="clearFilters()" class="btn">Rensa Filter</button>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Testresultat</h2>
+                <div style="overflow-x: auto;">
+                    <table id="test-results-table">
+                        <thead>
+                            <tr>
+                                <th>Datum & Tid</th>
+                                <th>Testfilnamn</th>
+                                <th>Beskrivning</th>
+                                <th>Resultat %</th>
+                                <th>Poäng</th>
+                                <th>Status</th>
+                                <th>Rapport</th>
+                                <th>Media</th>
+                                <th>Testfil</th>
+                            </tr>
+                        </thead>
+                        <tbody id="test-results-body">
+                            <!-- Test results will be populated here by JavaScript -->
+                            <tr>
+                                <td colspan="9" style="text-align: center; padding: 2rem; color: #7f8c8d;">
+                                    Inga testresultat tillgängliga än. Testresultat kommer att visas här när tester har körts.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Instruktioner för Agenter</h2>
+                <p>För att lägga till testresultat i denna vy, se <a href="TEST_AGENT_INSTRUCTIONS.md">TEST_AGENT_INSTRUCTIONS.md</a> för detaljerade instruktioner.</p>
+                <div style="margin-top: 1rem;">
+                    <a href="TEST_AGENT_INSTRUCTIONS.md" class="btn">Visa Agent-instruktioner</a>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 Mind2 System Documentation. Genererad automatiskt.</p>
+        </div>
+    </footer>
+
+    <script src="js/test-results.js"></script>
+</body>
+</html>

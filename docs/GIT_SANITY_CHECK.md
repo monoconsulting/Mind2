@@ -96,16 +96,6 @@ This provides a good overview. Local branches that no longer exist on the server
 
 
 
-### Docker Compose profiles note
-
-When validating compose with `docker compose config`, profiles are ignored by default. To view effective services for the `main` profile, use:
-
-```powershell
-docker compose --profile main config
-```
-
-This avoids seeing an empty services map during config rendering.
-
 ### Summary of a "perfect" repo:
 
 

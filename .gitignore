@@ -33,3 +33,5 @@ yarn.lock
 
 # Old/backup directories
 old/
+nul
+**/test-results/

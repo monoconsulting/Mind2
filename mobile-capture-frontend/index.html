@@ -4,34 +4,38 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Mind Receipt Capture</title>
+    <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <div id="app">
         <header class="header">
-            <h1>Receipt Capture</h1>
+            <h1>Mind Receipt Capture</h1>
+            <p class="subtitle">Capture receipts for expense management</p>
         </header>
         
         <main class="main">
             <!-- Main Capture Screen -->
             <section id="capture-screen" class="screen active">
-                <div class="capture-actions">
-                    <button id="btn-camera" class="btn btn-primary">📷 Take Photo</button>
-                    <button id="btn-gallery" class="btn btn-secondary">🖼️ Gallery</button>
-                    <input type="file" id="file-picker" accept="image/*" multiple style="display:none;">
-                </div>
-                
-                <video id="preview-video" autoplay playsinline style="display:none;"></video>
-                <canvas id="preview-canvas" style="display:none;"></canvas>
-                
-                <div id="photo-queue" class="photo-queue">
-                    <!-- Photos will be added here -->
-                </div>
-                
-                <div class="actions" id="photo-actions" style="display:none;">
-                    <button id="btn-retake" class="btn btn-secondary">Re-take</button>
-                    <button id="btn-add-page" class="btn btn-secondary">Add Page</button>
-                    <button id="btn-finished" class="btn btn-primary">Finished</button>
+                <div class="card">
+                    <div class="capture-actions">
+                        <button id="btn-camera" class="btn btn-primary">📷 Take Photo</button>
+                        <button id="btn-gallery" class="btn btn-secondary">🖼️ Gallery</button>
+                        <input type="file" id="file-picker" accept="image/*" multiple style="display:none;">
+                    </div>
+
+                    <video id="preview-video" autoplay playsinline style="display:none;"></video>
+                    <canvas id="preview-canvas" style="display:none;"></canvas>
+
+                    <div id="photo-queue" class="photo-queue">
+                        <!-- Photos will be added here -->
+                    </div>
+
+                    <div class="actions" id="photo-actions" style="display:none;">
+                        <button id="btn-retake" class="btn btn-secondary">Re-take</button>
+                        <button id="btn-add-page" class="btn btn-secondary">Add Page</button>
+                        <button id="btn-finished" class="btn btn-primary">Finished</button>
+                    </div>
                 </div>
             </section>
 
@@ -63,10 +67,27 @@
 
             <!-- Success Screen -->
             <section id="success-screen" class="screen">
-                <div class="success-message">
+                <div class="card success-message">
                     <h2>✅ Receipt Submitted</h2>
                     <p>Your receipt has been uploaded successfully and is being processed.</p>
-                    <button id="btn-new-receipt" class="btn btn-primary">Submit Another Receipt</button>
+                    <p class="text-secondary">
+                        📊 AI processing will extract receipt data<br>
+                        ⏱️ Estimated time: 2-3 minutes<br>
+                        📧 You'll be notified when complete
+                    </p>
+                    <button id="btn-new-receipt" class="btn btn-primary btn-large">Submit Another Receipt</button>
+                </div>
+
+                <!-- Help section -->
+                <div class="card help-section">
+                    <h3>📸 Tips for Better Results</h3>
+                    <ul class="tips-list">
+                        <li>📱 Hold your phone steady and ensure good lighting</li>
+                        <li>📄 Capture the entire receipt, including all text</li>
+                        <li>🔄 For long receipts, use multiple photos</li>
+                        <li>🏪 Make sure merchant name and total are clearly visible</li>
+                        <li>📅 Include the date on the receipt</li>
+                    </ul>
                 </div>
             </section>
         </main>

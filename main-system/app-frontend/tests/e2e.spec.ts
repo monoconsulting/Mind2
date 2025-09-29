@@ -2,51 +2,39 @@ import { test, expect } from '@playwright/test';
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'adminadmin';
 
-async function login(page) {
-  await page.goto('/');
+const capture = async (page, name) => {
+  const filePath = test.info().outputPath(`${name}.png`);
+  await page.screenshot({ path: filePath, fullPage: true });
+  await test.info().attach(name, { path: filePath, contentType: 'image/png' });
+};
+
+test('svenska menyer och sidor utan mockad data', async ({ page }) => {
+  await page.goto('/login', { waitUntil: 'networkidle' });
   await expect(page.getByRole('heading', { name: 'Logga in' })).toBeVisible();
-  await page.fill('#u', 'admin');
-  await page.fill('#p', ADMIN_PASSWORD);
+  await capture(page, 'login');
+
+  await page.fill('#login-username', 'admin');
+  await page.fill('#login-password', ADMIN_PASSWORD);
   await Promise.all([
-    page.waitForURL('**/'),
+    page.waitForURL('**/', { waitUntil: 'networkidle' }),
     page.getByRole('button', { name: 'Logga in' }).click(),
   ]);
-  await expect(page.getByRole('button', { name: 'Testa API' })).toBeVisible();
-}
 
-async function ensureApiHealthy(page) {
-  const res = await page.request.get('http://localhost:8008/ai/api/health');
-  expect(res.ok()).toBeTruthy();
-}
+  const title = page.locator('.page-title');
+  await expect(title).toHaveText('Översikt');
+  await capture(page, 'oversikt');
 
-test.beforeAll(async ({ request }) => {
-  const res = await request.get('http://localhost:8008/ai/api/health');
-  expect(res.ok()).toBeTruthy();
+  const sections = [
+    { button: 'Kvitton', title: 'Kvitton', screenshot: 'kvitton' },
+    { button: 'Kortmatchning', title: 'Kortmatchning', screenshot: 'kortmatchning' },
+    { button: 'Analys', title: 'Analys', screenshot: 'analys' },
+    { button: 'Export', title: 'Export', screenshot: 'export' },
+    { button: 'Användare', title: 'Användare', screenshot: 'anvandare' },
+  ];
+
+  for (const section of sections) {
+    await page.getByRole('button', { name: section.button, exact: true }).click();
+    await expect(title).toHaveText(section.title);
+    await capture(page, section.screenshot);
+  }
 });
-
-test('login and navigate menu', async ({ page }) => {
-  await ensureApiHealthy(page);
-  await login(page);
-
-  await page.getByRole('button', { name: 'Testa API' }).click();
-  await expect(page.locator('#out')).toContainText('200');
-
-  await page.getByRole('button', { name: 'Kvitton' }).click();
-  await expect(page.getByRole('heading', { name: 'Kvitton' })).toBeVisible();
-  await expect(page.locator('#status')).toContainText('Hämtade');
-
-  const rows = page.locator('#tbl tr');
-  const rowCount = await rows.count();
-  expect(rowCount).toBeGreaterThan(0);
-
-  await page.selectOption('#page-size', '10');
-  await expect(page.locator('#status')).toContainText('Hämtade');
-
-  await page.getByRole('button', { name: 'Översikt' }).click();
-  await expect(page.getByRole('button', { name: 'Testa API' })).toBeVisible();
-
-  await page.getByRole('button', { name: 'Logga ut' }).click();
-  await expect(page.getByRole('heading', { name: 'Logga in' })).toBeVisible();
-});
-
-

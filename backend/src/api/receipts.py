@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 import json
+import logging
 import os
 from pathlib import Path
 from flask import Blueprint, jsonify, request, send_file
@@ -21,6 +22,8 @@ except Exception:  # pragma: no cover - fallback for early scaffolding
     db_cursor = None  # type: ignore
 
 
+logger = logging.getLogger(__name__)
+
 receipts_bp = Blueprint("receipts", __name__)
 
 
@@ -34,15 +37,17 @@ def _storage_dir() -> Path:
 def _line_items_path(rid: str) -> Path:
     return _storage_dir() / f"{rid}.json"
 
-def _preview_dir() -> Path:
-    base = os.getenv("STORAGE_DIR", "/data/storage")
-    p = Path(base) / "previews"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+# Preview directory removed - using original images only
+# def _preview_dir() -> Path:
+#     base = os.getenv("STORAGE_DIR", "/data/storage")
+#     p = Path(base) / "previews"
+#     p.mkdir(parents=True, exist_ok=True)
+#     return p
 
 
-def _preview_path(rid: str) -> Path:
-    return _preview_dir() / f"{rid}.jpg"
+# Preview path removed - using original images only
+# def _preview_path(rid: str) -> Path:
+#     return _preview_dir() / f"{rid}.jpg"
 
 
 def _find_receipt_image_path(rid: str) -> Path | None:
@@ -58,39 +63,16 @@ def _find_receipt_image_path(rid: str) -> Path | None:
     return None
 
 
-def _generate_preview(rid: str, source: Path, target: Path) -> bool:
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if Image is None:
-            return False
-        with Image.open(source) as img:
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            img.thumbnail((320, 320))
-            img.save(target, "JPEG", quality=85, optimize=True)
-        return True
-    except Exception:
-        try:
-            if target.exists():
-                target.unlink()
-        except Exception:
-            pass
-        return False
+# Preview generation removed - using original images only
+# def _generate_preview(rid: str, source: Path, target: Path) -> bool:
+#     # This function is deprecated - we now use original images only
+#     return False
 
 
-def _ensure_preview(rid: str) -> Path | None:
-    source = _find_receipt_image_path(rid)
-    if source is None:
-        return None
-    target = _preview_path(rid)
-    try:
-        if target.exists() and target.stat().st_mtime >= source.stat().st_mtime:
-            return target
-    except Exception:
-        pass
-    if _generate_preview(rid, source, target):
-        return target
-    return None
+# Preview generation removed - using original images only
+# def _ensure_preview(rid: str) -> Path | None:
+#     # This function is deprecated - we now use original images only
+#     return None
 
 
 def _count_line_items(rid: str) -> int:
@@ -239,14 +221,17 @@ def list_receipts() -> Any:
                 cur.execute(
                     (
                         "SELECT u.id, u.original_filename, u.merchant_name, u.purchase_datetime, u.net_amount, u.gross_amount, u.ai_status, u.submitted_by, "
+                        "u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, "
                         "COALESCE(GROUP_CONCAT(t.tag), '') as tags "
-                        "FROM unified_files u LEFT JOIN file_tags t ON t.file_id=u.id "
+                        "FROM unified_files u "
+                        "LEFT JOIN file_tags t ON t.file_id=u.id "
+                        "LEFT JOIN file_locations fl ON fl.file_id=u.id "
                         + where_sql
-                        + " GROUP BY u.id ORDER BY u.created_at DESC LIMIT %s OFFSET %s"
+                        + " GROUP BY u.id, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc ORDER BY u.created_at DESC LIMIT %s OFFSET %s"
                     ),
                     tuple(params + [page_size, offset]),
                 )
-                for rid, fname, merchant, pdt, net, gross, status, submitted_by, tag_csv in cur.fetchall():
+                for rid, fname, merchant, pdt, net, gross, status, submitted_by, file_creation_ts, lat, lon, acc, tag_csv in cur.fetchall():
                     purchase_iso = pdt.isoformat() if hasattr(pdt, "isoformat") else pdt
                     purchase_date = None
                     if hasattr(pdt, "date"):
@@ -256,11 +241,27 @@ def list_receipts() -> Any:
                             purchase_date = None
                     elif isinstance(pdt, str) and pdt:
                         purchase_date = pdt.split("T")[0]
+
+                    # Format file creation timestamp
+                    file_creation_iso = None
+                    if file_creation_ts:
+                        if hasattr(file_creation_ts, "isoformat"):
+                            file_creation_iso = file_creation_ts.isoformat()
+                        elif isinstance(file_creation_ts, str):
+                            file_creation_iso = file_creation_ts
+
+                    # Build location object if coordinates exist
+                    location = None
+                    if lat is not None and lon is not None:
+                        location = {
+                            "lat": float(lat),
+                            "lon": float(lon),
+                            "accuracy": float(acc) if acc is not None else None
+                        }
+
                     net_value = float(net) if net is not None else None
                     gross_value = float(gross) if gross is not None else None
                     line_items = _count_line_items(rid)
-                    preview_path = _ensure_preview(rid)
-                    preview_url = f"/ai/api/receipts/{rid}/preview" if preview_path else None
                     items.append(
                         {
                             "id": rid,
@@ -268,16 +269,17 @@ def list_receipts() -> Any:
                             "merchant": merchant,
                             "purchase_datetime": purchase_iso,
                             "purchase_date": purchase_date,
+                            "file_creation_timestamp": file_creation_iso,
+                            "location": location,
                             "net_amount": net_value,
                             "gross_amount": gross_value,
                             "status": status,
                             "submitted_by": submitted_by,
                             "line_item_count": line_items,
-                            "preview_url": preview_url,
                             "tags": [t for t in (tag_csv or "").split(",") if t],
                         }
                     )
-        except Exception:
+        except Exception as e:
             # Fallback to empty but still 200
             items = []
             total = 0
@@ -294,7 +296,7 @@ def get_receipt(rid: str) -> Any:
                 cur.execute(
                     (
                         "SELECT id, merchant_name, orgnr, purchase_datetime, gross_amount, "
-                        "net_amount, ai_status, ai_confidence FROM unified_files WHERE id=%s"
+                        "net_amount, ai_status, ai_confidence, ocr_raw FROM unified_files WHERE id=%s"
                     ),
                     (rid,),
                 )
@@ -309,6 +311,7 @@ def get_receipt(rid: str) -> Any:
                         net,
                         ai_status,
                         ai_confidence,
+                        ocr_raw,
                     ) = row
                     return (
                         jsonify(
@@ -323,11 +326,13 @@ def get_receipt(rid: str) -> Any:
                                 "net_amount": (float(net) if net is not None else None),
                                 "ai_status": ai_status,
                                 "ai_confidence": ai_confidence,
+                                "ocr_raw": ocr_raw,
                             }
                         ),
                         200,
                     )
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error in get_receipt: {e}")
             pass
     # Placeholder minimal response if not found/DB error
     return jsonify({"id": rid, "status": "Placeholder"}), 200
@@ -440,20 +445,86 @@ def get_receipt_image(rid: str):
         source = _find_receipt_image_path(rid)
         if source is None:
             return jsonify({"error": "no_image"}), 404
-        return send_file(str(source), mimetype="image/jpeg")
+
+        quality = (request.args.get("quality") or "normal").lower()
+        size_param = (request.args.get("size") or "original").lower()
+        rotate_param = (request.args.get("rotate") or "auto").lower()
+
+        if Image is None:
+            return send_file(str(source))
+
+        from io import BytesIO
+        from PIL import ImageOps
+
+        with Image.open(source) as img:  # type: ignore[attr-defined]
+            try:
+                img = ImageOps.exif_transpose(img)
+            except Exception:
+                pass
+
+            resample_attr = getattr(Image, "Resampling", None)
+            resample_method = getattr(resample_attr, "LANCZOS", getattr(Image, "LANCZOS", Image.BICUBIC))  # type: ignore[arg-type]
+
+            force_portrait = rotate_param == "portrait"
+            force_landscape = rotate_param == "landscape"
+            skip_resize = size_param in {"original", "full", "raw", "normal"}
+
+            if force_portrait and img.width > img.height:
+                img = img.rotate(-90, expand=True)
+            elif force_landscape and img.height > img.width:
+                img = img.rotate(90, expand=True)
+
+            if not skip_resize:
+                target_limit = None
+                if size_param in {"preview", "thumbnail", "thumb"}:
+                    target_limit = 720
+                elif size_param.startswith("max:"):
+                    try:
+                        target_limit = int(size_param.split(":", 1)[1])
+                    except (TypeError, ValueError):
+                        target_limit = None
+                else:
+                    try:
+                        parsed = int(size_param)
+                        if parsed > 0:
+                            target_limit = parsed
+                    except (TypeError, ValueError):
+                        target_limit = None
+
+                if target_limit:
+                    longest_side = max(img.size)
+                    if longest_side > target_limit:
+                        img.thumbnail((target_limit, target_limit), resample=resample_method)
+
+            if rotate_param == "portrait" and img.width > img.height:
+                img = img.rotate(-90, expand=True)
+
+            if img.mode == "RGBA":
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[3])
+                img = background
+            elif img.mode not in {"RGB"}:
+                img = img.convert("RGB")
+
+            output = BytesIO()
+            save_kwargs = {"optimize": True, "quality": 95}
+            if quality == "high":
+                save_kwargs.update({"quality": 100, "subsampling": 0, "optimize": False})
+            elif quality == "low":
+                save_kwargs["quality"] = 80
+
+            img.save(output, "JPEG", **save_kwargs)
+            output.seek(0)
+            return send_file(output, mimetype="image/jpeg")
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-@receipts_bp.get("/receipts/<rid>/preview")
-def get_receipt_preview(rid: str):
-    try:
-        preview = _ensure_preview(rid)
-        if preview is None or not preview.exists():
-            return jsonify({"error": "no_preview"}), 404
-        return send_file(str(preview), mimetype="image/jpeg")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+# Preview endpoint removed - using original images only
+# @receipts_bp.get("/receipts/<rid>/preview")
+# def get_receipt_preview(rid: str):
+#     # This endpoint is deprecated - we now use original images only
+#     return jsonify({"error": "preview_disabled"}), 404
 
 
 @receipts_bp.get("/receipts/<rid>/ocr/boxes")
