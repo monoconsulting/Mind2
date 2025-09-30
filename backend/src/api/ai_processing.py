@@ -43,23 +43,14 @@ def classify_document():
         data = request.get_json()
         req = DocumentClassificationRequest(**data)
 
-        # Call AI service for classification
         ai_service = AIService()
         result = ai_service.classify_document(req)
 
-        # Update database with classification
-        with db_cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE unified_files
-                SET file_type = %s,
-                    ai_status = 'processing',
-                    ai_confidence = %s,
-                    updated_at = NOW()
-                WHERE id = %s
-                """,
-                (result.document_type, result.confidence, req.file_id),
-            )
+        _persist_document_classification(
+            file_id=req.file_id,
+            document_type=result.document_type,
+            confidence=result.confidence,
+        )
 
         response = DocumentClassificationResponse(
             file_id=req.file_id,
@@ -86,22 +77,14 @@ def classify_expense():
         data = request.get_json()
         req = ExpenseClassificationRequest(**data)
 
-        # Call AI service for expense classification
         ai_service = AIService()
         result = ai_service.classify_expense(req)
 
-        # Update database
-        with db_cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE unified_files
-                SET expense_type = %s,
-                    ai_confidence = GREATEST(IFNULL(ai_confidence, 0), %s),
-                    updated_at = NOW()
-                WHERE id = %s
-                """,
-                (result.expense_type, result.confidence, req.file_id),
-            )
+        _persist_expense_classification(
+            file_id=req.file_id,
+            expense_type=result.expense_type,
+            confidence=result.confidence,
+        )
 
         response = ExpenseClassificationResponse(
             file_id=req.file_id,
@@ -175,35 +158,11 @@ def classify_accounting():
         ai_service = AIService()
         result = ai_service.classify_accounting(req, chart_of_accounts)
 
-        # Store AI accounting proposals
-        with closing(get_connection()) as conn:
-            cursor = conn.cursor()
-
-            # Delete existing proposals for this receipt
-            cursor.execute(
-                "DELETE FROM ai_accounting_proposals WHERE receipt_id = %s",
-                (req.file_id,),
-            )
-
-            # Insert new proposals
-            for proposal in result.proposals:
-                cursor.execute(
-                    """
-                    INSERT INTO ai_accounting_proposals (
-                        receipt_id, account_code, debit, credit, vat_rate, notes
-                    ) VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        proposal.receipt_id,
-                        proposal.account_code,
-                        proposal.debit,
-                        proposal.credit,
-                        proposal.vat_rate,
-                        proposal.notes,
-                    ),
-                )
-
-            conn.commit()
+        _persist_accounting_proposals(
+            file_id=req.file_id,
+            proposals=result.proposals,
+            confidence=result.confidence,
+        )
 
         response = AccountingClassificationResponse(
             file_id=req.file_id,
@@ -257,6 +216,7 @@ def match_credit_card():
                 req.file_id,
                 result.credit_card_invoice_item_id,
                 req.amount,
+                result.confidence,
             )
 
         response = CreditCardMatchResponse(
@@ -272,6 +232,58 @@ def match_credit_card():
     except Exception as e:
         logger.error(f"Error in credit card matching: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+
+def _persist_document_classification(file_id: str, document_type: str, confidence: float) -> None:
+    """Persist AI1 results and advance unified file status."""
+
+    with closing(get_connection()) as conn:
+        conn.start_transaction()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                UPDATE unified_files
+                SET file_type = %s,
+                    ai_status = %s,
+                    ai_confidence = GREATEST(IFNULL(ai_confidence, 0), %s),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (document_type, "ai1_completed", confidence, file_id),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+
+def _persist_expense_classification(file_id: str, expense_type: str, confidence: float) -> None:
+    """Persist AI2 results and advance unified file status."""
+
+    with closing(get_connection()) as conn:
+        conn.start_transaction()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                UPDATE unified_files
+                SET expense_type = %s,
+                    ai_status = %s,
+                    ai_confidence = GREATEST(IFNULL(ai_confidence, 0), %s),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (expense_type, "ai2_completed", confidence, file_id),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
 
 
 def _persist_extraction_result(file_id: str, result: DataExtractionResponse) -> None:
@@ -341,30 +353,44 @@ def _persist_extraction_result(file_id: str, result: DataExtractionResponse) -> 
             elif name:
                 logger.info("Company orgnr missing for %s – skipping company insert", file_id)
 
+            payment_type = unified.payment_type or "cash"
+            expense_type = unified.expense_type or "personal"
+            currency = (unified.currency or "SEK").upper()
+            exchange_rate = unified.exchange_rate or Decimal("1")
+            gross_amount_sek = unified.gross_amount_sek
+            net_amount_sek = unified.net_amount_sek
+            if gross_amount_sek is None:
+                gross_amount_sek = unified.gross_amount_original if currency == "SEK" else Decimal("0")
+            if net_amount_sek is None:
+                net_amount_sek = unified.net_amount_original if currency == "SEK" else Decimal("0")
+
             updates = {
                 "orgnr": unified.orgnr,
-                "payment_type": unified.payment_type,
+                "payment_type": payment_type,
                 "purchase_datetime": unified.purchase_datetime,
-                "expense_type": unified.expense_type,
+                "expense_type": expense_type,
                 "gross_amount_original": unified.gross_amount_original,
                 "net_amount_original": unified.net_amount_original,
-                "exchange_rate": unified.exchange_rate,
-                "currency": unified.currency,
-                "gross_amount_sek": unified.gross_amount_sek,
-                "net_amount_sek": unified.net_amount_sek,
-                "company_id": company_id,
-                "receipt_number": unified.receipt_number,
-                "other_data": unified.other_data,
+                "exchange_rate": exchange_rate,
+                "currency": currency,
+                "gross_amount_sek": gross_amount_sek,
+                "net_amount_sek": net_amount_sek,
+                "receipt_number": unified.receipt_number or "",
+                "other_data": unified.other_data or "{}",
                 "ocr_raw": unified.ocr_raw or "",
-                "ai_status": 'completed',
-                "ai_confidence": result.confidence,
+                "ai_status": "ai3_completed",
             }
+
+            if company_id is not None:
+                updates["company_id"] = company_id
 
             set_parts: List[str] = []
             params: List[Any] = []
             for column, value in updates.items():
                 set_parts.append(f"{column} = %s")
                 params.append(value)
+            set_parts.append("ai_confidence = GREATEST(IFNULL(ai_confidence, 0), %s)")
+            params.append(result.confidence)
             set_parts.append("updated_at = NOW()")
             params.append(file_id)
 
@@ -411,6 +437,7 @@ def _persist_credit_card_match(
     file_id: str,
     invoice_item_id: int,
     matched_amount: Optional[Decimal],
+    confidence: float,
 ) -> None:
     """Persist the credit card match relation and update unified_files."""
 
@@ -427,8 +454,65 @@ def _persist_credit_card_match(
                 (file_id, invoice_item_id, matched_amount),
             )
             cursor.execute(
-                "UPDATE unified_files SET credit_card_match = 1, updated_at = NOW() WHERE id = %s",
+                """
+                UPDATE unified_files
+                SET credit_card_match = 1,
+                    ai_status = %s,
+                    ai_confidence = GREATEST(IFNULL(ai_confidence, 0), %s),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                ("ai5_completed", confidence, file_id),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+
+def _persist_accounting_proposals(
+    file_id: str,
+    proposals: List[AccountingProposal],
+    confidence: float,
+) -> None:
+    """Persist AI4 proposals atomically and advance status."""
+
+    with closing(get_connection()) as conn:
+        conn.start_transaction()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "DELETE FROM ai_accounting_proposals WHERE receipt_id = %s",
                 (file_id,),
+            )
+            for proposal in proposals:
+                cursor.execute(
+                    """
+                    INSERT INTO ai_accounting_proposals (
+                        receipt_id, account_code, debit, credit, vat_rate, notes
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        proposal.receipt_id,
+                        proposal.account_code,
+                        proposal.debit,
+                        proposal.credit,
+                        proposal.vat_rate,
+                        proposal.notes,
+                    ),
+                )
+
+            cursor.execute(
+                """
+                UPDATE unified_files
+                SET ai_status = %s,
+                    ai_confidence = GREATEST(IFNULL(ai_confidence, 0), %s),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                ("ai4_completed", confidence, file_id),
             )
             conn.commit()
         except Exception:
@@ -636,17 +720,14 @@ def classify_document_internal(req: DocumentClassificationRequest):
     ai_service = AIService()
     result = ai_service.classify_document(req)
 
-    with db_cursor() as cursor:
-        cursor.execute(
-            """
-            UPDATE unified_files
-            SET file_type = %s, ai_confidence = %s, updated_at = NOW()
-            WHERE id = %s
-            """,
-            (result.document_type, result.confidence, req.file_id),
-        )
+    _persist_document_classification(
+        file_id=req.file_id,
+        document_type=result.document_type,
+        confidence=result.confidence,
+    )
 
     return result
+
 
 
 def classify_expense_internal(req: ExpenseClassificationRequest):
@@ -654,15 +735,11 @@ def classify_expense_internal(req: ExpenseClassificationRequest):
     ai_service = AIService()
     result = ai_service.classify_expense(req)
 
-    with db_cursor() as cursor:
-        cursor.execute(
-            """
-            UPDATE unified_files
-            SET expense_type = %s, updated_at = NOW()
-            WHERE id = %s
-            """,
-            (result.expense_type, req.file_id),
-        )
+    _persist_expense_classification(
+        file_id=req.file_id,
+        expense_type=result.expense_type,
+        confidence=result.confidence,
+    )
 
     return result
 
@@ -689,7 +766,11 @@ def classify_accounting_internal(req: AccountingClassificationRequest):
 
     ai_service = AIService()
     result = ai_service.classify_accounting(req, chart_of_accounts)
-    # Implementation same as classify_accounting endpoint
+    _persist_accounting_proposals(
+        file_id=req.file_id,
+        proposals=result.proposals,
+        confidence=result.confidence,
+    )
     return result
 
 
@@ -725,6 +806,7 @@ def match_credit_card_internal(req: CreditCardMatchRequest):
             req.file_id,
             result.credit_card_invoice_item_id,
             req.amount,
+            result.confidence,
         )
 
     return result
