@@ -1,9 +1,9 @@
 """API endpoints for AI processing of receipts and documents."""
-from contextlib import closing
 import logging
+from contextlib import closing
 from datetime import datetime
 from decimal import Decimal
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
 from flask import Blueprint, request, jsonify
 
@@ -583,7 +583,7 @@ def process_batch():
 
 
 @bp.route('/status/<file_id>', methods=['GET'])
-@require_auth
+@auth_required
 def get_ai_status(file_id: str):
     """Get AI processing status for a specific file."""
     try:
