@@ -39,11 +39,11 @@ Implement a reliable end-to-end pipeline for OCR-based document processing that 
 3. Document required environment variables (JWT secrets, storage paths, AI provider credentials) and provide runbooks for monitoring Celery queue latency and AI confidence regressions.
 
 ## Deliverables checklist
-- [ ] Schema migrations merged and validated.
-- [ ] API endpoints authenticated, transactional, and covered by integration tests.
-- [ ] AI service supports configurable prompts/providers with deterministic fallbacks.
-- [ ] Celery pipeline triggers AI1–AI5 with persisted history and error handling.
-- [ ] Operational documentation (env vars, monitoring, runbooks) published.
+- [x] Schema migrations merged and validated.
+- [x] API endpoints authenticated, transactional, and covered by integration tests.
+- [x] AI service supports configurable prompts/providers with deterministic fallbacks.
+- [x] Celery pipeline triggers AI1–AI5 with persisted history and error handling.
+- [x] Operational documentation (env vars, monitoring, runbooks) published.
 
 ## Risks & mitigations
 - **External provider instability**: maintain rule-based fallback and circuit breakers when LLM responses fail parsing.

@@ -9,7 +9,7 @@ import pytest
 from flask import Flask
 
 from services.db.connection import db_cursor
-from services.tasks import process_classification, process_validation
+from services.tasks import process_ai_pipeline
 
 
 @pytest.fixture()
@@ -47,24 +47,16 @@ def test_full_flow_capture_to_export(app: Flask, tmp_path):
     resp2 = client.patch(f'/receipts/{receipt_id}', json=update_data)
     assert resp2.status_code == 200
 
-    # Run classification step explicitly (normally Celery-driven)
-    classification = process_classification.run(receipt_id)  # type: ignore[attr-defined]
-    assert classification['status'] == 'classified_receipt'
-    assert classification['document_type'] == 'receipt'
+    # Run AI pipeline explicitly (normally Celery-driven)
+    pipeline = process_ai_pipeline.run(receipt_id)  # type: ignore[attr-defined]
+    assert set(pipeline['completed']) >= {'AI1', 'AI2', 'AI3', 'AI4'}
+    if 'AI5' not in pipeline['completed']:
+        assert any(err['stage'] == 'AI5' for err in pipeline['errors'])
 
     detail_resp = client.get(f'/receipts/{receipt_id}')
     assert detail_resp.status_code == 200
     detail = detail_resp.get_json()
-    assert detail['ai_status'] == 'classified_receipt'
-
-    # Run validation pipeline (and downstream accounting proposal)
-    result = process_validation.run(receipt_id)  # type: ignore[attr-defined]
-    assert result['status'] in {'passed', 'manual_review', 'failed'}
-
-    detail_after_validation = client.get(f'/receipts/{receipt_id}')
-    assert detail_after_validation.status_code == 200
-    status_after_validation = detail_after_validation.get_json()['ai_status']
-    assert status_after_validation == 'accounting_proposed'
+    assert detail['ai_status'] == 'ai5_completed'
 
     with db_cursor() as cur:
         cur.execute(

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 try:
     from services.db.connection import db_cursor
@@ -21,6 +22,21 @@ from services.validation import validate_receipt
 from services.accounting import propose_accounting_entries
 from models.accounting import AccountingRule
 from models.receipts import AccountingEntry, Receipt, ReceiptStatus
+from models.ai_processing import (
+    AccountingClassificationRequest,
+    CreditCardMatchRequest,
+    DataExtractionRequest,
+    DocumentClassificationRequest,
+    ExpenseClassificationRequest,
+)
+from services.ai_service import AIService
+from services.ai_persistence import (
+    persist_accounting_proposals,
+    persist_credit_card_match,
+    persist_extraction_result,
+)
+
+logger = logging.getLogger(__name__)
 
 celery_app = get_celery()
 
@@ -95,6 +111,296 @@ def _update_file_fields(
             return cur.rowcount > 0
     except Exception:
         return False
+
+
+def _fetch_pipeline_context(file_id: str) -> Dict[str, Any]:
+    context: Dict[str, Any] = {}
+    if db_cursor is None:
+        return context
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                (
+                    "SELECT ocr_raw, file_type, expense_type, purchase_datetime, "
+                    "gross_amount_original, net_amount_original, company_id, currency "
+                    "FROM unified_files WHERE id=%s"
+                ),
+                (file_id,),
+            )
+            row = cur.fetchone()
+        if row:
+            (
+                ocr_raw,
+                file_type,
+                expense_type,
+                purchase_dt,
+                gross_original,
+                net_original,
+                company_id,
+                currency,
+            ) = row
+            context = {
+                "ocr_raw": ocr_raw or "",
+                "file_type": file_type,
+                "expense_type": expense_type,
+                "purchase_datetime": purchase_dt,
+                "gross_amount_original": gross_original,
+                "net_amount_original": net_original,
+                "company_id": company_id,
+                "currency": currency,
+            }
+        if context.get("company_id"):
+            with db_cursor() as cur:
+                cur.execute(
+                    "SELECT name FROM companies WHERE id=%s",
+                    (context["company_id"],),
+                )
+                company_row = cur.fetchone()
+            if company_row:
+                context["company_name"] = company_row[0]
+    except Exception:
+        logger.exception("Failed to fetch AI pipeline context for %s", file_id)
+    return context
+
+
+def _load_chart_of_accounts() -> List[Tuple[Any, ...]]:
+    if db_cursor is None:
+        return []
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT sub_account, sub_account_description
+                FROM chart_of_accounts
+                WHERE sub_account IS NOT NULL AND sub_account <> ''
+                """
+            )
+            return cur.fetchall() or []
+    except Exception:
+        logger.exception("Failed to load chart of accounts")
+        return []
+
+
+def _load_credit_card_candidates(purchase_date: datetime, amount: Decimal | None) -> List[Tuple[Any, ...]]:
+    if db_cursor is None:
+        return []
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT i.id, i.merchant_name, i.amount_sek
+                FROM creditcard_invoice_items AS i
+                LEFT JOIN creditcard_receipt_matches AS m ON m.invoice_item_id = i.id
+                WHERE i.purchase_date = %s
+                  AND m.invoice_item_id IS NULL
+                  AND (%s IS NULL OR i.amount_sek IS NULL OR ABS(i.amount_sek - %s) <= 5)
+                ORDER BY ABS(IFNULL(i.amount_sek, %s) - %s)
+                LIMIT 25
+                """,
+                (
+                    purchase_date.date() if isinstance(purchase_date, datetime) else purchase_date,
+                    amount,
+                    amount,
+                    amount,
+                    amount,
+                ),
+            )
+            return cur.fetchall() or []
+    except Exception:
+        logger.exception("Failed to load credit card candidates for %s", purchase_date)
+        return []
+
+
+def _ensure_decimal(value: Any, default: Decimal | None = None) -> Decimal:
+    if value is None:
+        return default if default is not None else Decimal("0")
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return default if default is not None else Decimal("0")
+
+
+def _execute_ai_pipeline(
+    file_id: str, steps: Sequence[str] | None = None
+) -> Dict[str, Any]:
+    if db_cursor is None:
+        raise RuntimeError("Database connection not configured")
+
+    valid_stages = ["AI1", "AI2", "AI3", "AI4", "AI5"]
+    requested = [stage for stage in (steps or valid_stages) if stage in valid_stages]
+    if not requested:
+        requested = valid_stages
+
+    summary: Dict[str, Any] = {"file_id": file_id, "completed": [], "errors": []}
+    context = _fetch_pipeline_context(file_id)
+    ocr_text = context.get("ocr_raw") or ""
+    doc_type = context.get("file_type")
+    expense_type = context.get("expense_type")
+    extraction_result = None
+
+    ai_service = AIService()
+    _update_file_status(file_id, "processing")
+
+    for stage in requested:
+        try:
+            if stage == "AI1":
+                req = DocumentClassificationRequest(file_id=file_id, ocr_text=ocr_text)
+                result = ai_service.classify_document(req)
+                doc_type = result.document_type
+                with db_cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE unified_files
+                        SET file_type=%s, ai_status=%s,
+                            ai_confidence=GREATEST(IFNULL(ai_confidence, 0), %s),
+                            updated_at=NOW()
+                        WHERE id=%s
+                        """,
+                        (result.document_type, "ai1_completed", result.confidence, file_id),
+                    )
+                _history(file_id, "AI1", "success")
+                summary["completed"].append("AI1")
+
+            elif stage == "AI2":
+                req = ExpenseClassificationRequest(
+                    file_id=file_id,
+                    ocr_text=ocr_text,
+                    document_type=doc_type or context.get("file_type") or "receipt",
+                )
+                result = ai_service.classify_expense(req)
+                expense_type = result.expense_type
+                with db_cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE unified_files
+                        SET expense_type=%s, ai_status=%s,
+                            ai_confidence=GREATEST(IFNULL(ai_confidence, 0), %s),
+                            updated_at=NOW()
+                        WHERE id=%s
+                        """,
+                        (result.expense_type, "ai2_completed", result.confidence, file_id),
+                    )
+                _history(file_id, "AI2", "success")
+                summary["completed"].append("AI2")
+
+            elif stage == "AI3":
+                req = DataExtractionRequest(
+                    file_id=file_id,
+                    ocr_text=ocr_text,
+                    document_type=doc_type or context.get("file_type") or "receipt",
+                    expense_type=expense_type or context.get("expense_type") or "personal",
+                )
+                extraction_result = ai_service.extract_data(req)
+                persist_extraction_result(file_id, extraction_result)
+                context = _fetch_pipeline_context(file_id)
+                _update_file_status(file_id, "ai3_completed", float(extraction_result.confidence))
+                _history(file_id, "AI3", "success")
+                summary["completed"].append("AI3")
+
+            elif stage == "AI4":
+                if extraction_result is None:
+                    logger.info("AI4 requested without AI3 context for %s", file_id)
+                    receipt_items = []
+                    vendor_name = context.get("company_name") or ""
+                    gross_amount = _ensure_decimal(context.get("gross_amount_original"))
+                    net_amount = _ensure_decimal(context.get("net_amount_original"), gross_amount)
+                else:
+                    receipt_items = extraction_result.receipt_items
+                    vendor_name = extraction_result.company.name or context.get("company_name") or ""
+                    gross_amount = _ensure_decimal(
+                        extraction_result.unified_file.gross_amount_sek
+                        or extraction_result.unified_file.gross_amount_original
+                        or context.get("gross_amount_original")
+                    )
+                    net_amount = _ensure_decimal(
+                        extraction_result.unified_file.net_amount_sek
+                        or extraction_result.unified_file.net_amount_original
+                        or context.get("net_amount_original"),
+                        gross_amount,
+                    )
+                vat_amount = gross_amount - net_amount if gross_amount and net_amount else Decimal("0")
+                chart = _load_chart_of_accounts()
+                req = AccountingClassificationRequest(
+                    file_id=file_id,
+                    document_type=doc_type or context.get("file_type") or "receipt",
+                    expense_type=expense_type or context.get("expense_type") or "personal",
+                    gross_amount=gross_amount,
+                    net_amount=net_amount,
+                    vat_amount=vat_amount,
+                    vendor_name=vendor_name,
+                    receipt_items=receipt_items,
+                )
+                result = ai_service.classify_accounting(req, chart)
+                persist_accounting_proposals(file_id, result.proposals)
+                _update_file_status(file_id, "ai4_completed", float(result.confidence))
+                _history(file_id, "AI4", "success")
+                summary["completed"].append("AI4")
+
+            elif stage == "AI5":
+                purchase_dt = None
+                if extraction_result and extraction_result.unified_file.purchase_datetime:
+                    purchase_dt = extraction_result.unified_file.purchase_datetime
+                elif context.get("purchase_datetime"):
+                    purchase_dt = context["purchase_datetime"]
+
+                amount = None
+                if extraction_result:
+                    amount = (
+                        extraction_result.unified_file.gross_amount_sek
+                        or extraction_result.unified_file.gross_amount_original
+                    )
+                if amount is None:
+                    amount = context.get("gross_amount_original")
+                amount_dec = _ensure_decimal(amount, Decimal("0")) if amount is not None else None
+
+                merchant_name = None
+                if extraction_result and extraction_result.company and extraction_result.company.name:
+                    merchant_name = extraction_result.company.name
+                elif context.get("company_name"):
+                    merchant_name = context["company_name"]
+
+                if purchase_dt is None:
+                    summary["errors"].append({"stage": "AI5", "error": "missing purchase date"})
+                    logger.warning("Skipping AI5 for %s due to missing purchase date", file_id)
+                    _history(file_id, "AI5", "skipped")
+                    _update_file_status(file_id, "manual_review")
+                else:
+                    candidates = _load_credit_card_candidates(purchase_dt, amount_dec)
+                    match_req = CreditCardMatchRequest(
+                        file_id=file_id,
+                        purchase_date=purchase_dt,
+                        amount=amount_dec,
+                        merchant_name=merchant_name,
+                    )
+                    result = ai_service.match_credit_card(match_req, candidates)
+                    if result.matched and result.credit_card_invoice_item_id:
+                        persist_credit_card_match(
+                            file_id,
+                            result.credit_card_invoice_item_id,
+                            amount_dec,
+                        )
+                    _update_file_status(file_id, "ai5_completed", float(result.confidence))
+                    _history(file_id, "AI5", "success" if result.matched else "no_match")
+                    summary["completed"].append("AI5")
+
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("AI stage %s failed for %s", stage, file_id)
+            _history(file_id, stage, "error")
+            _update_file_status(file_id, "manual_review")
+            summary["errors"].append({"stage": stage, "error": str(exc)})
+            break
+
+    return summary
+
+
+@celery_app.task
+@track_task("process_ai_pipeline")
+def process_ai_pipeline(file_id: str, steps: Sequence[str] | None = None) -> Dict[str, Any]:
+    """Run AI1–AI5 pipeline for a receipt."""
+
+    return _execute_ai_pipeline(file_id, steps)
 
 
 def _load_receipt_model(file_id: str) -> Optional[Receipt]:
@@ -344,10 +650,10 @@ def process_ocr(file_id: str) -> dict[str, Any]:
         ok = _update_file_status(file_id, status="ocr_done", confidence=0.5)
     _history(file_id, job="ocr", status="success" if ok else "error")
     try:
-        process_classification.delay(file_id)  # type: ignore[attr-defined]
+        process_ai_pipeline.delay(file_id)  # type: ignore[attr-defined]
     except Exception:
         try:
-            process_classification.run(file_id)
+            process_ai_pipeline.run(file_id)
         except Exception:
             pass
     return {"file_id": file_id, "status": "ocr_done", "ok": ok, "real": bool(result)}
