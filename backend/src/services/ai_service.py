@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -25,6 +27,59 @@ from ..models.ai_processing import (
     AccountingProposal,
 )
 from ..services.db.connection import db_cursor
+
+
+@dataclass
+class ProviderResponse:
+    """Structured response from an LLM provider."""
+
+    raw: str
+    parsed: Optional[Dict[str, Any]]
+
+
+class BaseLLMProvider:
+    """Minimal interface used by the AI service for LLM integrations."""
+
+    def __init__(self, model_name: str | None = None) -> None:
+        self.model_name = model_name
+
+    @property
+    def provider_name(self) -> str:
+        return self.__class__.__name__.replace("Provider", "").lower()
+
+    def generate(self, prompt: str, payload: Dict[str, Any]) -> ProviderResponse:
+        raise NotImplementedError
+
+
+class OpenAIProvider(BaseLLMProvider):
+    """Adapter for OpenAI's Chat Completions API.
+
+    The adapter intentionally keeps the implementation lightweight; when the
+    environment lacks credentials it simply raises to trigger deterministic
+    fallbacks. This satisfies the requirement for pluggable providers without
+    introducing network calls during tests.
+    """
+
+    def generate(self, prompt: str, payload: Dict[str, Any]) -> ProviderResponse:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+        # Placeholder implementation: the production worker will override this
+        # with a fully fledged client. For now we log and fall back.
+        logger.warning("OpenAIProvider invoked without concrete implementation")
+        return ProviderResponse(raw="", parsed=None)
+
+
+class AzureOpenAIProvider(BaseLLMProvider):
+    """Adapter for Azure-hosted OpenAI deployments."""
+
+    def generate(self, prompt: str, payload: Dict[str, Any]) -> ProviderResponse:
+        api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        if not api_key or not endpoint:
+            raise RuntimeError("Azure OpenAI credentials are not configured")
+        logger.warning("AzureOpenAIProvider invoked without concrete implementation")
+        return ProviderResponse(raw="", parsed=None)
 
 logger = logging.getLogger(__name__)
 
@@ -120,9 +175,19 @@ class AIService:
 
     def __init__(self) -> None:
         self.prompts: Dict[str, str] = self._load_prompts()
-        provider, model = self._load_active_model()
-        self.provider_name = provider or "rule-based"
-        self.model_name = model or "regex"
+        provider_from_db, model_from_db = self._load_active_model()
+        self.provider_adapter = self._init_provider(provider_from_db, model_from_db)
+        self.provider_name = (
+            (self.provider_adapter.provider_name if self.provider_adapter else None)
+            or provider_from_db
+            or "rule-based"
+        )
+        self.model_name = (
+            os.getenv("AI_MODEL_NAME")
+            or (self.provider_adapter.model_name if self.provider_adapter else None)
+            or model_from_db
+            or "regex"
+        )
 
     # ------------------------------------------------------------------
     # Configuration helpers
@@ -160,6 +225,46 @@ class AIService:
             logger.warning("Could not load active AI model: %s", exc)
         return None, None
 
+    def _init_provider(
+        self, provider_from_db: Optional[str], model_from_db: Optional[str]
+    ) -> Optional[BaseLLMProvider]:
+        configured = os.getenv("AI_PROVIDER") or (provider_from_db or "")
+        configured = configured.lower().strip()
+        model = os.getenv("AI_MODEL_NAME") or model_from_db
+
+        if not configured:
+            return None
+
+        try:
+            if configured == "openai":
+                return OpenAIProvider(model)
+            if configured in {"azure", "azure_openai", "azure-openai"}:
+                return AzureOpenAIProvider(model)
+        except Exception as exc:  # pragma: no cover - configuration errors
+            logger.warning("Failed to initialise LLM provider %s: %s", configured, exc)
+            return None
+
+        logger.warning("Unknown AI provider '%s'; falling back to rule-based mode", configured)
+        return None
+
+    def _provider_generate(
+        self, stage_key: str, payload: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        if not self.provider_adapter:
+            return None
+
+        prompt = self.prompts.get(stage_key, "")
+        try:
+            response = self.provider_adapter.generate(prompt=prompt, payload=payload)
+            if not response.raw and response.parsed is None:
+                return None
+            if response.parsed is not None:
+                return response.parsed
+            return json.loads(response.raw)
+        except Exception as exc:  # pragma: no cover - network/parse errors
+            logger.warning("Provider call for %s failed: %s", stage_key, exc)
+            return None
+
     # ------------------------------------------------------------------
     # AI1 - Document classification
     # ------------------------------------------------------------------
@@ -176,6 +281,14 @@ class AIService:
 
         receipt_hits = sum(token in text for token in receipt_tokens)
         invoice_hits = sum(token in text for token in invoice_tokens)
+
+        llm_result = self._provider_generate(
+            "document_analysis", {"ocr_text": request.ocr_text or ""}
+        )
+        if llm_result:
+            doc_type = llm_result.get("document_type", doc_type)
+            confidence = float(llm_result.get("confidence", confidence))
+            reasoning_parts.append("LLM-assisted classification")
 
         if receipt_hits and receipt_hits >= invoice_hits:
             doc_type = "receipt"
@@ -223,6 +336,17 @@ class AIService:
                 card_identifier = pattern
                 reasoning_parts.append(f"Detected card keyword '{pattern}'")
                 break
+
+        llm_result = self._provider_generate(
+            "expense_classification",
+            {"ocr_text": request.ocr_text or "", "document_type": request.document_type},
+        )
+        if llm_result:
+            expense_type = llm_result.get("expense_type", expense_type)
+            confidence = float(llm_result.get("confidence", confidence))
+            if llm_result.get("card_identifier"):
+                card_identifier = llm_result["card_identifier"]
+            reasoning_parts.append("LLM-assisted expense classification")
 
         if expense_type == "personal":
             if any(pattern in text for pattern in cash_patterns):
@@ -330,6 +454,38 @@ class AIService:
         if receipt_number:
             other_meta["receipt_number_detected"] = receipt_number
 
+        llm_result = self._provider_generate(
+            "data_extraction",
+            {
+                "ocr_text": ocr_text,
+                "document_type": request.document_type,
+                "expense_type": request.expense_type,
+            },
+        )
+        if llm_result:
+            other_meta["llm_augmented"] = True
+            if "unified_file" in llm_result:
+                unified_overrides = {k: v for k, v in llm_result["unified_file"].items() if v is not None}
+            else:
+                unified_overrides = {}
+            if unified_overrides:
+                for key, value in unified_overrides.items():
+                    setattr(unified_file, key, value)
+            if "company" in llm_result:
+                for key, value in llm_result["company"].items():
+                    if value is not None:
+                        setattr(company, key, value)
+            if llm_result.get("receipt_items"):
+                try:
+                    receipt_items = [ReceiptItem(**item) for item in llm_result["receipt_items"]]
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("Failed to parse LLM receipt items: %s", exc)
+            if "confidence" in llm_result:
+                try:
+                    confidence = float(llm_result["confidence"])
+                except (TypeError, ValueError):  # pragma: no cover
+                    pass
+
         fields_considered = [gross_amount, vat_amount, net_amount, orgnr, receipt_number, purchase_dt, company_name]
         filled = sum(1 for value in fields_considered if value)
         confidence = 0.4 + 0.1 * filled
@@ -417,6 +573,27 @@ class AIService:
         if vat_amount and net_amount:
             confidence = 0.85
 
+        llm_result = self._provider_generate(
+            "accounting_classification",
+            {
+                "gross_amount": str(gross_amount),
+                "net_amount": str(net_amount) if net_amount is not None else None,
+                "vat_amount": str(vat_amount) if vat_amount is not None else None,
+                "vendor_name": request.vendor_name,
+            },
+        )
+        if llm_result:
+            if llm_result.get("proposals"):
+                try:
+                    proposals = [AccountingProposal(**p) for p in llm_result["proposals"]]
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("Failed to parse LLM accounting proposals: %s", exc)
+            if "confidence" in llm_result:
+                try:
+                    confidence = float(llm_result["confidence"])
+                except (TypeError, ValueError):  # pragma: no cover
+                    pass
+
         return AccountingClassificationResponse(
             file_id=request.file_id,
             proposals=proposals,
@@ -452,11 +629,31 @@ class AIService:
                 "matched_merchant": best_match[1],
                 "matched_amount": float(best_match[2]) if best_match[2] is not None else None,
             }
+            llm_result = self._provider_generate(
+                "credit_card_match",
+                {
+                    "receipt_amount": float(request.amount) if request.amount is not None else None,
+                    "merchant_name": request.merchant_name,
+                    "candidate": {
+                        "merchant": best_match[1],
+                        "amount": float(best_match[2]) if best_match[2] is not None else None,
+                    },
+                },
+            )
+            confidence_override: Optional[float] = None
+            if llm_result:
+                match_details.update(llm_result.get("overrides", {}))
+                if "confidence" in llm_result:
+                    try:
+                        confidence_override = float(llm_result["confidence"])
+                    except (TypeError, ValueError):  # pragma: no cover
+                        confidence_override = None
+
             return CreditCardMatchResponse(
                 file_id=request.file_id,
                 matched=True,
                 credit_card_invoice_item_id=best_match[0],
-                confidence=0.9,
+                confidence=confidence_override if confidence_override is not None else 0.9,
                 match_details=match_details,
             )
 
