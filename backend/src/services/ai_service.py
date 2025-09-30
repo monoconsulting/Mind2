@@ -8,7 +8,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from ..models.ai_processing import (
+from models.ai_processing import (
     DocumentClassificationRequest,
     DocumentClassificationResponse,
     ExpenseClassificationRequest,
@@ -24,7 +24,7 @@ from ..models.ai_processing import (
     Company,
     AccountingProposal,
 )
-from ..services.db.connection import db_cursor
+from services.db.connection import db_cursor
 
 logger = logging.getLogger(__name__)
 

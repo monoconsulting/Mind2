@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     from services.db.connection import db_cursor
@@ -13,6 +14,7 @@ except Exception:  # pragma: no cover
     db_cursor = None  # type: ignore
 
 
+from services.ai_pipeline import PipelineExecutionError, PipelineResult, run_ai_pipeline
 from services.queue_manager import get_celery
 from observability.metrics import track_task
 from services.ocr import run_ocr
@@ -23,6 +25,25 @@ from models.accounting import AccountingRule
 from models.receipts import AccountingEntry, Receipt, ReceiptStatus
 
 celery_app = get_celery()
+
+logger = logging.getLogger(__name__)
+
+
+AI_STAGE_STATUS = {
+    "AI1": "ai1_completed",
+    "AI2": "ai2_completed",
+    "AI3": "ai3_completed",
+    "AI4": "ai4_completed",
+    "AI5": "ai5_completed",
+}
+
+AI_STAGE_HISTORY = {
+    "AI1": "ai1",
+    "AI2": "ai2",
+    "AI3": "ai3",
+    "AI4": "ai4",
+    "AI5": "ai5",
+}
 
 
 INSERT_HISTORY_SQL = (
@@ -322,6 +343,53 @@ def _save_accounting_entries(file_id: str, entries: List[AccountingEntry]) -> bo
 
 
 @celery_app.task
+@track_task("process_ai_pipeline")
+def process_ai_pipeline(file_id: str, steps: Optional[List[str]] = None) -> dict[str, Any]:
+    """Execute the deterministic AI pipeline for a receipt."""
+
+    try:
+        pipeline_result: PipelineResult = run_ai_pipeline(file_id, steps=steps)
+    except PipelineExecutionError as exc:
+        logger.warning("AI pipeline validation failed for %s: %s", file_id, exc)
+        _update_file_status(file_id, status="manual_review")
+        _history(file_id, job="ai_pipeline", status="error")
+        return {"file_id": file_id, "ok": False, "error": str(exc)}
+    except Exception as exc:  # pragma: no cover - unexpected errors propagated
+        logger.exception("AI pipeline crashed for %s", file_id)
+        _update_file_status(file_id, status="manual_review")
+        _history(file_id, job="ai_pipeline", status="error")
+        raise
+
+    stage_summaries: List[Dict[str, Any]] = []
+    final_confidence: Optional[float] = None
+
+    for stage in pipeline_result.stages:
+        response = stage.response
+        confidence = getattr(response, "confidence", None)
+        if isinstance(confidence, (int, float)):
+            final_confidence = float(confidence)
+        status_value = AI_STAGE_STATUS.get(stage.name)
+        history_job = AI_STAGE_HISTORY.get(stage.name, stage.name.lower())
+        ok = True
+        if status_value:
+            ok = _update_file_status(file_id, status=status_value, confidence=confidence)
+        _history(file_id, job=history_job, status="success" if ok else "error")
+        stage_summaries.append(
+            {
+                "stage": stage.name,
+                "status": "success" if ok else "error",
+                "confidence": confidence,
+            }
+        )
+
+    if stage_summaries:
+        ok_final = _update_file_status(file_id, status="completed", confidence=final_confidence)
+        _history(file_id, job="ai_pipeline", status="success" if ok_final else "error")
+
+    return {"file_id": file_id, "ok": True, "stages": stage_summaries}
+
+
+@celery_app.task
 @track_task("process_ocr")
 def process_ocr(file_id: str) -> dict[str, Any]:
     enable_real = (os.getenv("ENABLE_REAL_OCR", "false").lower() in {"1", "true", "yes"})
@@ -344,10 +412,10 @@ def process_ocr(file_id: str) -> dict[str, Any]:
         ok = _update_file_status(file_id, status="ocr_done", confidence=0.5)
     _history(file_id, job="ocr", status="success" if ok else "error")
     try:
-        process_classification.delay(file_id)  # type: ignore[attr-defined]
+        process_ai_pipeline.delay(file_id)  # type: ignore[attr-defined]
     except Exception:
         try:
-            process_classification.run(file_id)
+            process_ai_pipeline.run(file_id)
         except Exception:
             pass
     return {"file_id": file_id, "status": "ocr_done", "ok": ok, "real": bool(result)}

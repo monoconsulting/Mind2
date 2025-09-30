@@ -1,6 +1,5 @@
 """API endpoints for AI processing of receipts and documents."""
 import logging
-from contextlib import closing
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -24,7 +23,16 @@ from ..models.ai_processing import (
     AccountingProposal,
 )
 from ..services.ai_service import AIService
-from ..services.db.connection import db_cursor, get_connection
+from ..services.ai_persistence import (
+    fetch_chart_of_accounts,
+    fetch_credit_card_candidates,
+    persist_accounting_proposals,
+    persist_credit_card_match,
+    persist_document_classification,
+    persist_expense_classification,
+    persist_extraction_result,
+)
+from ..services.db.connection import db_cursor
 from .middleware import auth_required
 
 logger = logging.getLogger(__name__)
@@ -47,18 +55,11 @@ def classify_document():
         ai_service = AIService()
         result = ai_service.classify_document(req)
 
-        # Update database with classification
+        persist_document_classification(req.file_id, result)
         with db_cursor() as cursor:
             cursor.execute(
-                """
-                UPDATE unified_files
-                SET file_type = %s,
-                    ai_status = 'processing',
-                    ai_confidence = %s,
-                    updated_at = NOW()
-                WHERE id = %s
-                """,
-                (result.document_type, result.confidence, req.file_id),
+                "UPDATE unified_files SET ai_status = 'processing', updated_at = NOW() WHERE id = %s",
+                (req.file_id,),
             )
 
         response = DocumentClassificationResponse(
@@ -90,18 +91,7 @@ def classify_expense():
         ai_service = AIService()
         result = ai_service.classify_expense(req)
 
-        # Update database
-        with db_cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE unified_files
-                SET expense_type = %s,
-                    ai_confidence = GREATEST(IFNULL(ai_confidence, 0), %s),
-                    updated_at = NOW()
-                WHERE id = %s
-                """,
-                (result.expense_type, result.confidence, req.file_id),
-            )
+        persist_expense_classification(req.file_id, result)
 
         response = ExpenseClassificationResponse(
             file_id=req.file_id,
@@ -132,7 +122,7 @@ def extract_data():
         ai_service = AIService()
         result = ai_service.extract_data(req)
 
-        _persist_extraction_result(req.file_id, result)
+        persist_extraction_result(req.file_id, result)
 
         response = DataExtractionResponse(
             file_id=req.file_id,
@@ -160,50 +150,12 @@ def classify_accounting():
         data = request.get_json()
         req = AccountingClassificationRequest(**data)
 
-        # Get BAS-2025 chart of accounts from database
-        with db_cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT sub_account, sub_account_description
-                FROM chart_of_accounts
-                WHERE sub_account IS NOT NULL AND sub_account <> ''
-                """
-            )
-            chart_of_accounts = cursor.fetchall()
+        chart_of_accounts = fetch_chart_of_accounts()
 
-        # Call AI service for accounting classification
         ai_service = AIService()
         result = ai_service.classify_accounting(req, chart_of_accounts)
 
-        # Store AI accounting proposals
-        with closing(get_connection()) as conn:
-            cursor = conn.cursor()
-
-            # Delete existing proposals for this receipt
-            cursor.execute(
-                "DELETE FROM ai_accounting_proposals WHERE receipt_id = %s",
-                (req.file_id,),
-            )
-
-            # Insert new proposals
-            for proposal in result.proposals:
-                cursor.execute(
-                    """
-                    INSERT INTO ai_accounting_proposals (
-                        receipt_id, account_code, debit, credit, vat_rate, notes
-                    ) VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        proposal.receipt_id,
-                        proposal.account_code,
-                        proposal.debit,
-                        proposal.credit,
-                        proposal.vat_rate,
-                        proposal.notes,
-                    ),
-                )
-
-            conn.commit()
+        persist_accounting_proposals(result)
 
         response = AccountingClassificationResponse(
             file_id=req.file_id,
@@ -232,28 +184,13 @@ def match_credit_card():
 
         purchase_date = req.purchase_date.date() if isinstance(req.purchase_date, datetime) else req.purchase_date
 
-        with db_cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT i.id, i.merchant_name, i.amount_sek
-                FROM creditcard_invoice_items AS i
-                LEFT JOIN creditcard_receipt_matches AS m ON m.invoice_item_id = i.id
-                WHERE i.purchase_date = %s
-                  AND m.invoice_item_id IS NULL
-                  AND (%s IS NULL OR i.amount_sek IS NULL OR ABS(i.amount_sek - %s) <= 5)
-                ORDER BY ABS(IFNULL(i.amount_sek, %s) - %s)
-                LIMIT 25
-                """,
-                (purchase_date, req.amount, req.amount, req.amount, req.amount),
-            )
-            potential_matches = cursor.fetchall()
+        potential_matches = fetch_credit_card_candidates(purchase_date, req.amount)
 
-        # Call AI service for intelligent matching
         ai_service = AIService()
         result = ai_service.match_credit_card(req, potential_matches)
 
         if result.matched and result.credit_card_invoice_item_id:
-            _persist_credit_card_match(
+            persist_credit_card_match(
                 req.file_id,
                 result.credit_card_invoice_item_id,
                 req.amount,
@@ -272,170 +209,6 @@ def match_credit_card():
     except Exception as e:
         logger.error(f"Error in credit card matching: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
-
-def _persist_extraction_result(file_id: str, result: DataExtractionResponse) -> None:
-    """Persist the extraction response into unified_files, companies and receipt_items."""
-
-    unified = result.unified_file
-    company = result.company
-
-    with closing(get_connection()) as conn:
-        conn.start_transaction()
-        cursor = conn.cursor()
-        try:
-            company_id: Optional[int] = None
-            orgnr = (company.orgnr or "").strip() or None
-            name = (company.name or "").strip() or None
-
-            if orgnr:
-                cursor.execute("SELECT id FROM companies WHERE orgnr = %s", (orgnr,))
-                existing = cursor.fetchone()
-                if existing:
-                    company_id = existing[0]
-                    cursor.execute(
-                        """
-                        UPDATE companies
-                        SET name = COALESCE(%s, name),
-                            address = COALESCE(%s, address),
-                            address2 = COALESCE(%s, address2),
-                            zip = COALESCE(%s, zip),
-                            city = COALESCE(%s, city),
-                            country = COALESCE(%s, country),
-                            phone = COALESCE(%s, phone),
-                            www = COALESCE(%s, www),
-                            updated_at = NOW()
-                        WHERE id = %s
-                        """,
-                        (
-                            name,
-                            company.address,
-                            company.address2,
-                            company.zip,
-                            company.city,
-                            company.country,
-                            company.phone,
-                            company.www,
-                            company_id,
-                        ),
-                    )
-                elif name:
-                    cursor.execute(
-                        """
-                        INSERT INTO companies (name, orgnr, address, address2, zip, city, country, phone, www)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            name,
-                            orgnr,
-                            company.address,
-                            company.address2,
-                            company.zip,
-                            company.city,
-                            company.country,
-                            company.phone,
-                            company.www,
-                        ),
-                    )
-                    company_id = cursor.lastrowid
-            elif name:
-                logger.info("Company orgnr missing for %s – skipping company insert", file_id)
-
-            updates = {
-                "orgnr": unified.orgnr,
-                "payment_type": unified.payment_type,
-                "purchase_datetime": unified.purchase_datetime,
-                "expense_type": unified.expense_type,
-                "gross_amount_original": unified.gross_amount_original,
-                "net_amount_original": unified.net_amount_original,
-                "exchange_rate": unified.exchange_rate,
-                "currency": unified.currency,
-                "gross_amount_sek": unified.gross_amount_sek,
-                "net_amount_sek": unified.net_amount_sek,
-                "company_id": company_id,
-                "receipt_number": unified.receipt_number,
-                "other_data": unified.other_data,
-                "ocr_raw": unified.ocr_raw or "",
-                "ai_status": 'completed',
-                "ai_confidence": result.confidence,
-            }
-
-            set_parts: List[str] = []
-            params: List[Any] = []
-            for column, value in updates.items():
-                set_parts.append(f"{column} = %s")
-                params.append(value)
-            set_parts.append("updated_at = NOW()")
-            params.append(file_id)
-
-            cursor.execute(
-                "UPDATE unified_files SET " + ", ".join(set_parts) + " WHERE id = %s",
-                tuple(params),
-            )
-
-            cursor.execute("DELETE FROM receipt_items WHERE main_id = %s", (file_id,))
-            for item in result.receipt_items:
-                cursor.execute(
-                    """
-                    INSERT INTO receipt_items (
-                        main_id, article_id, name, number,
-                        item_price_ex_vat, item_price_inc_vat,
-                        item_total_price_ex_vat, item_total_price_inc_vat,
-                        currency, vat, vat_percentage
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        file_id,
-                        item.article_id,
-                        item.name,
-                        item.number,
-                        item.item_price_ex_vat,
-                        item.item_price_inc_vat,
-                        item.item_total_price_ex_vat,
-                        item.item_total_price_inc_vat,
-                        item.currency,
-                        item.vat,
-                        item.vat_percentage,
-                    ),
-                )
-
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            cursor.close()
-
-
-def _persist_credit_card_match(
-    file_id: str,
-    invoice_item_id: int,
-    matched_amount: Optional[Decimal],
-) -> None:
-    """Persist the credit card match relation and update unified_files."""
-
-    with closing(get_connection()) as conn:
-        conn.start_transaction()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                """
-                INSERT INTO creditcard_receipt_matches (receipt_id, invoice_item_id, matched_amount)
-                VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE matched_amount = VALUES(matched_amount), matched_at = NOW()
-                """,
-                (file_id, invoice_item_id, matched_amount),
-            )
-            cursor.execute(
-                "UPDATE unified_files SET credit_card_match = 1, updated_at = NOW() WHERE id = %s",
-                (file_id,),
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            cursor.close()
 
 
 @bp.route('/process/batch', methods=['POST'])
@@ -635,16 +408,7 @@ def classify_document_internal(req: DocumentClassificationRequest):
     """Internal function for document classification."""
     ai_service = AIService()
     result = ai_service.classify_document(req)
-
-    with db_cursor() as cursor:
-        cursor.execute(
-            """
-            UPDATE unified_files
-            SET file_type = %s, ai_confidence = %s, updated_at = NOW()
-            WHERE id = %s
-            """,
-            (result.document_type, result.confidence, req.file_id),
-        )
+    persist_document_classification(req.file_id, result)
 
     return result
 
@@ -653,16 +417,7 @@ def classify_expense_internal(req: ExpenseClassificationRequest):
     """Internal function for expense classification."""
     ai_service = AIService()
     result = ai_service.classify_expense(req)
-
-    with db_cursor() as cursor:
-        cursor.execute(
-            """
-            UPDATE unified_files
-            SET expense_type = %s, updated_at = NOW()
-            WHERE id = %s
-            """,
-            (result.expense_type, req.file_id),
-        )
+    persist_expense_classification(req.file_id, result)
 
     return result
 
@@ -671,57 +426,34 @@ def extract_data_internal(req: DataExtractionRequest):
     """Internal function for data extraction."""
     ai_service = AIService()
     result = ai_service.extract_data(req)
-    _persist_extraction_result(req.file_id, result)
+    persist_extraction_result(req.file_id, result)
     return result
 
 
 def classify_accounting_internal(req: AccountingClassificationRequest):
     """Internal function for accounting classification."""
-    with db_cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT sub_account, sub_account_description
-            FROM chart_of_accounts
-            WHERE sub_account IS NOT NULL AND sub_account <> ''
-            """
-        )
-        chart_of_accounts = cursor.fetchall()
-
+    chart_of_accounts = fetch_chart_of_accounts()
     ai_service = AIService()
     result = ai_service.classify_accounting(req, chart_of_accounts)
-    # Implementation same as classify_accounting endpoint
+    persist_accounting_proposals(result)
     return result
 
 
 def match_credit_card_internal(req: CreditCardMatchRequest):
     """Internal function for credit card matching."""
-    with db_cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT i.id, i.merchant_name, i.amount_sek
-            FROM creditcard_invoice_items AS i
-            LEFT JOIN creditcard_receipt_matches AS m ON m.invoice_item_id = i.id
-            WHERE i.purchase_date = %s
-              AND m.invoice_item_id IS NULL
-              AND (%s IS NULL OR i.amount_sek IS NULL OR ABS(i.amount_sek - %s) <= 5)
-            ORDER BY ABS(IFNULL(i.amount_sek, %s) - %s)
-            LIMIT 25
-            """,
-            (
-                req.purchase_date.date() if isinstance(req.purchase_date, datetime) else req.purchase_date,
-                req.amount,
-                req.amount,
-                req.amount,
-                req.amount,
-            ),
-        )
-        potential_matches = cursor.fetchall()
+    purchase_date = req.purchase_date
+    if isinstance(purchase_date, datetime):
+        lookup_date = purchase_date
+    else:
+        lookup_date = datetime.fromisoformat(str(purchase_date))
+
+    potential_matches = fetch_credit_card_candidates(lookup_date, req.amount)
 
     ai_service = AIService()
     result = ai_service.match_credit_card(req, potential_matches)
 
     if result.matched and result.credit_card_invoice_item_id:
-        _persist_credit_card_match(
+        persist_credit_card_match(
             req.file_id,
             result.credit_card_invoice_item_id,
             req.amount,
