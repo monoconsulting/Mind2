@@ -20,7 +20,21 @@ from services.enrichment import enrich_receipt, provider_from_env
 from services.validation import validate_receipt
 from services.accounting import propose_accounting_entries
 from models.accounting import AccountingRule
+from models.ai_processing import (
+    AccountingClassificationRequest,
+    CreditCardMatchRequest,
+    DataExtractionRequest,
+    DocumentClassificationRequest,
+    ExpenseClassificationRequest,
+)
 from models.receipts import AccountingEntry, Receipt, ReceiptStatus
+from api.ai_processing import (
+    classify_accounting_internal,
+    classify_document_internal,
+    classify_expense_internal,
+    extract_data_internal,
+    match_credit_card_internal,
+)
 
 celery_app = get_celery()
 
@@ -223,6 +237,142 @@ def _collect_text_hints(file_id: str) -> str:
     return " ".join(hints)
 
 
+def _load_ai_context(file_id: str):
+    if db_cursor is None:
+        return None
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT ocr_raw, file_type, expense_type FROM unified_files WHERE id=%s",
+                (file_id,),
+            )
+            return cur.fetchone()
+    except Exception:
+        return None
+
+
+def _load_accounting_inputs(file_id: str):
+    if db_cursor is None:
+        return None
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT gross_amount_sek, net_amount_sek,
+                       (gross_amount_sek - net_amount_sek) AS vat_amount,
+                       c.name AS vendor_name
+                  FROM unified_files uf
+             LEFT JOIN companies c ON uf.company_id = c.id
+                 WHERE uf.id = %s
+                """,
+                (file_id,),
+            )
+            return cur.fetchone()
+    except Exception:
+        return None
+
+
+def _load_credit_context(file_id: str):
+    if db_cursor is None:
+        return None
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT purchase_datetime, gross_amount_sek, c.name
+                  FROM unified_files uf
+             LEFT JOIN companies c ON uf.company_id = c.id
+                 WHERE uf.id = %s
+                """,
+                (file_id,),
+            )
+            return cur.fetchone()
+    except Exception:
+        return None
+
+
+def _run_ai_pipeline(file_id: str) -> List[str]:
+    if db_cursor is None:
+        raise RuntimeError("Database unavailable for AI pipeline")
+
+    steps: List[str] = []
+    context = _load_ai_context(file_id)
+    if context is None:
+        raise ValueError(f"File {file_id} not found")
+    ocr_text, document_type, expense_type = context
+
+    classify_document_internal(
+        DocumentClassificationRequest(file_id=file_id, ocr_text=ocr_text or "")
+    )
+    steps.append("AI1")
+    _history(file_id, "ai1", "success")
+
+    context = _load_ai_context(file_id) or context
+    ocr_text, document_type, expense_type = context
+
+    classify_expense_internal(
+        ExpenseClassificationRequest(
+            file_id=file_id,
+            ocr_text=ocr_text or "",
+            document_type=document_type or "other",
+        )
+    )
+    steps.append("AI2")
+    _history(file_id, "ai2", "success")
+
+    context = _load_ai_context(file_id) or context
+    ocr_text, document_type, expense_type = context
+
+    extract_data_internal(
+        DataExtractionRequest(
+            file_id=file_id,
+            ocr_text=ocr_text or "",
+            document_type=document_type or "other",
+            expense_type=expense_type or "personal",
+        )
+    )
+    steps.append("AI3")
+    _history(file_id, "ai3", "success")
+
+    accounting_inputs = _load_accounting_inputs(file_id)
+    if accounting_inputs:
+        gross, net, vat_amount, vendor_name = accounting_inputs
+        try:
+            classify_accounting_internal(
+                AccountingClassificationRequest(
+                    file_id=file_id,
+                    document_type=document_type or "other",
+                    expense_type=expense_type or "personal",
+                    gross_amount=Decimal(str(gross or 0)),
+                    net_amount=Decimal(str(net or 0)),
+                    vat_amount=Decimal(str(vat_amount or 0)),
+                    vendor_name=vendor_name or "",
+                    receipt_items=[],
+                )
+            )
+            steps.append("AI4")
+            _history(file_id, "ai4", "success")
+        except Exception:
+            _history(file_id, "ai4", "error")
+            raise
+
+    credit_context = _load_credit_context(file_id)
+    if credit_context and credit_context[0]:
+        purchase_dt, amount, merchant = credit_context
+        match_credit_card_internal(
+            CreditCardMatchRequest(
+                file_id=file_id,
+                purchase_date=purchase_dt,
+                amount=Decimal(str(amount)) if amount is not None else None,
+                merchant_name=merchant,
+            )
+        )
+        steps.append("AI5")
+        _history(file_id, "ai5", "success")
+
+    return steps
+
+
 def _infer_document_type(
     file_type: Optional[str],
     merchant: Optional[str],
@@ -344,13 +494,26 @@ def process_ocr(file_id: str) -> dict[str, Any]:
         ok = _update_file_status(file_id, status="ocr_done", confidence=0.5)
     _history(file_id, job="ocr", status="success" if ok else "error")
     try:
-        process_classification.delay(file_id)  # type: ignore[attr-defined]
+        process_ai_pipeline.delay(file_id)  # type: ignore[attr-defined]
     except Exception:
         try:
-            process_classification.run(file_id)
+            process_ai_pipeline.run(file_id)
         except Exception:
             pass
     return {"file_id": file_id, "status": "ocr_done", "ok": ok, "real": bool(result)}
+
+
+@celery_app.task
+@track_task("process_ai_pipeline")
+def process_ai_pipeline(file_id: str) -> dict[str, Any]:
+    try:
+        steps = _run_ai_pipeline(file_id)
+        _history(file_id, job="ai_pipeline", status="success")
+        return {"file_id": file_id, "steps": steps, "ok": True}
+    except Exception as exc:
+        _history(file_id, job="ai_pipeline", status="error")
+        _update_file_status(file_id, "manual_review")
+        return {"file_id": file_id, "ok": False, "error": str(exc)}
 
 
 @celery_app.task
