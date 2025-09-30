@@ -222,6 +222,7 @@ class BatchProcessingRequest(BaseModel):
 
 class BatchProcessingResponse(BaseModel):
     """Response for batch AI processing."""
+
     total_files: int
     processed: int
     failed: int
