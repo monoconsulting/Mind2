@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from flask import Blueprint, jsonify, request
 from pydantic import ValidationError
 
-from ..models.ai_processing import (
+from models.ai_processing import (
     AccountingClassificationRequest,
     AccountingClassificationResponse,
     AccountingProposal,
@@ -27,9 +27,9 @@ from ..models.ai_processing import (
     ExpenseClassificationResponse,
     ReceiptItem,
 )
-from ..services.ai_service import AIService
-from ..services.db.connection import db_cursor, get_connection
-from .middleware import auth_required
+from services.ai_service import AIService
+from services.db.connection import db_cursor, get_connection
+from api.middleware import auth_required
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,7 @@ def _set_ai_stage(
     confidence: Optional[float] = None,
     matched: Optional[bool] = None,
 ) -> None:
+    """Set AI stage status. Note: rowcount may be 0 if values don't change, which is OK."""
     status_value = _stage_status(stage, matched)
     if confidence is None:
         cursor.execute(
@@ -80,22 +81,41 @@ def _set_ai_stage(
             """,
             (status_value, confidence, file_id),
         )
-    if cursor.rowcount == 0:
-        raise ValueError(f"File {file_id} not found")
+    # Note: We don't check rowcount here because MySQL returns 0 if values don't change
+    # The file existence is verified by the calling function
 
 
 def _ensure_company(cursor, company: Company) -> Optional[int]:
+    """
+    Ensure company exists in database and return its ID.
+
+    Strategy:
+    1. Search by orgnr if provided (most reliable identifier)
+    2. Fall back to name search if no orgnr match
+    3. Update existing company with new data
+    4. Create new company if not found
+
+    Returns:
+        Company ID if company was found/created, None if insufficient data
+    """
     name = (company.name or "").strip() or None
     orgnr = (company.orgnr or "").strip() or None
+
     if not name and not orgnr:
+        logger.warning("Cannot ensure company: both name and orgnr are empty")
         return None
 
     company_id: Optional[int] = None
+
+    # Strategy 1: Try to find by orgnr (most reliable)
     if orgnr:
         cursor.execute("SELECT id FROM companies WHERE orgnr = %s", (orgnr,))
         row = cursor.fetchone()
         if row:
             company_id = int(row[0])
+            logger.debug(f"Found company by orgnr={orgnr}: company_id={company_id}")
+
+    # Strategy 2: Fall back to name search if orgnr didn't match
     if company_id is None and name:
         cursor.execute(
             "SELECT id FROM companies WHERE name = %s ORDER BY id LIMIT 1",
@@ -104,12 +124,15 @@ def _ensure_company(cursor, company: Company) -> Optional[int]:
         row = cursor.fetchone()
         if row:
             company_id = int(row[0])
+            logger.debug(f"Found company by name='{name}': company_id={company_id}")
 
+    # Update existing company with new information
     if company_id is not None:
         cursor.execute(
             """
             UPDATE companies
                SET name = COALESCE(%s, name),
+                   orgnr = COALESCE(%s, orgnr),
                    address = COALESCE(%s, address),
                    address2 = COALESCE(%s, address2),
                    zip = COALESCE(%s, zip),
@@ -122,6 +145,7 @@ def _ensure_company(cursor, company: Company) -> Optional[int]:
             """,
             (
                 name,
+                orgnr,
                 company.address,
                 company.address2,
                 company.zip,
@@ -132,30 +156,39 @@ def _ensure_company(cursor, company: Company) -> Optional[int]:
                 company_id,
             ),
         )
+        logger.info(f"Updated company {company_id} with new data")
         return company_id
 
+    # Create new company if not found
     if not name:
+        logger.warning("Cannot create company: name is required but missing")
         return None
 
-    cursor.execute(
-        """
-        INSERT INTO companies
-            (name, orgnr, address, address2, zip, city, country, phone, www)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
-        (
-            name,
-            orgnr,
-            company.address,
-            company.address2,
-            company.zip,
-            company.city,
-            company.country,
-            company.phone,
-            company.www,
-        ),
-    )
-    return int(cursor.lastrowid)
+    try:
+        cursor.execute(
+            """
+            INSERT INTO companies
+                (name, orgnr, address, address2, zip, city, country, phone, www)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                name,
+                orgnr,
+                company.address,
+                company.address2,
+                company.zip,
+                company.city,
+                company.country,
+                company.phone,
+                company.www,
+            ),
+        )
+        company_id = int(cursor.lastrowid)
+        logger.info(f"Created new company: {company_id} (name='{name}', orgnr={orgnr})")
+        return company_id
+    except Exception as exc:
+        logger.error(f"Failed to create company (name='{name}', orgnr={orgnr}): {exc}")
+        raise
 
 
 def _replace_receipt_items(cursor, file_id: str, items: Iterable[ReceiptItem]) -> None:
@@ -225,12 +258,14 @@ def _persist_extraction_result(
             params.append(value)
         set_parts.append("updated_at = NOW()")
         params.append(file_id)
+        # Check if file exists first
+        cursor.execute("SELECT id FROM unified_files WHERE id = %s", (file_id,))
+        if cursor.fetchone() is None:
+            raise ValueError(f"File {file_id} not found")
         cursor.execute(
             "UPDATE unified_files SET " + ", ".join(set_parts) + " WHERE id = %s",
             tuple(params),
         )
-        if cursor.rowcount == 0:
-            raise ValueError(f"File {file_id} not found")
         _replace_receipt_items(cursor, file_id, result.receipt_items)
         _set_ai_stage(cursor, file_id, "AI3", result.confidence)
         if owns_connection:
@@ -416,12 +451,14 @@ def classify_document_internal(req: DocumentClassificationRequest) -> DocumentCl
         conn.start_transaction()
         cursor = conn.cursor()
         try:
+            # Check if file exists first
+            cursor.execute("SELECT id FROM unified_files WHERE id = %s", (req.file_id,))
+            if cursor.fetchone() is None:
+                raise ValueError(f"File {req.file_id} not found")
             cursor.execute(
                 "UPDATE unified_files SET file_type = %s WHERE id = %s",
                 (result.document_type, req.file_id),
             )
-            if cursor.rowcount == 0:
-                raise ValueError(f"File {req.file_id} not found")
             _set_ai_stage(cursor, req.file_id, "AI1", result.confidence)
             conn.commit()
         except Exception:
@@ -439,12 +476,14 @@ def classify_expense_internal(req: ExpenseClassificationRequest) -> ExpenseClass
         conn.start_transaction()
         cursor = conn.cursor()
         try:
+            # Check if file exists first
+            cursor.execute("SELECT id FROM unified_files WHERE id = %s", (req.file_id,))
+            if cursor.fetchone() is None:
+                raise ValueError(f"File {req.file_id} not found")
             cursor.execute(
                 "UPDATE unified_files SET expense_type = %s WHERE id = %s",
                 (result.expense_type, req.file_id),
             )
-            if cursor.rowcount == 0:
-                raise ValueError(f"File {req.file_id} not found")
             _set_ai_stage(cursor, req.file_id, "AI2", result.confidence)
             conn.commit()
         except Exception:

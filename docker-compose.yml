@@ -7,6 +7,7 @@ services:
     volumes:
       - ./storage:/data/storage
       - ./inbox:/data/inbox
+      - G:\Dropbox\MINDUPLOAD:/data/upload
     environment:
       - PYTHONPATH=/app
       - DB_HOST=mysql
@@ -32,6 +33,7 @@ services:
       - FTP_PASSIVE=${FTP_PASSIVE}
       - FTP_ALLOWED_EXT=${FTP_ALLOWED_EXT}
       - FTP_DELETE_AFTER=${FTP_DELETE_AFTER}
+      - DB_AUTO_MIGRATE=0
     networks: [main]
     profiles: [main]
 
@@ -44,6 +46,7 @@ services:
     entrypoint: []
     volumes:
       - ./storage:/data/storage
+      - G:\Dropbox\MINDUPLOAD:/data/upload
     environment:
       - PYTHONPATH=/app
       - DB_HOST=mysql

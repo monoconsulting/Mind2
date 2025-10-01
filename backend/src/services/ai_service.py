@@ -10,7 +10,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from ..models.ai_processing import (
+from models.ai_processing import (
     DocumentClassificationRequest,
     DocumentClassificationResponse,
     ExpenseClassificationRequest,
@@ -26,7 +26,7 @@ from ..models.ai_processing import (
     Company,
     AccountingProposal,
 )
-from ..services.db.connection import db_cursor
+from services.db.connection import db_cursor
 
 
 @dataclass
@@ -115,54 +115,8 @@ def _find_amounts(line: str) -> List[Decimal]:
     return amounts
 
 
-def _pick_amount_from_lines(lines: Iterable[str], keywords: Iterable[str]) -> Optional[Decimal]:
-    lowered_keywords = [kw.lower() for kw in keywords]
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line:
-            continue
-        if any(kw in line.lower() for kw in lowered_keywords):
-            amounts = _find_amounts(line)
-            if amounts:
-                return amounts[-1]
-    return None
-
-
-def _extract_purchase_datetime(text: str) -> Optional[datetime]:
-    for pattern in DATE_PATTERNS:
-        match = pattern.search(text)
-        if not match:
-            continue
-        date_part = match.group(1)
-        time_part = match.group(2) if len(match.groups()) > 1 else None
-        try:
-            if "/" in date_part or "." in date_part:
-                separators = "/" if "/" in date_part else "."
-                day, month, year = date_part.split(separators)
-                iso_date = f"{year}-{month}-{day}"
-            else:
-                iso_date = date_part.replace("/", "-")
-            if time_part:
-                return datetime.fromisoformat(f"{iso_date}T{time_part}")
-            return datetime.fromisoformat(f"{iso_date}T00:00:00")
-        except ValueError:
-            continue
-    return None
-
-
-def _estimate_company_name(lines: List[str]) -> Optional[str]:
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if any(char.isdigit() for char in stripped):
-            continue
-        if len(stripped.split()) > 6:
-            continue
-        upper_ratio = sum(1 for ch in stripped if ch.isupper()) / max(len(stripped), 1)
-        if upper_ratio > 0.4:
-            return stripped[:234]
-    return None
+# NOTE: Rule-based extraction functions removed - AI3 uses ONLY LLM for data extraction
+# No OCR-based parsing of business data allowed per MIND_WORKFLOW.md
 
 
 class AIService:
@@ -372,88 +326,14 @@ class AIService:
     # AI3 - Data extraction
     # ------------------------------------------------------------------
     def extract_data(self, request: DataExtractionRequest) -> DataExtractionResponse:
+        """
+        AI3 - Extract ALL business data from OCR text using LLM.
+        NO rule-based extraction allowed - only LLM extracts business data!
+        """
         ocr_text = request.ocr_text or ""
-        lines = [line for line in ocr_text.splitlines() if line.strip()]
-        logger.info("Extracting structured data for %s", request.file_id)
+        logger.info("Extracting structured data via LLM for %s", request.file_id)
 
-        orgnr_match = ORGNR_PATTERN.search(ocr_text)
-        orgnr = orgnr_match.group(0) if orgnr_match else None
-
-        receipt_number_match = RECEIPT_NO_PATTERN.search(ocr_text)
-        receipt_number = receipt_number_match.group(1) if receipt_number_match else None
-
-        purchase_dt = _extract_purchase_datetime(ocr_text)
-
-        currency_match = ISO_CURRENCY_PATTERN.search(ocr_text)
-        currency = currency_match.group(1).upper() if currency_match else "SEK"
-        if " kr" in ocr_text.lower():
-            currency = "SEK"
-
-        payment_type = "card" if any(keyword in ocr_text.lower() for keyword in ["visa", "mastercard", "card", "kort"]) else "cash"
-
-        gross_amount = _pick_amount_from_lines(lines, ["total", "summa", "amount", "belopp", "att betala"])
-        vat_amount = _pick_amount_from_lines(lines, ["moms", "vat", "skatt"])
-        net_amount = _pick_amount_from_lines(lines, ["netto", "ex moms", "subtotal"])
-
-        if gross_amount and vat_amount and not net_amount:
-            net_amount = gross_amount - vat_amount
-        elif gross_amount and net_amount and not vat_amount and gross_amount > net_amount:
-            vat_amount = gross_amount - net_amount
-
-        exchange_rate = None
-        exchange_match = re.search(r"1\s*[A-Z]{3}\s*=\s*(\d+[\s.,]\d+)", ocr_text)
-        if exchange_match:
-            exchange_rate = _normalize_amount(exchange_match.group(1))
-
-        company_name = _estimate_company_name(lines)
-        company = Company(
-            name=company_name or "",
-            orgnr=orgnr or "",
-            address=None,
-            address2=None,
-            zip=None,
-            city=None,
-            country=None,
-            phone=None,
-            www=None,
-        )
-
-        receipt_items: List[ReceiptItem] = []
-        item_pattern = re.compile(r"^(\d+)\s*x?\s*([\wÅÄÖåäö \-]+?)\s+(\d+[\s.,]\d{2})$")
-        for line in lines:
-            match = item_pattern.match(line.strip())
-            if not match:
-                continue
-            qty = int(match.group(1))
-            name = match.group(2).strip()
-            amount = _normalize_amount(match.group(3))
-            if amount is None:
-                continue
-            item = ReceiptItem(
-                main_id=request.file_id,
-                article_id="",
-                name=name[:222],
-                number=qty,
-                item_price_ex_vat=amount,
-                item_price_inc_vat=amount,
-                item_total_price_ex_vat=amount * qty,
-                item_total_price_inc_vat=amount * qty,
-                currency=currency,
-                vat=Decimal("0"),
-                vat_percentage=Decimal("0"),
-            )
-            receipt_items.append(item)
-
-        other_meta: Dict[str, Any] = {
-            "model": self.model_name,
-            "provider": self.provider_name,
-            "extraction_timestamp": datetime.utcnow().isoformat(),
-        }
-        if vat_amount:
-            other_meta["vat_detected"] = str(vat_amount)
-        if receipt_number:
-            other_meta["receipt_number_detected"] = receipt_number
-
+        # ONLY LLM extracts data - call LLM provider
         llm_result = self._provider_generate(
             "data_extraction",
             {
@@ -462,50 +342,68 @@ class AIService:
                 "expense_type": request.expense_type,
             },
         )
-        if llm_result:
-            other_meta["llm_augmented"] = True
-            if "unified_file" in llm_result:
-                unified_overrides = {k: v for k, v in llm_result["unified_file"].items() if v is not None}
-            else:
-                unified_overrides = {}
-            if unified_overrides:
-                for key, value in unified_overrides.items():
-                    setattr(unified_file, key, value)
-            if "company" in llm_result:
-                for key, value in llm_result["company"].items():
-                    if value is not None:
-                        setattr(company, key, value)
-            if llm_result.get("receipt_items"):
-                try:
-                    receipt_items = [ReceiptItem(**item) for item in llm_result["receipt_items"]]
-                except Exception as exc:  # pragma: no cover
-                    logger.warning("Failed to parse LLM receipt items: %s", exc)
-            if "confidence" in llm_result:
-                try:
-                    confidence = float(llm_result["confidence"])
-                except (TypeError, ValueError):  # pragma: no cover
-                    pass
 
-        fields_considered = [gross_amount, vat_amount, net_amount, orgnr, receipt_number, purchase_dt, company_name]
-        filled = sum(1 for value in fields_considered if value)
-        confidence = 0.4 + 0.1 * filled
-        confidence = max(0.4, min(confidence, 0.95))
+        if not llm_result:
+            logger.error("LLM returned no result for data extraction - AI3 requires LLM!")
+            raise ValueError("LLM data extraction failed - no AI provider configured or LLM returned empty response")
 
+        # Extract data from LLM response
+        confidence = 0.5
+        if "confidence" in llm_result:
+            try:
+                confidence = float(llm_result["confidence"])
+            except (TypeError, ValueError):
+                pass
+
+        # Extract unified_file data from LLM
+        unified_data = llm_result.get("unified_file", {})
         unified_file = UnifiedFileBase(
             file_type=request.document_type,
-            orgnr=orgnr,
-            payment_type=payment_type,
-            purchase_datetime=purchase_dt,
+            orgnr=unified_data.get("orgnr"),
+            payment_type=unified_data.get("payment_type"),
+            purchase_datetime=unified_data.get("purchase_datetime"),
             expense_type=request.expense_type if request.expense_type in {"personal", "corporate"} else None,
-            gross_amount_original=gross_amount,
-            net_amount_original=net_amount,
-            exchange_rate=exchange_rate,
-            currency=currency,
-            gross_amount_sek=gross_amount if currency == "SEK" else None,
-            net_amount_sek=net_amount if currency == "SEK" else None,
-            receipt_number=receipt_number,
-            other_data=json.dumps(other_meta),
+            gross_amount_original=unified_data.get("gross_amount_original"),
+            net_amount_original=unified_data.get("net_amount_original"),
+            exchange_rate=unified_data.get("exchange_rate"),
+            currency=unified_data.get("currency"),  # NO DEFAULT - LLM must provide
+            gross_amount_sek=unified_data.get("gross_amount_sek"),
+            net_amount_sek=unified_data.get("net_amount_sek"),
+            receipt_number=unified_data.get("receipt_number"),
+            other_data=unified_data.get("other_data"),
             ocr_raw=ocr_text,
+        )
+
+        # Extract company data from LLM
+        company_data = llm_result.get("company", {})
+        company = Company(
+            name=company_data.get("name") or "",  # Required by schema but may be empty
+            orgnr=company_data.get("orgnr") or "",  # Required by schema but may be empty
+            address=company_data.get("address"),
+            address2=company_data.get("address2"),
+            zip=company_data.get("zip"),
+            city=company_data.get("city"),
+            country=company_data.get("country"),
+            phone=company_data.get("phone"),
+            www=company_data.get("www"),
+        )
+
+        # Extract receipt items from LLM
+        receipt_items: List[ReceiptItem] = []
+        if llm_result.get("receipt_items"):
+            try:
+                receipt_items = [ReceiptItem(**item) for item in llm_result["receipt_items"]]
+            except Exception as exc:
+                logger.error("Failed to parse LLM receipt items: %s", exc)
+                # Continue with empty items rather than failing completely
+
+        logger.info(
+            "LLM extracted: company='%s', orgnr='%s', gross=%s, items=%d, confidence=%.2f",
+            company.name,
+            company.orgnr,
+            unified_file.gross_amount_original,
+            len(receipt_items),
+            confidence,
         )
 
         return DataExtractionResponse(

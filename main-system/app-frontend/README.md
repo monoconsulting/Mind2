@@ -60,8 +60,7 @@ Step-by-step (summary):
    ```
    Ensure `<body>` has the required global classes (e.g., `dm-body`).
 5) Verify:
-   - Dark theme matches mockups
-   - Responsive layouts across breakpoints
+      - Responsive layouts across breakpoints
    - Fonts, icons, spacing are consistent
    - Interactive components behave as expected
 

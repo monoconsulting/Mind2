@@ -76,7 +76,7 @@ npm run build
 
 Open your application in a browser and verify that:
 
-The dark theme and overall design match the original mockups.
+
 
 Components scale properly on desktop, tablet, and mobile.
 

@@ -39,17 +39,59 @@ from api.ai_processing import (
 celery_app = get_celery()
 
 
-INSERT_HISTORY_SQL = (
-    "INSERT INTO ai_processing_history (file_id, job_type, status) VALUES (%s, %s, %s)"
-)
+INSERT_HISTORY_SQL = """
+    INSERT INTO ai_processing_history
+    (file_id, job_type, status, ai_stage_name, log_text, error_message,
+     confidence, processing_time_ms, provider, model_name)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+"""
 
 
-def _history(file_id: str, job: str, status: str) -> None:
+def _history(
+    file_id: str,
+    job: str,
+    status: str,
+    ai_stage_name: str | None = None,
+    log_text: str | None = None,
+    error_message: str | None = None,
+    confidence: float | None = None,
+    processing_time_ms: int | None = None,
+    provider: str | None = None,
+    model_name: str | None = None,
+) -> None:
+    """Log processing history with detailed information.
+
+    Args:
+        file_id: The file being processed
+        job: Job type (e.g., 'ai1', 'ai2', 'ocr', 'classification')
+        status: 'success' or 'error'
+        ai_stage_name: Human-readable stage name (e.g., 'AI1-DocumentClassification')
+        log_text: Detailed explanation of what happened
+        error_message: Error details if status is 'error'
+        confidence: Confidence score for this stage
+        processing_time_ms: Time taken in milliseconds
+        provider: AI provider used (e.g., 'rule-based', 'openai')
+        model_name: Model name used
+    """
     if db_cursor is None:
         return
     try:
         with db_cursor() as cur:
-            cur.execute(INSERT_HISTORY_SQL, (file_id, job, status))
+            cur.execute(
+                INSERT_HISTORY_SQL,
+                (
+                    file_id,
+                    job,
+                    status,
+                    ai_stage_name,
+                    log_text,
+                    error_message,
+                    confidence,
+                    processing_time_ms,
+                    provider,
+                    model_name,
+                ),
+            )
     except Exception:
         # best-effort history
         pass
@@ -78,49 +120,39 @@ def _update_file_status(file_id: str, status: str, confidence: float | None = No
 
 def _update_file_fields(
     file_id: str,
-    merchant: str | None = None,
-    gross: float | None = None,
-    purchase_iso: str | None = None,
     ocr_raw: str | None = None,
 ) -> bool:
+    """Update ONLY OCR raw text. All business data set by AI, not OCR."""
     if db_cursor is None:
         return False
     try:
-        sets: List[str] = []
-        vals: List[Any] = []
-        if merchant is not None:
-            sets.append("merchant_name=%s")
-            vals.append(merchant)
-        if gross is not None:
-            sets.append("gross_amount=%s")
-            vals.append(gross)
-        if purchase_iso is not None:
-            sets.append("purchase_datetime=%s")
-            vals.append(purchase_iso)
-        if ocr_raw is not None:
-            sets.append("ocr_raw=%s")
-            vals.append(ocr_raw)
-        if not sets:
+        if ocr_raw is None:
             return False
-        sets.append("updated_at=NOW()")
-        vals.append(file_id)
         with db_cursor() as cur:
-            cur.execute("UPDATE unified_files SET " + ", ".join(sets) + " WHERE id=%s", tuple(vals))
+            cur.execute(
+                "UPDATE unified_files SET ocr_raw=%s, updated_at=NOW() WHERE id=%s",
+                (ocr_raw, file_id)
+            )
             return cur.rowcount > 0
     except Exception:
         return False
 
 
 def _load_receipt_model(file_id: str) -> Optional[Receipt]:
+    """Load receipt model with company name from companies table, not merchant_name."""
     if db_cursor is None:
         return None
     try:
         with db_cursor() as cur:
             cur.execute(
-                (
-                    "SELECT id, submitted_by, created_at, merchant_name, orgnr, purchase_datetime, "
-                    "gross_amount, net_amount, ai_confidence FROM unified_files WHERE id=%s"
-                ),
+                """
+                SELECT uf.id, uf.submitted_by, uf.created_at, c.name AS company_name,
+                       uf.orgnr, uf.purchase_datetime, uf.gross_amount, uf.net_amount,
+                       uf.ai_confidence
+                FROM unified_files uf
+                LEFT JOIN companies c ON uf.company_id = c.id
+                WHERE uf.id = %s
+                """,
                 (file_id,),
             )
             row = cur.fetchone()
@@ -130,7 +162,7 @@ def _load_receipt_model(file_id: str) -> Optional[Receipt]:
             rid,
             submitted_by,
             created_at,
-            merchant_name,
+            company_name,
             orgnr,
             purchase_dt,
             gross,
@@ -176,7 +208,7 @@ def _load_receipt_model(file_id: str) -> Optional[Receipt]:
             id=rid,
             submitted_by=submitted_by,
             submitted_at=submitted_at,
-            merchant_name=merchant_name,
+            merchant_name=company_name,  # From companies table via JOIN
             orgnr=orgnr,
             purchase_datetime=purchase_at,
             gross_amount=gross_dec,
@@ -292,53 +324,215 @@ def _load_credit_context(file_id: str):
 
 
 def _run_ai_pipeline(file_id: str) -> List[str]:
+    """Run the complete AI pipeline (AI1-AI5) with detailed logging."""
+    import time
+    from services.ai_service import AIService
+
     if db_cursor is None:
         raise RuntimeError("Database unavailable for AI pipeline")
 
     steps: List[str] = []
+    ai_service = AIService()
+    provider = ai_service.provider_name
+    model = ai_service.model_name
+
     context = _load_ai_context(file_id)
     if context is None:
-        raise ValueError(f"File {file_id} not found")
+        error_msg = f"File {file_id} not found in unified_files"
+        _history(
+            file_id,
+            "ai_pipeline",
+            "error",
+            ai_stage_name="Pipeline-Initialization",
+            log_text="Failed to load file context from database",
+            error_message=error_msg,
+        )
+        raise ValueError(error_msg)
     ocr_text, document_type, expense_type = context
 
-    classify_document_internal(
-        DocumentClassificationRequest(file_id=file_id, ocr_text=ocr_text or "")
-    )
-    steps.append("AI1")
-    _history(file_id, "ai1", "success")
+    # AI1 - Document Classification
+    start_time = time.time()
+    try:
+        result = classify_document_internal(
+            DocumentClassificationRequest(file_id=file_id, ocr_text=ocr_text or "")
+        )
+        elapsed = int((time.time() - start_time) * 1000)
+        steps.append("AI1")
 
+        log_parts = [
+            f"Classified document as '{result.document_type}'",
+            f"OCR text length: {len(ocr_text or '')} characters",
+        ]
+        if result.reasoning:
+            log_parts.append(f"Reasoning: {result.reasoning}")
+
+        _history(
+            file_id,
+            "ai1",
+            "success",
+            ai_stage_name="AI1-DocumentClassification",
+            log_text="; ".join(log_parts),
+            confidence=result.confidence,
+            processing_time_ms=elapsed,
+            provider=provider,
+            model_name=model,
+        )
+    except Exception as exc:
+        elapsed = int((time.time() - start_time) * 1000)
+        error_msg = f"{type(exc).__name__}: {str(exc)}"
+        _history(
+            file_id,
+            "ai1",
+            "error",
+            ai_stage_name="AI1-DocumentClassification",
+            log_text=f"Failed to classify document type from OCR text ({len(ocr_text or '')} chars)",
+            error_message=error_msg,
+            processing_time_ms=elapsed,
+            provider=provider,
+            model_name=model,
+        )
+        raise
+
+    # Reload context after AI1
     context = _load_ai_context(file_id) or context
     ocr_text, document_type, expense_type = context
 
-    classify_expense_internal(
-        ExpenseClassificationRequest(
-            file_id=file_id,
-            ocr_text=ocr_text or "",
-            document_type=document_type or "other",
+    # AI2 - Expense Classification
+    start_time = time.time()
+    try:
+        result = classify_expense_internal(
+            ExpenseClassificationRequest(
+                file_id=file_id,
+                ocr_text=ocr_text or "",
+                document_type=document_type or "other",
+            )
         )
-    )
-    steps.append("AI2")
-    _history(file_id, "ai2", "success")
+        elapsed = int((time.time() - start_time) * 1000)
+        steps.append("AI2")
 
+        log_parts = [
+            f"Classified expense as '{result.expense_type}'",
+            f"Document type: {document_type or 'other'}",
+        ]
+        if result.card_identifier:
+            log_parts.append(f"Card identifier: {result.card_identifier}")
+        if result.reasoning:
+            log_parts.append(f"Reasoning: {result.reasoning}")
+
+        _history(
+            file_id,
+            "ai2",
+            "success",
+            ai_stage_name="AI2-ExpenseClassification",
+            log_text="; ".join(log_parts),
+            confidence=result.confidence,
+            processing_time_ms=elapsed,
+            provider=provider,
+            model_name=model,
+        )
+    except Exception as exc:
+        elapsed = int((time.time() - start_time) * 1000)
+        error_msg = f"{type(exc).__name__}: {str(exc)}"
+        _history(
+            file_id,
+            "ai2",
+            "error",
+            ai_stage_name="AI2-ExpenseClassification",
+            log_text=f"Failed to classify expense type for document_type='{document_type}'",
+            error_message=error_msg,
+            processing_time_ms=elapsed,
+            provider=provider,
+            model_name=model,
+        )
+        raise
+
+    # Reload context after AI2
     context = _load_ai_context(file_id) or context
     ocr_text, document_type, expense_type = context
 
-    extract_data_internal(
-        DataExtractionRequest(
-            file_id=file_id,
-            ocr_text=ocr_text or "",
-            document_type=document_type or "other",
-            expense_type=expense_type or "personal",
+    # AI3 - Data Extraction
+    start_time = time.time()
+    try:
+        result = extract_data_internal(
+            DataExtractionRequest(
+                file_id=file_id,
+                ocr_text=ocr_text or "",
+                document_type=document_type or "other",
+                expense_type=expense_type or "personal",
+            )
         )
-    )
-    steps.append("AI3")
-    _history(file_id, "ai3", "success")
+        elapsed = int((time.time() - start_time) * 1000)
+        steps.append("AI3")
 
+        extracted = []
+        if result.unified_file:
+            uf = result.unified_file
+            if uf.gross_amount_original:
+                extracted.append(f"gross={uf.gross_amount_original}")
+            if uf.orgnr:
+                extracted.append(f"orgnr={uf.orgnr}")
+            if uf.purchase_datetime:
+                extracted.append(f"purchase_date={uf.purchase_datetime}")
+            if uf.currency:
+                extracted.append(f"currency={uf.currency}")
+
+        item_count = len(result.receipt_items or [])
+
+        # Detailed company extraction logging
+        company_details = []
+        if result.company:
+            if result.company.name:
+                company_details.append(f"name='{result.company.name}'")
+            if result.company.orgnr:
+                company_details.append(f"orgnr='{result.company.orgnr}'")
+            if result.company.address:
+                company_details.append(f"address='{result.company.address}'")
+            if result.company.city:
+                company_details.append(f"city='{result.company.city}'")
+
+        log_parts = [
+            f"Extracted structured data: {', '.join(extracted) if extracted else 'minimal data'}",
+            f"Receipt items: {item_count}",
+        ]
+        if company_details:
+            log_parts.append(f"Company: {'; '.join(company_details)}")
+        else:
+            log_parts.append("Company: NO COMPANY DATA EXTRACTED")
+
+        _history(
+            file_id,
+            "ai3",
+            "success",
+            ai_stage_name="AI3-DataExtraction",
+            log_text="; ".join(log_parts),
+            confidence=result.confidence,
+            processing_time_ms=elapsed,
+            provider=provider,
+            model_name=model,
+        )
+    except Exception as exc:
+        elapsed = int((time.time() - start_time) * 1000)
+        error_msg = f"{type(exc).__name__}: {str(exc)}"
+        _history(
+            file_id,
+            "ai3",
+            "error",
+            ai_stage_name="AI3-DataExtraction",
+            log_text=f"Failed to extract structured data from document_type='{document_type}', expense_type='{expense_type}'",
+            error_message=error_msg,
+            processing_time_ms=elapsed,
+            provider=provider,
+            model_name=model,
+        )
+        raise
+
+    # AI4 - Accounting Classification
     accounting_inputs = _load_accounting_inputs(file_id)
     if accounting_inputs:
         gross, net, vat_amount, vendor_name = accounting_inputs
+        start_time = time.time()
         try:
-            classify_accounting_internal(
+            result = classify_accounting_internal(
                 AccountingClassificationRequest(
                     file_id=file_id,
                     document_type=document_type or "other",
@@ -350,25 +544,115 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
                     receipt_items=[],
                 )
             )
+            elapsed = int((time.time() - start_time) * 1000)
             steps.append("AI4")
-            _history(file_id, "ai4", "success")
-        except Exception:
-            _history(file_id, "ai4", "error")
-            raise
 
+            proposal_count = len(result.proposals or [])
+            log_parts = [
+                f"Generated {proposal_count} accounting proposals",
+                f"Vendor: {vendor_name or 'N/A'}",
+                f"Amounts: gross={gross}, net={net}, vat={vat_amount}",
+            ]
+            if result.based_on_bas2025:
+                log_parts.append("Based on BAS 2025 chart of accounts")
+
+            _history(
+                file_id,
+                "ai4",
+                "success",
+                ai_stage_name="AI4-AccountingClassification",
+                log_text="; ".join(log_parts),
+                confidence=result.confidence,
+                processing_time_ms=elapsed,
+                provider=provider,
+                model_name=model,
+            )
+        except Exception as exc:
+            elapsed = int((time.time() - start_time) * 1000)
+            error_msg = f"{type(exc).__name__}: {str(exc)}"
+            _history(
+                file_id,
+                "ai4",
+                "error",
+                ai_stage_name="AI4-AccountingClassification",
+                log_text=f"Failed to classify accounting for vendor='{vendor_name}', gross={gross}, net={net}, vat={vat_amount}",
+                error_message=error_msg,
+                processing_time_ms=elapsed,
+                provider=provider,
+                model_name=model,
+            )
+            raise
+    else:
+        _history(
+            file_id,
+            "ai4",
+            "skipped",
+            ai_stage_name="AI4-AccountingClassification",
+            log_text="Skipped: No accounting inputs available (missing gross_amount_sek, net_amount_sek, or company_id)",
+        )
+
+    # AI5 - Credit Card Matching
     credit_context = _load_credit_context(file_id)
     if credit_context and credit_context[0]:
         purchase_dt, amount, merchant = credit_context
-        match_credit_card_internal(
-            CreditCardMatchRequest(
-                file_id=file_id,
-                purchase_date=purchase_dt,
-                amount=Decimal(str(amount)) if amount is not None else None,
-                merchant_name=merchant,
+        start_time = time.time()
+        try:
+            result = match_credit_card_internal(
+                CreditCardMatchRequest(
+                    file_id=file_id,
+                    purchase_date=purchase_dt,
+                    amount=Decimal(str(amount)) if amount is not None else None,
+                    merchant_name=merchant,
+                )
             )
+            elapsed = int((time.time() - start_time) * 1000)
+            steps.append("AI5")
+
+            log_parts = [
+                f"Match result: {'matched' if result.matched else 'not matched'}",
+                f"Search criteria: merchant='{merchant}', amount={amount}, date={purchase_dt}",
+            ]
+            if result.matched and result.credit_card_invoice_item_id:
+                log_parts.append(f"Matched to invoice item ID: {result.credit_card_invoice_item_id}")
+            if result.match_details:
+                details = result.match_details
+                if hasattr(details, 'reason') and details.reason:
+                    log_parts.append(f"Reason: {details.reason}")
+
+            _history(
+                file_id,
+                "ai5",
+                "success",
+                ai_stage_name="AI5-CreditCardMatching",
+                log_text="; ".join(log_parts),
+                confidence=result.confidence,
+                processing_time_ms=elapsed,
+                provider=provider,
+                model_name=model,
+            )
+        except Exception as exc:
+            elapsed = int((time.time() - start_time) * 1000)
+            error_msg = f"{type(exc).__name__}: {str(exc)}"
+            _history(
+                file_id,
+                "ai5",
+                "error",
+                ai_stage_name="AI5-CreditCardMatching",
+                log_text=f"Failed to match credit card transaction for merchant='{merchant}', amount={amount}",
+                error_message=error_msg,
+                processing_time_ms=elapsed,
+                provider=provider,
+                model_name=model,
+            )
+            raise
+    else:
+        _history(
+            file_id,
+            "ai5",
+            "skipped",
+            ai_stage_name="AI5-CreditCardMatching",
+            log_text="Skipped: No purchase_datetime available for matching",
         )
-        steps.append("AI5")
-        _history(file_id, "ai5", "success")
 
     return steps
 
@@ -474,44 +758,104 @@ def _save_accounting_entries(file_id: str, entries: List[AccountingEntry]) -> bo
 @celery_app.task
 @track_task("process_ocr")
 def process_ocr(file_id: str) -> dict[str, Any]:
-    enable_real = (os.getenv("ENABLE_REAL_OCR", "false").lower() in {"1", "true", "yes"})
+    import time
+
+    start_time = time.time()
+
+    # Run real OCR
     result: dict[str, Any] | None = None
-    if enable_real:
-        try:
-            result = run_ocr(file_id, os.getenv("STORAGE_DIR", "/data/storage"))
-        except Exception:
-            result = None
+    error_msg: str | None = None
+
+    try:
+        result = run_ocr(file_id, os.getenv("STORAGE_DIR", "/data/storage"))
+    except Exception as exc:
+        result = None
+        error_msg = f"{type(exc).__name__}: {str(exc)}"
+
     if result:
+        # OCR ONLY writes raw text - NO business data extraction
         _update_file_fields(
             file_id,
-            merchant=result.get("merchant_name"),
-            gross=float(result["gross_amount"]) if result.get("gross_amount") is not None else None,
-            purchase_iso=result.get("purchase_datetime"),
-            ocr_raw=result.get("text"),  # Save the raw OCR text
+            ocr_raw=result.get("text"),
         )
-        ok = _update_file_status(file_id, status="ocr_done", confidence=float(result.get("confidence") or 0.9))
-    else:
-        ok = _update_file_status(file_id, status="ocr_done", confidence=0.5)
-    _history(file_id, job="ocr", status="success" if ok else "error")
-    try:
-        process_ai_pipeline.delay(file_id)  # type: ignore[attr-defined]
-    except Exception:
+        ok = _update_file_status(file_id, status="ocr_done", confidence=None)
+
+        elapsed = int((time.time() - start_time) * 1000)
+        text_len = len(result.get("text", ""))
+
+        _history(
+            file_id,
+            job="ocr",
+            status="success",
+            ai_stage_name="OCR-TextExtraction",
+            log_text=f"OCR completed successfully, extracted {text_len} characters of raw text",
+            confidence=None,
+            processing_time_ms=elapsed,
+            provider="paddleocr",
+        )
+
+        # Only continue to AI pipeline if OCR succeeded
         try:
-            process_ai_pipeline.run(file_id)
+            process_ai_pipeline.delay(file_id)  # type: ignore[attr-defined]
         except Exception:
-            pass
-    return {"file_id": file_id, "status": "ocr_done", "ok": ok, "real": bool(result)}
+            try:
+                process_ai_pipeline.run(file_id)
+            except Exception:
+                pass
+
+        return {"file_id": file_id, "status": "ocr_done", "ok": ok, "real": True}
+    else:
+        # OCR failed
+        ok = _update_file_status(file_id, status="manual_review", confidence=0.0)
+        elapsed = int((time.time() - start_time) * 1000)
+
+        _history(
+            file_id,
+            job="ocr",
+            status="error",
+            ai_stage_name="OCR-TextExtraction",
+            log_text="OCR processing failed or returned no results",
+            error_message=error_msg or "OCR returned no results",
+            confidence=0.0,
+            processing_time_ms=elapsed,
+            provider="paddleocr",
+        )
+
+        return {"file_id": file_id, "status": "manual_review", "ok": False, "error": error_msg or "OCR failed"}
 
 
 @celery_app.task
 @track_task("process_ai_pipeline")
 def process_ai_pipeline(file_id: str) -> dict[str, Any]:
+    import time
+
+    start_time = time.time()
     try:
         steps = _run_ai_pipeline(file_id)
-        _history(file_id, job="ai_pipeline", status="success")
+        elapsed = int((time.time() - start_time) * 1000)
+
+        _history(
+            file_id,
+            job="ai_pipeline",
+            status="success",
+            ai_stage_name="Pipeline-Complete",
+            log_text=f"Completed {len(steps)} AI stages successfully: {', '.join(steps)}",
+            processing_time_ms=elapsed,
+        )
         return {"file_id": file_id, "steps": steps, "ok": True}
     except Exception as exc:
-        _history(file_id, job="ai_pipeline", status="error")
+        elapsed = int((time.time() - start_time) * 1000)
+        error_msg = f"{type(exc).__name__}: {str(exc)}"
+
+        _history(
+            file_id,
+            job="ai_pipeline",
+            status="error",
+            ai_stage_name="Pipeline-Complete",
+            log_text="AI pipeline failed, file marked for manual review",
+            error_message=error_msg,
+            processing_time_ms=elapsed,
+        )
         _update_file_status(file_id, "manual_review")
         return {"file_id": file_id, "ok": False, "error": str(exc)}
 
@@ -519,15 +863,16 @@ def process_ai_pipeline(file_id: str) -> dict[str, Any]:
 @celery_app.task
 @track_task("process_classification")
 def process_classification(file_id: str) -> dict[str, Any]:
+    """Legacy task - most processing now done via AI pipeline."""
     file_type = _get_file_type(file_id)
     receipt_model = _load_receipt_model(file_id)
-    merchant = receipt_model.merchant_name if receipt_model else None
+    company_name = receipt_model.merchant_name if receipt_model else None  # From companies table
     tags = receipt_model.tags if receipt_model else []
     gross_decimal = receipt_model.gross_amount if receipt_model else None
 
     merchants_cfg = os.getenv("COMPANY_CARD_MERCHANTS", "")
     cc_merchants = {m.strip().lower() for m in merchants_cfg.split(",") if m.strip()}
-    company_card = (merchant or "").lower() in cc_merchants if merchant else False
+    company_card = (company_name or "").lower() in cc_merchants if company_name else False
 
     enriched_name = None
     try:
@@ -547,7 +892,7 @@ def process_classification(file_id: str) -> dict[str, Any]:
                     pages=[],
                     tags=[],
                     location_opt_in=False,
-                    merchant_name=merchant,
+                    merchant_name=company_name,
                     orgnr=str(orgnr_val),
                     purchase_datetime=None,
                     gross_amount=gross_decimal,
@@ -564,15 +909,10 @@ def process_classification(file_id: str) -> dict[str, Any]:
     except Exception:
         pass
 
-    if enriched_name:
-        try:
-            _update_file_fields(file_id, merchant=enriched_name)
-            merchant = enriched_name
-        except Exception:
-            pass
+    # NOTE: enriched_name not saved - companies table is source of truth
 
     text_hints = _collect_text_hints(file_id)
-    document_type = _infer_document_type(file_type, merchant, tags, text_hints, company_card)
+    document_type = _infer_document_type(file_type, company_name, tags, text_hints, company_card)
 
     status_map = {
         "receipt": "classified_receipt",

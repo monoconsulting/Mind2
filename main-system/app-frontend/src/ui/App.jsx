@@ -1,7 +1,8 @@
 import React from 'react'
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
-import { FiHome, FiList, FiCreditCard, FiSliders, FiUpload, FiLogOut, FiBarChart } from 'react-icons/fi'
+import { FiHome, FiList, FiCreditCard, FiSliders, FiUpload, FiLogOut, FiBarChart, FiChevronDown, FiChevronRight, FiFileText } from 'react-icons/fi'
 import Dashboard from '../ui/pages/Dashboard.jsx'
+import Process from '../ui/pages/Process.jsx'
 import Receipts from '../ui/pages/Receipts.jsx'
 import CompanyCard from '../ui/pages/CompanyCard.jsx'
 import Settings from '../ui/pages/Settings.jsx'
@@ -10,8 +11,18 @@ import Login from '../ui/pages/Login.jsx'
 import AiPage from '../ui/pages/Ai.jsx'
 import { api } from '../ui/api'
 
-function NavButton({ icon: Icon, label, to, isActive }) {
+function NavButton({ icon: Icon, label, to, isActive, hasSubmenu, isExpanded, onToggle }) {
   const navigate = useNavigate()
+
+  const handleClick = () => {
+    if (to) {
+      navigate(to)
+    }
+    if (hasSubmenu && onToggle) {
+      onToggle()
+    }
+  }
+
   return (
     <button
       className={`w-full text-left flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
@@ -19,9 +30,29 @@ function NavButton({ icon: Icon, label, to, isActive }) {
           ? 'active bg-red-600 text-white'
           : 'text-gray-400 hover:text-white hover:bg-red-600 hover:bg-opacity-20'
       }`}
-      onClick={() => navigate(to)}
+      onClick={handleClick}
     >
       <Icon className="text-lg flex-shrink-0" />
+      <span className="font-medium flex-1">{label}</span>
+      {hasSubmenu && (
+        isExpanded ? <FiChevronDown className="text-lg" /> : <FiChevronRight className="text-lg" />
+      )}
+    </button>
+  )
+}
+
+function SubNavButton({ icon: Icon, label, to, isActive }) {
+  const navigate = useNavigate()
+  return (
+    <button
+      className={`w-full text-left flex items-center gap-3 pl-12 pr-4 py-2 rounded-lg transition-all duration-200 text-sm ${
+        isActive
+          ? 'bg-red-600 bg-opacity-50 text-white'
+          : 'text-gray-400 hover:text-white hover:bg-red-600 hover:bg-opacity-10'
+      }`}
+      onClick={() => navigate(to)}
+    >
+      <Icon className="text-base flex-shrink-0" />
       <span className="font-medium">{label}</span>
     </button>
   )
@@ -39,6 +70,7 @@ function Shell({ children }) {
   const getPageTitle = () => {
     const titles = {
       '/': 'Översikt',
+      '/process': 'Process',
       '/receipts': 'Kvitton',
       '/company-card': 'Kortmatchning',
       '/ai': 'AI',
@@ -70,6 +102,12 @@ function Shell({ children }) {
           />
           <NavButton
             icon={FiList}
+            label="Process"
+            to="/process"
+            isActive={location.pathname === '/process'}
+          />
+          <NavButton
+            icon={FiFileText}
             label="Kvitton"
             to="/receipts"
             isActive={location.pathname === '/receipts'}
@@ -143,6 +181,7 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/" element={<Shell><Dashboard /></Shell>} />
+        <Route path="/process" element={<Shell><Process /></Shell>} />
         <Route path="/receipts" element={<Shell><Receipts /></Shell>} />
         <Route path="/company-card" element={<Shell><CompanyCard /></Shell>} />
         <Route path="/export" element={<Shell><ExportPage /></Shell>} />

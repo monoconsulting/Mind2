@@ -44,10 +44,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the entrypoint script and make it executable
 COPY backend/entrypoint.sh .
-RUN chmod +x ./entrypoint.sh
+RUN sed -i 's/\r$//' ./entrypoint.sh && chmod +x ./entrypoint.sh
 
 # Copy the rest of the backend source code
 COPY backend/src/ .
+
+# Copy database migrations
+COPY database/migrations/ /app/database/migrations/
 
 # Expose the port the app runs on
 EXPOSE 5000

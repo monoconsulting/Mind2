@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import os
 import uuid
+import shutil
+import hashlib
+import logging
+from pathlib import Path
 from typing import Any
 from flask import Blueprint, jsonify, request
+from werkzeug.utils import secure_filename
 
 from api.middleware import auth_required
 from services.queue_manager import get_celery
 from services.storage import FileStorage
+
+logger = logging.getLogger(__name__)
 try:
     from services.tasks import process_ocr, process_classification  # type: ignore
 except Exception:  # pragma: no cover - allow running without Celery in tests/dev
@@ -67,101 +74,99 @@ def trigger_classify(fid: str):
     return jsonify({"queued": True, "task_id": getattr(r, "id", None)}), 200
 
 
-@ingest_bp.post("/capture/upload")
-def capture_upload() -> Any:
-    """Public capture endpoint: accepts multi-page images, optional tags and location.
-    Behavior:
-      - For each uploaded image, ensure a unified_files record exists (id = shared receipt_id)
-      - Save files under STORAGE_DIR/<receipt_id>/page-*.ext via FileStorage
-      - Store optional tags into file_tags (best-effort) and enqueue OCR for the first page
-    """
-    files = request.files.getlist('images')
+@ingest_bp.post("/ingest/upload")
+@auth_required
+def upload_files() -> Any:
+    """Upload files from form data and process them."""
+    logger.info("=== UPLOAD REQUEST START ===")
+    files = request.files.getlist('files')
+    logger.info(f"Received {len(files) if files else 0} files in request")
+
     if not files:
-        return jsonify({"ok": False, "error": "no_images"}), 400
-    tags_raw = request.form.get('tags')
-    location_raw = request.form.get('location')
-    try:
-        import json
-        tags = json.loads(tags_raw) if tags_raw else []
-        if not isinstance(tags, list):
-            tags = []
-    except Exception:
-        tags = []
-    # Parse optional location JSON
-    location = None
-    if location_raw:
-        try:
-            location = json.loads(location_raw)
-        except Exception:
-            location = None
-    receipt_id = str(uuid.uuid4())
+        logger.warning("No files provided in upload request")
+        return jsonify({"error": "no_files"}), 400
+
+    uploaded_count = 0
+    skipped_count = 0
+    errors = []
+
     storage_dir = os.getenv('STORAGE_DIR', '/data/storage')
     fs = FileStorage(storage_dir)
-    saved: list[str] = []
-    # Get original filename from first file
-    original_filename = files[0].filename if files[0] and files[0].filename else None
 
-    # Insert unified_files row
-    if db_cursor is not None:
-        try:
-            with db_cursor() as cur:
-                cur.execute(
-                    (
-                        "INSERT INTO unified_files (id, file_type, created_at, submitted_by, original_filename) "
-                        "VALUES (%s, %s, NOW(), %s, %s)"
-                    ),
-                    (receipt_id, 'receipt', (request.headers.get('X-User') or 'anonymous'), original_filename),
-                )
-        except Exception:
-            # best-effort
-            pass
-    # Save files
-    for idx, f in enumerate(files, start=1):
-        # derive extension
-        fname = f.filename or f"page-{idx}.jpg"
-        ext = os.path.splitext(fname)[1] or '.jpg'
-        safe_name = f"page-{idx}{ext}"
-        try:
-            data = f.read()
-            fs.save(receipt_id, safe_name, data)
-            saved.append(safe_name)
-        except Exception:
+    for idx, file in enumerate(files, 1):
+        if not file or not file.filename:
+            logger.warning(f"File {idx}: Skipping - no filename")
             continue
-    # Save tags best-effort
-    if tags and db_cursor is not None:
+
+        logger.info(f"File {idx}/{len(files)}: Processing '{file.filename}'")
+
         try:
-            with db_cursor() as cur:
-                for t in tags:
-                    if not t or not isinstance(t, str):
+            # Read file data
+            data = file.read()
+            logger.info(f"File {idx}: Read {len(data)} bytes")
+
+            # Calculate hash for duplicate detection
+            file_hash = hashlib.sha256(data).hexdigest()
+            logger.info(f"File {idx}: Hash calculated: {file_hash[:16]}...")
+
+            receipt_id = str(uuid.uuid4())
+            safe_filename = secure_filename(file.filename) if file.filename else f"upload_{receipt_id}.jpg"
+            stored_filename = f"page-1{os.path.splitext(safe_filename)[1] or '.jpg'}"
+
+            logger.info(f"File {idx}: Generated ID={receipt_id}, stored_filename={stored_filename}")
+
+            # Insert into database with duplicate detection
+            if db_cursor is not None:
+                try:
+                    with db_cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO unified_files (
+                                id, file_type, ocr_raw, other_data, content_hash,
+                                submitted_by, original_filename, ai_status, created_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                            """,
+                            (
+                                receipt_id, 'receipt', '', '{}', file_hash,
+                                (request.headers.get('X-User') or 'upload'), safe_filename, 'uploaded'
+                            ),
+                        )
+                    logger.info(f"File {idx}: Database record created")
+                except Exception as db_error:
+                    # Check for duplicate hash
+                    if 'Duplicate entry' in str(db_error) and 'idx_content_hash' in str(db_error):
+                        logger.warning(f"File {idx}: SKIPPED - Duplicate file (hash={file_hash[:16]}...)")
+                        skipped_count += 1
                         continue
-                    cur.execute(
-                        (
-                            "INSERT INTO file_tags (file_id, tag, created_at) VALUES (%s, %s, NOW())"
-                        ),
-                        (receipt_id, t.strip()),
-                    )
-        except Exception:
-            pass
-    # Save location best-effort
-    if location and isinstance(location, dict) and db_cursor is not None:
-        try:
-            lat = location.get('lat')
-            lon = location.get('lon')
-            acc = location.get('acc')
-            with db_cursor() as cur:
-                cur.execute(
-                    (
-                        "INSERT INTO file_locations (file_id, lat, lon, acc) VALUES (%s, %s, %s, %s)"
-                    ),
-                    (receipt_id, lat, lon, acc),
-                )
-        except Exception:
-            pass
-    # Enqueue OCR for this receipt (first page id == receipt_id in this schema)
-    try:
-        if process_ocr is None:
-            raise RuntimeError("tasks_unavailable")
-        process_ocr.delay(receipt_id)  # type: ignore[attr-defined]
-    except Exception:
-        pass
-    return jsonify({"ok": True, "receipt_id": receipt_id, "saved": saved}), 200
+                    else:
+                        raise
+
+            # Save file to storage
+            fs.save(receipt_id, stored_filename, data)
+            logger.info(f"File {idx}: Saved to storage at {receipt_id}/{stored_filename}")
+
+            # Queue OCR processing
+            try:
+                if process_ocr is not None:
+                    process_ocr.delay(receipt_id)
+                    logger.info(f"File {idx}: OCR task queued for {receipt_id}")
+                else:
+                    logger.warning(f"File {idx}: OCR not available, skipping queue")
+            except Exception as e:
+                logger.warning(f"File {idx}: OCR enqueue failed for {receipt_id}: {e}")
+
+            uploaded_count += 1
+            logger.info(f"File {idx}: SUCCESS - Uploaded as {receipt_id}")
+
+        except Exception as e:
+            error_msg = f"File processing error for {file.filename}: {str(e)}"
+            logger.error(f"File {idx}: ERROR - {error_msg}")
+            errors.append(error_msg)
+            continue
+
+    logger.info(f"=== UPLOAD REQUEST COMPLETE === Uploaded: {uploaded_count}, Skipped: {skipped_count}, Errors: {len(errors)}")
+
+    if errors:
+        return jsonify({"ok": False, "uploaded": uploaded_count, "skipped": skipped_count, "errors": errors}), 500
+
+    return jsonify({"ok": True, "uploaded": uploaded_count, "skipped": skipped_count}), 200

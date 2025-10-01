@@ -1,4 +1,5 @@
 flask
+flask-limiter
 celery
 redis
 mysql-connector-python
