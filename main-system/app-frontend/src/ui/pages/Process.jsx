@@ -60,8 +60,6 @@ const statusClassMap = {
   ai2_completed: 'status-processing',
   ai3_completed: 'status-processing',
   ai4_completed: 'status-queued',
-  ai5_completed: 'status-passed',
-  ai5_no_match: 'status-queued',
   proc_completed: 'status-passed'
 }
 
@@ -127,8 +125,6 @@ function translateStatus(status) {
     ai2_completed: 'AI2 - Utgiftsklassificering klar',
     ai3_completed: 'AI3 - Dataextraktion klar',
     ai4_completed: 'AI4 - Bokföringsförslag klart',
-    ai5_completed: 'AI5 - Kortkoppling klar',
-    ai5_no_match: 'AI5 - Ingen kortkoppling',
     proc_completed: 'Bearbetning klar'
   }
   return map[normalized] || status
@@ -1032,7 +1028,6 @@ function WorkflowBadges({ receipt, onStageClick }) {
       {renderBadge('AI2', workflow.ai2, workflow.ai2 && workflow.ai2.status !== 'pending' ? () => onStageClick({ ...workflow.ai2, title: 'AI2 - Expense Classification' }) : null)}
       {renderBadge('AI3', workflow.ai3, workflow.ai3 && workflow.ai3.status !== 'pending' ? () => onStageClick({ ...workflow.ai3, title: 'AI3 - Data Extraction' }) : null)}
       {renderBadge('AI4', workflow.ai4, workflow.ai4 && workflow.ai4.status !== 'pending' ? () => onStageClick({ ...workflow.ai4, title: 'AI4 - Accounting Proposal' }) : null)}
-      {renderBadge('AI5', workflow.ai5, workflow.ai5 && workflow.ai5.status !== 'pending' ? () => onStageClick({ ...workflow.ai5, title: 'AI5 - Credit Card Match' }) : null)}
       {renderBadge('Match', workflow.match, workflow.match && workflow.match.status !== 'pending' ? () => onStageClick({ ...workflow.match, title: 'Match Status' }) : null)}
     </div>
   );

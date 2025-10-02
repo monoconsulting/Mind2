@@ -433,29 +433,31 @@ Instructions:
 - Use the **BAS-2025 chart of accounts**, stored in the database table `chart_of_accounts`, as the reference.
 - An entry should be made in ai_accounting_proposals for each accountnumber that is selected according to praxis
 
-### AI5 – Credit Card Invoice Matching
+### AI5 – Credit Card Invoice Matching (deactivated)
 
-- After a credit card invoice is uploaded you should compare the invoice to the receipts availbale for the pereiod that is edefined on the invoice.
-- Table for invoices
+> **Status:** The automated receipt workflow now stops after **AI4**. AI5 is currently disabled and is not triggered automatically for uploaded receipts. The prompt and instructions below are retained for future use when invoice-level reconciliation is reintroduced.
+
+- When re-enabled, the AI should compare each credit card invoice to the receipts available for the invoiced period.
+- Relevant tables:
   - `creditcard_invoices_main`
   - `creditcard_invoice_items`
-- Match each invoice line item with receipts having the same `purchase_date` and amount
-- If there is a check set true in unified_files_credit_card_match
+- The goal is to match invoice line items with receipts that share the same `purchase_date` and amount.
+- Successful matches should set `unified_files_credit_card_match` to true for the associated receipt.
 
 ```
-You are an AI model responsible for reconciling credit card invoices with receipts.  
+You are an AI model responsible for reconciling credit card invoices with receipts.
 
 Input:
 - A credit card invoice, stored in tables:
   - creditcard_invoices_main (invoice header, metadata)
   - creditcard_invoice_items (each transaction line with date, amount, merchant)
-- Receipts stored in unified_files (file_type='receipt') and related tables.  
+- Receipts stored in unified_files (file_type='receipt') and related tables.
 
 Your task:
-1. For each row in creditcard_invoice_items, find the best matching receipt(s) from unified_files.  
-   - Match primarily on purchase_date and amount.  
-   - Secondary criteria: merchant_name similarity.  
-   - If multiple candidates exist, pick the one with the closest match in both amount and date.  
+1. For each row in creditcard_invoice_items, find the best matching receipt(s) from unified_files.
+   - Match primarily on purchase_date and amount.
+   - Secondary criteria: merchant_name similarity.
+   - If multiple candidates exist, pick the one with the closest match in both amount and date.
 
 2. Output your results in JSON format, one object per invoice line:
    {
@@ -466,12 +468,12 @@ Your task:
      "notes": "explanation of why it matched or not"
    }
 
-3. If a match is found, set the field unified_files.credit_card_match = true for that receipt.  
+3. If a match is found, set the field unified_files.credit_card_match = true for that receipt.
 
 Rules:
-- Match must be exact or very close (date difference max ±1 day, amount difference max ±1 SEK unless otherwise stated).  
-- If no good match is found, return "match": false.  
-- Always ensure consistent reconciliation (one receipt should not be matched to multiple invoice lines unless explicitly marked as split).  
+- Match must be exact or very close (date difference max ±1 day, amount difference max ±1 SEK unless otherwise stated).
+- If no good match is found, return "match": false.
+- Always ensure consistent reconciliation (one receipt should not be matched to multiple invoice lines unless explicitly marked as split).
 
 ```
 
@@ -533,13 +535,11 @@ Rules:
   - ai_processing.py:283-323 - _persist_accounting_proposals()
   - Skapar poster i ai_accounting_proposals med BAS-2025 konton
 
-  ✅ AI5: Credit Card Matching
+  🚫 AI5: Kreditkortsavstämning (inaktiverad)
 
-  Verifierad:
-  - ai_processing.py:512-526 - match_credit_card_internal()
-  - ai_processing.py:326-365 - _persist_credit_card_match()
-  - Matchar kvitton mot kreditkortsfakturor
-  - Sätter unified_files.credit_card_match = 1 vid match
+  Status:
+  - Steget triggas inte automatiskt i dagsläget
+  - Systemprompten finns kvar i databasen för framtida användning
 
   📊 Sammanfattning av Ändringar:
 
