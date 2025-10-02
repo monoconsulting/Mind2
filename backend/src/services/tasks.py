@@ -22,7 +22,6 @@ from services.accounting import propose_accounting_entries
 from models.accounting import AccountingRule
 from models.ai_processing import (
     AccountingClassificationRequest,
-    CreditCardMatchRequest,
     DataExtractionRequest,
     DocumentClassificationRequest,
     ExpenseClassificationRequest,
@@ -34,7 +33,6 @@ from api.ai_processing import (
     classify_document_internal,
     classify_expense_internal,
     extract_data_internal,
-    match_credit_card_internal,
 )
 
 celery_app = get_celery()
@@ -344,27 +342,8 @@ def _load_receipt_items(file_id: str):
         return []
 
 
-def _load_credit_context(file_id: str):
-    if db_cursor is None:
-        return None
-    try:
-        with db_cursor() as cur:
-            cur.execute(
-                """
-                SELECT purchase_datetime, gross_amount_sek, c.name
-                  FROM unified_files uf
-             LEFT JOIN companies c ON uf.company_id = c.id
-                 WHERE uf.id = %s
-                """,
-                (file_id,),
-            )
-            return cur.fetchone()
-    except Exception:
-        return None
-
-
 def _run_ai_pipeline(file_id: str) -> List[str]:
-    """Run the complete AI pipeline (AI1-AI5) with detailed logging."""
+    """Run the complete AI pipeline (AI1-AI4) with detailed logging."""
     import time
     from services.ai_service import AIService
 
@@ -674,79 +653,6 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             "skipped",
             ai_stage_name="AI4-AccountingClassification",
             log_text="Skipped: No accounting inputs available (missing gross_amount_sek, net_amount_sek, or company_id)",
-        )
-
-    # AI5 - Credit Card Matching
-    credit_context = _load_credit_context(file_id)
-    if credit_context and credit_context[0]:
-        purchase_dt, amount, merchant = credit_context
-        start_time = time.time()
-        try:
-            result = match_credit_card_internal(
-                CreditCardMatchRequest(
-                    file_id=file_id,
-                    purchase_date=purchase_dt,
-                    amount=Decimal(str(amount)) if amount is not None else None,
-                    merchant_name=merchant,
-                )
-            )
-            elapsed = int((time.time() - start_time) * 1000)
-            steps.append("AI5")
-
-            log_parts = [
-                f"Match result: {'MATCHED' if result.matched else 'NOT MATCHED'}",
-                f"Search criteria: merchant='{merchant}', amount={amount}, date={purchase_dt}",
-            ]
-            if result.matched and result.credit_card_invoice_item_id:
-                log_parts.append(f"Matched to invoice item ID: {result.credit_card_invoice_item_id}")
-                # Add matched amount if available
-                if result.match_details and isinstance(result.match_details, dict):
-                    matched_amt = result.match_details.get('matched_amount')
-                    if matched_amt:
-                        log_parts.append(f"matched_amount={matched_amt}")
-            if result.match_details:
-                details = result.match_details
-                if isinstance(details, dict):
-                    if details.get('reason'):
-                        log_parts.append(f"Reason: {details['reason']}")
-                    if details.get('confidence_score'):
-                        log_parts.append(f"match_confidence={details['confidence_score']}")
-                elif hasattr(details, 'reason') and details.reason:
-                    log_parts.append(f"Reason: {details.reason}")
-
-            _history(
-                file_id,
-                "ai5",
-                "success",
-                ai_stage_name="AI5-CreditCardMatching",
-                log_text="; ".join(log_parts),
-                confidence=result.confidence,
-                processing_time_ms=elapsed,
-                provider=provider,
-                model_name=model,
-            )
-        except Exception as exc:
-            elapsed = int((time.time() - start_time) * 1000)
-            error_msg = f"{type(exc).__name__}: {str(exc)}"
-            _history(
-                file_id,
-                "ai5",
-                "error",
-                ai_stage_name="AI5-CreditCardMatching",
-                log_text=f"Failed to match credit card transaction for merchant='{merchant}', amount={amount}",
-                error_message=error_msg,
-                processing_time_ms=elapsed,
-                provider=provider,
-                model_name=model,
-            )
-            raise
-    else:
-        _history(
-            file_id,
-            "ai5",
-            "skipped",
-            ai_stage_name="AI5-CreditCardMatching",
-            log_text="Skipped: No purchase_datetime available for matching",
         )
 
     return steps
