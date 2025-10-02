@@ -35,3 +35,4 @@ yarn.lock
 old/
 nul
 **/test-results/
+storage/

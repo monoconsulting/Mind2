@@ -26,6 +26,7 @@ from models.ai_processing import (
     DataExtractionRequest,
     DocumentClassificationRequest,
     ExpenseClassificationRequest,
+    ReceiptItem,
 )
 from models.receipts import AccountingEntry, Receipt, ReceiptStatus
 from api.ai_processing import (
@@ -304,6 +305,45 @@ def _load_accounting_inputs(file_id: str):
         return None
 
 
+def _load_receipt_items(file_id: str):
+    """Load receipt items with their IDs from the database."""
+    if db_cursor is None:
+        return []
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, main_id, article_id, name, number,
+                       item_price_ex_vat, item_price_inc_vat,
+                       item_total_price_ex_vat, item_total_price_inc_vat,
+                       currency, vat, vat_percentage
+                FROM receipt_items
+                WHERE main_id = %s
+                """,
+                (file_id,),
+            )
+            rows = cur.fetchall()
+            items = []
+            for row in rows:
+                items.append(ReceiptItem(
+                    id=row[0],
+                    main_id=row[1],
+                    article_id=row[2] or "",
+                    name=row[3],
+                    number=row[4],
+                    item_price_ex_vat=Decimal(str(row[5] or 0)),
+                    item_price_inc_vat=Decimal(str(row[6] or 0)),
+                    item_total_price_ex_vat=Decimal(str(row[7] or 0)),
+                    item_total_price_inc_vat=Decimal(str(row[8] or 0)),
+                    currency=row[9] or "SEK",
+                    vat=Decimal(str(row[10] or 0)),
+                    vat_percentage=Decimal(str(row[11] or 0)),
+                ))
+            return items
+    except Exception:
+        return []
+
+
 def _load_credit_context(file_id: str):
     if db_cursor is None:
         return None
@@ -464,17 +504,34 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
         elapsed = int((time.time() - start_time) * 1000)
         steps.append("AI3")
 
+        # Comprehensive extraction logging - include ALL fields
         extracted = []
         if result.unified_file:
             uf = result.unified_file
+            # Financial data
             if uf.gross_amount_original:
                 extracted.append(f"gross={uf.gross_amount_original}")
+            if uf.net_amount_original:
+                extracted.append(f"net={uf.net_amount_original}")
+            if uf.gross_amount_sek:
+                extracted.append(f"gross_sek={uf.gross_amount_sek}")
+            if uf.net_amount_sek:
+                extracted.append(f"net_sek={uf.net_amount_sek}")
+            if uf.currency:
+                extracted.append(f"currency={uf.currency}")
+            if uf.exchange_rate:
+                extracted.append(f"exchange_rate={uf.exchange_rate}")
+            # Business data
             if uf.orgnr:
                 extracted.append(f"orgnr={uf.orgnr}")
             if uf.purchase_datetime:
                 extracted.append(f"purchase_date={uf.purchase_datetime}")
-            if uf.currency:
-                extracted.append(f"currency={uf.currency}")
+            if uf.payment_type:
+                extracted.append(f"payment_type={uf.payment_type}")
+            if uf.expense_type:
+                extracted.append(f"expense_type={uf.expense_type}")
+            if uf.receipt_number:
+                extracted.append(f"receipt_number={uf.receipt_number}")
 
         item_count = len(result.receipt_items or [])
 
@@ -489,15 +546,29 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
                 company_details.append(f"address='{result.company.address}'")
             if result.company.city:
                 company_details.append(f"city='{result.company.city}'")
+            if result.company.zip:
+                company_details.append(f"zip='{result.company.zip}'")
+            if result.company.country:
+                company_details.append(f"country='{result.company.country}'")
+
+        # Receipt items summary
+        items_summary = []
+        if result.receipt_items and len(result.receipt_items) > 0:
+            for idx, item in enumerate(result.receipt_items[:3], 1):  # Show first 3 items
+                items_summary.append(f"{item.name}@{item.item_total_price_inc_vat}")
+            if len(result.receipt_items) > 3:
+                items_summary.append(f"... +{len(result.receipt_items) - 3} more")
 
         log_parts = [
-            f"Extracted structured data: {', '.join(extracted) if extracted else 'minimal data'}",
-            f"Receipt items: {item_count}",
+            f"Extracted data: {', '.join(extracted) if extracted else 'NO DATA'}",
         ]
         if company_details:
             log_parts.append(f"Company: {'; '.join(company_details)}")
         else:
             log_parts.append("Company: NO COMPANY DATA EXTRACTED")
+        log_parts.append(f"Items: {item_count} total")
+        if items_summary:
+            log_parts.append(f"Sample items: [{', '.join(items_summary)}]")
 
         _history(
             file_id,
@@ -530,6 +601,7 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
     accounting_inputs = _load_accounting_inputs(file_id)
     if accounting_inputs:
         gross, net, vat_amount, vendor_name = accounting_inputs
+        receipt_items = _load_receipt_items(file_id)
         start_time = time.time()
         try:
             result = classify_accounting_internal(
@@ -541,13 +613,24 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
                     net_amount=Decimal(str(net or 0)),
                     vat_amount=Decimal(str(vat_amount or 0)),
                     vendor_name=vendor_name or "",
-                    receipt_items=[],
+                    receipt_items=receipt_items,
                 )
             )
             elapsed = int((time.time() - start_time) * 1000)
             steps.append("AI4")
 
             proposal_count = len(result.proposals or [])
+
+            # Add detailed proposal breakdown
+            proposal_details = []
+            for proposal in (result.proposals or [])[:5]:  # Show first 5 proposals
+                proposal_details.append(
+                    f"account={proposal.account_code}, "
+                    f"debit={proposal.debit}, credit={proposal.credit}"
+                )
+            if len(result.proposals or []) > 5:
+                proposal_details.append(f"... +{len(result.proposals) - 5} more")
+
             log_parts = [
                 f"Generated {proposal_count} accounting proposals",
                 f"Vendor: {vendor_name or 'N/A'}",
@@ -555,6 +638,8 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             ]
             if result.based_on_bas2025:
                 log_parts.append("Based on BAS 2025 chart of accounts")
+            if proposal_details:
+                log_parts.append(f"Proposals: [{'; '.join(proposal_details)}]")
 
             _history(
                 file_id,
@@ -609,14 +694,24 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             steps.append("AI5")
 
             log_parts = [
-                f"Match result: {'matched' if result.matched else 'not matched'}",
+                f"Match result: {'MATCHED' if result.matched else 'NOT MATCHED'}",
                 f"Search criteria: merchant='{merchant}', amount={amount}, date={purchase_dt}",
             ]
             if result.matched and result.credit_card_invoice_item_id:
                 log_parts.append(f"Matched to invoice item ID: {result.credit_card_invoice_item_id}")
+                # Add matched amount if available
+                if result.match_details and isinstance(result.match_details, dict):
+                    matched_amt = result.match_details.get('matched_amount')
+                    if matched_amt:
+                        log_parts.append(f"matched_amount={matched_amt}")
             if result.match_details:
                 details = result.match_details
-                if hasattr(details, 'reason') and details.reason:
+                if isinstance(details, dict):
+                    if details.get('reason'):
+                        log_parts.append(f"Reason: {details['reason']}")
+                    if details.get('confidence_score'):
+                        log_parts.append(f"match_confidence={details['confidence_score']}")
+                elif hasattr(details, 'reason') and details.reason:
                     log_parts.append(f"Reason: {details.reason}")
 
             _history(
@@ -782,13 +877,30 @@ def process_ocr(file_id: str) -> dict[str, Any]:
 
         elapsed = int((time.time() - start_time) * 1000)
         text_len = len(result.get("text", ""))
+        text_preview = result.get("text", "")[:100].replace('\n', ' ') if result.get("text") else ""
+
+        # Build detailed log message
+        log_parts = [f"OCR completed successfully: extracted {text_len} characters of raw text"]
+        if text_preview:
+            log_parts.append(f"preview: '{text_preview}{'...' if text_len > 100 else ''}'")
+
+        # Add detected patterns if available
+        detected = []
+        if result.get("merchant_name"):
+            detected.append(f"merchant='{result.get('merchant_name')}'")
+        if result.get("gross_amount") is not None:
+            detected.append(f"amount={result.get('gross_amount')}")
+        if result.get("purchase_datetime"):
+            detected.append(f"date={result.get('purchase_datetime')}")
+        if detected:
+            log_parts.append(f"detected: {', '.join(detected)}")
 
         _history(
             file_id,
             job="ocr",
             status="success",
             ai_stage_name="OCR-TextExtraction",
-            log_text=f"OCR completed successfully, extracted {text_len} characters of raw text",
+            log_text="; ".join(log_parts),
             confidence=None,
             processing_time_ms=elapsed,
             provider="paddleocr",

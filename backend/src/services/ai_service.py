@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import requests
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -52,34 +53,150 @@ class BaseLLMProvider:
 
 
 class OpenAIProvider(BaseLLMProvider):
-    """Adapter for OpenAI's Chat Completions API.
+    """Adapter for OpenAI's Chat Completions API."""
 
-    The adapter intentionally keeps the implementation lightweight; when the
-    environment lacks credentials it simply raises to trigger deterministic
-    fallbacks. This satisfies the requirement for pluggable providers without
-    introducing network calls during tests.
-    """
+    def __init__(self, model_name: Optional[str], api_key: Optional[str] = None):
+        super().__init__(model_name)
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
 
     def generate(self, prompt: str, payload: Dict[str, Any]) -> ProviderResponse:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
+        if not self.api_key:
             raise RuntimeError("OPENAI_API_KEY is not configured")
-        # Placeholder implementation: the production worker will override this
-        # with a fully fledged client. For now we log and fall back.
-        logger.warning("OpenAIProvider invoked without concrete implementation")
-        return ProviderResponse(raw="", parsed=None)
+
+        if not self.model_name:
+            raise RuntimeError("OpenAI model name is not configured")
+
+        url = "https://api.openai.com/v1/chat/completions"
+
+        # Build the request payload
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
+        ]
+
+        request_payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "response_format": {"type": "json_object"},
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            response = requests.post(url, json=request_payload, headers=headers, timeout=180)
+            response.raise_for_status()
+
+            result = response.json()
+            content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+            if not content:
+                return ProviderResponse(raw="", parsed=None)
+
+            # Try to parse as JSON
+            try:
+                # Clean up markdown code blocks if present
+                cleaned = content.strip()
+                if cleaned.startswith("```json"):
+                    cleaned = cleaned[7:]
+                if cleaned.startswith("```"):
+                    cleaned = cleaned[3:]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3]
+                cleaned = cleaned.strip()
+
+                parsed = json.loads(cleaned)
+                return ProviderResponse(raw=content, parsed=parsed)
+            except json.JSONDecodeError as exc:
+                # If not JSON, treat as raw text response (for simple prompts like AI1/AI2)
+                # Don't log as error - some prompts expect text responses
+                logger.debug(f"Response is text, not JSON: {content[:100]}")
+                return ProviderResponse(raw=content, parsed=None)
+
+        except requests.exceptions.RequestException as exc:
+            error_detail = str(exc)
+            try:
+                if hasattr(exc, 'response') and exc.response is not None:
+                    error_body = exc.response.json()
+                    error_detail = f"{exc} - Response: {error_body}"
+            except:
+                pass
+            logger.error(f"OpenAI API error: {error_detail}")
+            raise RuntimeError(f"OpenAI API call failed: {exc}")
 
 
 class AzureOpenAIProvider(BaseLLMProvider):
     """Adapter for Azure-hosted OpenAI deployments."""
 
+    def __init__(self, model_name: Optional[str], api_key: Optional[str] = None, endpoint: Optional[str] = None):
+        super().__init__(model_name)
+        self.api_key = api_key or os.getenv("AZURE_OPENAI_API_KEY")
+        self.endpoint = endpoint or os.getenv("AZURE_OPENAI_ENDPOINT")
+
     def generate(self, prompt: str, payload: Dict[str, Any]) -> ProviderResponse:
-        api_key = os.getenv("AZURE_OPENAI_API_KEY")
-        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        if not api_key or not endpoint:
+        if not self.api_key or not self.endpoint:
             raise RuntimeError("Azure OpenAI credentials are not configured")
         logger.warning("AzureOpenAIProvider invoked without concrete implementation")
         return ProviderResponse(raw="", parsed=None)
+
+
+class OllamaProvider(BaseLLMProvider):
+    """Adapter for Ollama's native API (gpt-oss:20b)."""
+
+    def __init__(self, model_name: Optional[str], endpoint: Optional[str] = None):
+        super().__init__(model_name)
+        self.endpoint = endpoint or os.getenv("OLLAMA_HOST", "http://localhost:11435")
+
+    def generate(self, prompt: str, payload: Dict[str, Any]) -> ProviderResponse:
+        if not self.model_name:
+            raise RuntimeError("Ollama model name is not configured")
+
+        # Ollama uses /api/generate endpoint
+        url = f"{self.endpoint}/api/generate"
+
+        # Combine system prompt and payload into a single prompt
+        full_prompt = f"{prompt}\n\nData to analyze:\n{json.dumps(payload, ensure_ascii=False)}\n\nProvide your response in JSON format:"
+
+        request_payload = {
+            "model": self.model_name,
+            "prompt": full_prompt,
+            "stream": False,
+        }
+
+        try:
+            response = requests.post(url, json=request_payload, timeout=120)
+            response.raise_for_status()
+
+            result = response.json()
+            content = result.get("response", "")
+
+            if not content:
+                return ProviderResponse(raw="", parsed=None)
+
+            # Try to parse as JSON
+            try:
+                # Clean up markdown code blocks if present
+                cleaned = content.strip()
+                if cleaned.startswith("```json"):
+                    cleaned = cleaned[7:]
+                if cleaned.startswith("```"):
+                    cleaned = cleaned[3:]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3]
+                cleaned = cleaned.strip()
+
+                parsed = json.loads(cleaned)
+                return ProviderResponse(raw=content, parsed=parsed)
+            except json.JSONDecodeError as exc:
+                # Log detailed error for debugging
+                logger.error(f"Ollama JSON parse failed: {str(exc)[:100]}... Content length: {len(content)}, First 200 chars: {content[:200]}...")
+                return ProviderResponse(raw=content, parsed=None)
+
+        except requests.exceptions.RequestException as exc:
+            raise RuntimeError(f"Ollama API call failed: {exc}")
+
 
 logger = logging.getLogger(__name__)
 
@@ -128,9 +245,13 @@ class AIService:
     """
 
     def __init__(self) -> None:
-        self.prompts: Dict[str, str] = self._load_prompts()
-        provider_from_db, model_from_db = self._load_active_model()
-        self.provider_adapter = self._init_provider(provider_from_db, model_from_db)
+        self.prompts: Dict[str, str] = {}
+        self.prompt_providers: Dict[str, Optional[BaseLLMProvider]] = {}
+        self._load_prompts_and_providers()
+
+        # Fallback provider for legacy code
+        provider_from_db, model_from_db, api_key_from_db, endpoint_from_db = self._load_active_model()
+        self.provider_adapter = self._init_provider(provider_from_db, model_from_db, api_key_from_db, endpoint_from_db)
         self.provider_name = (
             (self.provider_adapter.provider_name if self.provider_adapter else None)
             or provider_from_db
@@ -146,7 +267,38 @@ class AIService:
     # ------------------------------------------------------------------
     # Configuration helpers
     # ------------------------------------------------------------------
+    def _load_prompts_and_providers(self) -> None:
+        """Load prompts and their selected models from database."""
+        try:
+            with db_cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT sp.prompt_key, COALESCE(sp.prompt_content, ''),
+                           sp.selected_model_id, l.provider_name, m.model_name, l.api_key, l.endpoint_url
+                    FROM ai_system_prompts sp
+                    LEFT JOIN ai_llm_model m ON sp.selected_model_id = m.id
+                    LEFT JOIN ai_llm l ON m.llm_id = l.id
+                    """
+                )
+                for key, content, model_id, provider_name, model_name, api_key, endpoint_url in cursor.fetchall():
+                    self.prompts[key] = content or ""
+
+                    # Initialize provider for this prompt if model is selected
+                    if model_id and provider_name and model_name:
+                        try:
+                            provider_adapter = self._init_provider(provider_name, model_name, api_key, endpoint_url)
+                            self.prompt_providers[key] = provider_adapter
+                        except Exception as exc:
+                            logger.warning(f"Failed to init provider for {key}: {exc}")
+                            self.prompt_providers[key] = None
+                    else:
+                        self.prompt_providers[key] = None
+
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Could not load AI system prompts: %s", exc)
+
     def _load_prompts(self) -> Dict[str, str]:
+        """Legacy method for backward compatibility."""
         prompts: Dict[str, str] = {}
         try:
             with db_cursor() as cursor:
@@ -159,12 +311,12 @@ class AIService:
             logger.warning("Could not load AI system prompts: %s", exc)
         return prompts
 
-    def _load_active_model(self) -> Tuple[Optional[str], Optional[str]]:
+    def _load_active_model(self) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
         try:
             with db_cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT l.provider_name, m.model_name
+                    SELECT l.provider_name, m.model_name, l.api_key, l.endpoint_url
                     FROM ai_llm_model AS m
                     JOIN ai_llm AS l ON m.llm_id = l.id
                     WHERE m.is_active = 1 AND l.enabled = 1
@@ -174,13 +326,14 @@ class AIService:
                 )
                 row = cursor.fetchone()
                 if row:
-                    return row[0], row[1]
+                    return row[0], row[1], row[2], row[3]
         except Exception as exc:  # pragma: no cover
             logger.warning("Could not load active AI model: %s", exc)
-        return None, None
+        return None, None, None, None
 
     def _init_provider(
-        self, provider_from_db: Optional[str], model_from_db: Optional[str]
+        self, provider_from_db: Optional[str], model_from_db: Optional[str],
+        api_key_from_db: Optional[str] = None, endpoint_from_db: Optional[str] = None
     ) -> Optional[BaseLLMProvider]:
         configured = os.getenv("AI_PROVIDER") or (provider_from_db or "")
         configured = configured.lower().strip()
@@ -191,9 +344,11 @@ class AIService:
 
         try:
             if configured == "openai":
-                return OpenAIProvider(model)
+                return OpenAIProvider(model, api_key_from_db)
             if configured in {"azure", "azure_openai", "azure-openai"}:
-                return AzureOpenAIProvider(model)
+                return AzureOpenAIProvider(model, api_key_from_db, endpoint_from_db)
+            if configured == "ollama":
+                return OllamaProvider(model, endpoint_from_db)
         except Exception as exc:  # pragma: no cover - configuration errors
             logger.warning("Failed to initialise LLM provider %s: %s", configured, exc)
             return None
@@ -204,17 +359,32 @@ class AIService:
     def _provider_generate(
         self, stage_key: str, payload: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
-        if not self.provider_adapter:
+        # Use stage-specific provider if available, otherwise fallback to global provider
+        provider = self.prompt_providers.get(stage_key) or self.provider_adapter
+
+        if not provider:
             return None
 
         prompt = self.prompts.get(stage_key, "")
         try:
-            response = self.provider_adapter.generate(prompt=prompt, payload=payload)
+            response = provider.generate(prompt=prompt, payload=payload)
             if not response.raw and response.parsed is None:
                 return None
             if response.parsed is not None:
                 return response.parsed
-            return json.loads(response.raw)
+
+            # Handle raw text responses (wrap simple text in JSON for AI1/AI2)
+            try:
+                return json.loads(response.raw)
+            except json.JSONDecodeError:
+                raw_text = response.raw.strip()
+                if stage_key == "document_analysis":
+                    return {"document_type": raw_text, "confidence": 0.8}
+                elif stage_key == "expense_classification":
+                    return {"expense_type": raw_text, "confidence": 0.8}
+                else:
+                    logger.warning(f"Provider returned raw text for {stage_key}, expected JSON: {raw_text[:100]}")
+                    return None
         except Exception as exc:  # pragma: no cover - network/parse errors
             logger.warning("Provider call for %s failed: %s", stage_key, exc)
             return None
@@ -259,7 +429,7 @@ class AIService:
 
         prompt_hint = self.prompts.get("document_analysis")
         if prompt_hint:
-            reasoning_parts.append(f"Prompt hint provided: {prompt_hint[:80]}")
+            reasoning_parts.append(f"Prompt hint provided: {prompt_hint}")
 
         return DocumentClassificationResponse(
             file_id=request.file_id,
@@ -312,7 +482,7 @@ class AIService:
 
         prompt_hint = self.prompts.get("expense_classification")
         if prompt_hint:
-            reasoning_parts.append(f"Prompt hint provided: {prompt_hint[:80]}")
+            reasoning_parts.append(f"Prompt hint provided: {prompt_hint}")
 
         return ExpenseClassificationResponse(
             file_id=request.file_id,
@@ -344,8 +514,15 @@ class AIService:
         )
 
         if not llm_result:
-            logger.error("LLM returned no result for data extraction - AI3 requires LLM!")
-            raise ValueError("LLM data extraction failed - no AI provider configured or LLM returned empty response")
+            error_details = (
+                f"file_id={request.file_id}, "
+                f"provider={self.provider_name}, "
+                f"model={self.model_name}, "
+                f"prompt_length={len(self.prompts.get('data_extraction', ''))}, "
+                f"ocr_length={len(ocr_text)}"
+            )
+            logger.error(f"AI3 data extraction failed: {error_details}")
+            raise ValueError(f"LLM data extraction failed - {error_details}")
 
         # Extract data from LLM response
         confidence = 0.5
@@ -357,6 +534,12 @@ class AIService:
 
         # Extract unified_file data from LLM
         unified_data = llm_result.get("unified_file", {})
+
+        # Serialize other_data if it's a dict
+        other_data_value = unified_data.get("other_data")
+        if isinstance(other_data_value, dict):
+            other_data_value = json.dumps(other_data_value, ensure_ascii=False)
+
         unified_file = UnifiedFileBase(
             file_type=request.document_type,
             orgnr=unified_data.get("orgnr"),
@@ -370,7 +553,7 @@ class AIService:
             gross_amount_sek=unified_data.get("gross_amount_sek"),
             net_amount_sek=unified_data.get("net_amount_sek"),
             receipt_number=unified_data.get("receipt_number"),
-            other_data=unified_data.get("other_data"),
+            other_data=other_data_value,
             ocr_raw=ocr_text,
         )
 
@@ -425,59 +608,36 @@ class AIService:
         logger.info("Classifying accounting for %s", request.file_id)
 
         proposals: List[AccountingProposal] = []
-        vat_amount = request.vat_amount
-        net_amount = request.net_amount
-        gross_amount = request.gross_amount
+        confidence = 0.0
 
-        has_account_4010 = any(str(row[0]) == "4010" for row in chart_of_accounts if row and row[0])
-        cost_account = "4010" if has_account_4010 else str(chart_of_accounts[0][0]) if chart_of_accounts else "4010"
-
-        if gross_amount > 0:
-            proposals.append(
-                AccountingProposal(
-                    receipt_id=request.file_id,
-                    account_code="2440",
-                    debit=gross_amount,
-                    credit=Decimal("0"),
-                    vat_rate=None,
-                    notes=f"Leverantörsskulder {request.vendor_name[:40]}" if request.vendor_name else "Leverantörsskulder",
-                )
-            )
-
-        if vat_amount and vat_amount > 0:
-            proposals.append(
-                AccountingProposal(
-                    receipt_id=request.file_id,
-                    account_code="2641",
-                    debit=vat_amount,
-                    credit=Decimal("0"),
-                    vat_rate=Decimal("25"),
-                    notes="Ingående moms",
-                )
-            )
-        if net_amount and net_amount > 0:
-            proposals.append(
-                AccountingProposal(
-                    receipt_id=request.file_id,
-                    account_code=cost_account,
-                    debit=Decimal("0"),
-                    credit=net_amount,
-                    vat_rate=None,
-                    notes=f"Kostnad {request.vendor_name[:40]}" if request.vendor_name else "Kostnad",
-                )
-            )
-
-        confidence = 0.7
-        if vat_amount and net_amount:
-            confidence = 0.85
+        # Serialize receipt_items for AI
+        items_data = []
+        for item in request.receipt_items:
+            items_data.append({
+                "id": item.id,
+                "name": item.name,
+                "article_id": item.article_id,
+                "number": item.number,
+                "item_price_ex_vat": str(item.item_price_ex_vat),
+                "item_price_inc_vat": str(item.item_price_inc_vat),
+                "item_total_price_ex_vat": str(item.item_total_price_ex_vat),
+                "item_total_price_inc_vat": str(item.item_total_price_inc_vat),
+                "vat": str(item.vat),
+                "vat_percentage": str(item.vat_percentage),
+                "currency": item.currency,
+            })
 
         llm_result = self._provider_generate(
             "accounting_classification",
             {
-                "gross_amount": str(gross_amount),
-                "net_amount": str(net_amount) if net_amount is not None else None,
-                "vat_amount": str(vat_amount) if vat_amount is not None else None,
+                "receipt_id": request.file_id,
+                "gross_amount": str(request.gross_amount),
+                "net_amount": str(request.net_amount) if request.net_amount is not None else None,
+                "vat_amount": str(request.vat_amount) if request.vat_amount is not None else None,
                 "vendor_name": request.vendor_name,
+                "receipt_items": items_data,
+                "document_type": request.document_type,
+                "expense_type": request.expense_type,
             },
         )
         if llm_result:

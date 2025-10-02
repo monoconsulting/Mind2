@@ -164,6 +164,10 @@ def _ensure_company(cursor, company: Company) -> Optional[int]:
         logger.warning("Cannot create company: name is required but missing")
         return None
 
+    if not orgnr:
+        logger.warning(f"Cannot create company '{name}': orgnr is required but missing")
+        return None
+
     try:
         cursor.execute(
             """
@@ -235,13 +239,13 @@ def _persist_extraction_result(
         unified = result.unified_file
         updates: Dict[str, Any] = {
             "orgnr": unified.orgnr,
-            "payment_type": unified.payment_type or "cash",
+            "payment_type": unified.payment_type,
             "purchase_datetime": unified.purchase_datetime,
-            "expense_type": unified.expense_type or "personal",
+            "expense_type": unified.expense_type,
             "gross_amount_original": unified.gross_amount_original,
             "net_amount_original": unified.net_amount_original,
-            "exchange_rate": unified.exchange_rate or Decimal("1"),
-            "currency": unified.currency or "SEK",
+            "exchange_rate": unified.exchange_rate,
+            "currency": unified.currency,
             "gross_amount_sek": unified.gross_amount_sek,
             "net_amount_sek": unified.net_amount_sek,
             "company_id": company_id,
@@ -298,8 +302,8 @@ def _persist_accounting_proposals(
             cursor.execute(
                 """
                 INSERT INTO ai_accounting_proposals (
-                    receipt_id, account_code, debit, credit, vat_rate, notes
-                ) VALUES (%s, %s, %s, %s, %s, %s)
+                    receipt_id, account_code, debit, credit, vat_rate, notes, item_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     proposal.receipt_id,
@@ -308,6 +312,7 @@ def _persist_accounting_proposals(
                     proposal.credit,
                     proposal.vat_rate,
                     proposal.notes,
+                    proposal.item_id,
                 ),
             )
         _set_ai_stage(cursor, file_id, "AI4", confidence)

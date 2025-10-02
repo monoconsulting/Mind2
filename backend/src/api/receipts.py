@@ -156,6 +156,7 @@ def list_receipts() -> Any:
     q_tags = request.args.get("tags")
     q_from = request.args.get("from")
     q_to = request.args.get("to")
+    q_file_type = request.args.get("file_type")
 
     # Simple pagination
     try:
@@ -181,7 +182,7 @@ def list_receipts() -> Any:
                 where.append("ai_status = %s")
                 params.append(q_status)
             if q_merchant:
-                where.append("merchant_name LIKE %s")
+                where.append("c.name LIKE %s")
                 params.append(f"%{q_merchant}%")
             if q_orgnr:
                 where.append("orgnr = %s")
@@ -192,6 +193,9 @@ def list_receipts() -> Any:
             if q_to:
                 where.append("purchase_datetime <= %s")
                 params.append(q_to)
+            if q_file_type:
+                where.append("u.file_type = %s")
+                params.append(q_file_type)
             if q_tags:
                 # Simple ANY tag filter (comma-separated)
                 tag_list = [t.strip() for t in q_tags.split(",") if t.strip()]
@@ -206,12 +210,10 @@ def list_receipts() -> Any:
 
             where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
-            where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-
-            # Count
+            # Count (needs same joins as main query)
             with db_cursor() as cur:
                 cur.execute(
-                    f"SELECT COUNT(1) FROM unified_files {where_sql}",
+                    f"SELECT COUNT(1) FROM unified_files u LEFT JOIN companies c ON c.id = u.company_id {where_sql}",
                     tuple(params),
                 )
                 (total,) = cur.fetchone() or (0,)
@@ -220,18 +222,21 @@ def list_receipts() -> Any:
             with db_cursor() as cur:
                 cur.execute(
                     (
-                        "SELECT u.id, u.original_filename, u.merchant_name, u.purchase_datetime, u.net_amount, u.gross_amount, u.ai_status, u.submitted_by, "
+                        "SELECT u.id, u.original_filename, c.name as merchant_name, u.purchase_datetime, u.net_amount_sek, u.gross_amount_sek, u.ai_status, u.file_type, u.submitted_by, "
                         "u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, "
                         "COALESCE(GROUP_CONCAT(t.tag), '') as tags "
                         "FROM unified_files u "
+                        "LEFT JOIN companies c ON c.id = u.company_id "
                         "LEFT JOIN file_tags t ON t.file_id=u.id "
                         "LEFT JOIN file_locations fl ON fl.file_id=u.id "
                         + where_sql
-                        + " GROUP BY u.id, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc ORDER BY u.created_at DESC LIMIT %s OFFSET %s"
+                        + " GROUP BY u.id, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, c.name ORDER BY u.created_at DESC LIMIT %s OFFSET %s"
                     ),
                     tuple(params + [page_size, offset]),
                 )
-                for rid, fname, merchant, pdt, net, gross, status, submitted_by, file_creation_ts, lat, lon, acc, tag_csv in cur.fetchall():
+                results = cur.fetchall()
+                logger.info(f"Query returned {len(results)} rows")
+                for rid, fname, merchant, pdt, net, gross, status, file_type, submitted_by, file_creation_ts, lat, lon, acc, tag_csv in results:
                     purchase_iso = pdt.isoformat() if hasattr(pdt, "isoformat") else pdt
                     purchase_date = None
                     if hasattr(pdt, "date"):
@@ -274,6 +279,7 @@ def list_receipts() -> Any:
                             "net_amount": net_value,
                             "gross_amount": gross_value,
                             "status": status,
+                            "file_type": file_type,
                             "submitted_by": submitted_by,
                             "line_item_count": line_items,
                             "tags": [t for t in (tag_csv or "").split(",") if t],
@@ -281,6 +287,9 @@ def list_receipts() -> Any:
                     )
         except Exception as e:
             # Fallback to empty but still 200
+            logger.error(f"Error listing receipts: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             items = []
             total = 0
     meta["total"] = int(total)
@@ -720,3 +729,170 @@ def approve_receipt(rid: str) -> Any:
         except Exception:
             ok = False
     return jsonify({"id": rid, "approved": ok}), 200
+
+
+@receipts_bp.get("/receipts/<rid>/ai-history")
+def get_ai_processing_history(rid: str) -> Any:
+    """Get all AI processing history records for a specific file."""
+    history: list[dict[str, Any]] = []
+    if db_cursor is not None:
+        try:
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        id, file_id, job_type, status, created_at,
+                        ai_stage_name, log_text, error_message, confidence,
+                        processing_time_ms, provider, model_name
+                    FROM ai_processing_history
+                    WHERE file_id = %s
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    (rid,),
+                )
+                for row in cur.fetchall() or []:
+                    (
+                        history_id, file_id, job_type, status, created_at,
+                        ai_stage_name, log_text, error_message, confidence,
+                        processing_time_ms, provider, model_name
+                    ) = row
+                    history.append({
+                        "id": history_id,
+                        "file_id": file_id,
+                        "job_type": job_type,
+                        "status": status,
+                        "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                        "ai_stage_name": ai_stage_name,
+                        "log_text": log_text,
+                        "error_message": error_message,
+                        "confidence": float(confidence) if confidence is not None else None,
+                        "processing_time_ms": processing_time_ms,
+                        "provider": provider,
+                        "model": model_name,
+                    })
+        except Exception as e:
+            logger.error(f"Error fetching AI history for {rid}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            history = []
+    return jsonify({"file_id": rid, "history": history}), 200
+
+
+@receipts_bp.get("/receipts/<rid>/workflow-status")
+def get_workflow_status(rid: str) -> Any:
+    """Get the current status of each workflow phase for a file."""
+    workflow_status = {
+        "file_id": rid,
+        "title": None,
+        "datetime": None,
+        "upload": "N/A",
+        "filename": None,
+        "pdf_convert": "N/A",
+        "ocr": {"status": "pending", "data": None},
+        "ai1": {"status": "pending", "data": None},
+        "ai2": {"status": "pending", "data": None},
+        "ai3": {"status": "pending", "data": None},
+        "ai4": {"status": "pending", "data": None},
+        "ai5": {"status": "pending", "data": None},
+        "match": {"status": "pending", "data": None},
+    }
+
+    if db_cursor is not None:
+        try:
+            # Get file metadata
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        u.id, u.original_filename, u.file_creation_timestamp,
+                        u.submitted_by, c.name as company_name, u.created_at, u.ocr_raw
+                    FROM unified_files u
+                    LEFT JOIN companies c ON c.id = u.company_id
+                    WHERE u.id = %s
+                    """,
+                    (rid,),
+                )
+                file_row = cur.fetchone()
+                if file_row:
+                    file_id, original_filename, file_creation_ts, submitted_by, company_name, created_at, ocr_raw = file_row
+
+                    # Set title: company name if exists, otherwise file ID
+                    workflow_status["title"] = company_name if company_name else f"ID: {file_id}"
+
+                    # Set datetime: created_at timestamp
+                    if created_at:
+                        if hasattr(created_at, "strftime"):
+                            workflow_status["datetime"] = created_at.strftime("%Y-%m-%d %H:%M")
+                        else:
+                            workflow_status["datetime"] = str(created_at)
+
+                    # Set upload source
+                    workflow_status["upload"] = "Upload" if submitted_by and "upload" in submitted_by.lower() else "FTP"
+                    workflow_status["filename"] = original_filename
+
+                    # Store OCR raw text for modal display
+                    workflow_status["ocr_raw"] = ocr_raw
+
+            # Get AI processing history
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        job_type, status, ai_stage_name, log_text, error_message,
+                        confidence, processing_time_ms, provider, model_name, created_at
+                    FROM ai_processing_history
+                    WHERE file_id = %s
+                    ORDER BY created_at DESC, id DESC
+                    """,
+                    (rid,),
+                )
+
+                # Process history records
+                seen_stages = set()
+                for row in cur.fetchall() or []:
+                    (
+                        job_type, status, ai_stage_name, log_text, error_message,
+                        confidence, processing_time_ms, provider, model_name, created_at
+                    ) = row
+
+                    # Map job_type and ai_stage_name to workflow phases
+                    stage_key = None
+                    if job_type == "ocr":
+                        stage_key = "ocr"
+                    elif ai_stage_name:
+                        # Map AI stage names to workflow phases
+                        stage_lower = ai_stage_name.lower()
+                        if "ai1" in stage_lower or "document" in stage_lower and "classif" in stage_lower:
+                            stage_key = "ai1"
+                        elif "ai2" in stage_lower or "expense" in stage_lower and "classif" in stage_lower:
+                            stage_key = "ai2"
+                        elif "ai3" in stage_lower or "extract" in stage_lower:
+                            stage_key = "ai3"
+                        elif "ai4" in stage_lower or "accounting" in stage_lower:
+                            stage_key = "ai4"
+                        elif "ai5" in stage_lower or ("credit" in stage_lower and "card" in stage_lower):
+                            stage_key = "ai5"
+                        elif "match" in stage_lower:
+                            stage_key = "match"
+
+                    # Only update if we haven't seen this stage yet (most recent first)
+                    if stage_key and stage_key not in seen_stages:
+                        seen_stages.add(stage_key)
+                        workflow_status[stage_key] = {
+                            "status": status,
+                            "ai_stage_name": ai_stage_name,
+                            "log_text": log_text,
+                            "error_message": error_message,
+                            "confidence": float(confidence) if confidence is not None else None,
+                            "processing_time_ms": processing_time_ms,
+                            "provider": provider,
+                            "model": model_name,
+                            "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                        }
+
+        except Exception as e:
+            logger.error(f"Error fetching workflow status for {rid}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    return jsonify(workflow_status), 200

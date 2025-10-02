@@ -28,6 +28,51 @@ except Exception:  # pragma: no cover
         return False
 
 
+INSERT_HISTORY_SQL = """
+    INSERT INTO ai_processing_history
+    (file_id, job_type, status, ai_stage_name, log_text, error_message,
+     confidence, processing_time_ms, provider, model_name)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+"""
+
+
+def _history(
+    file_id: str,
+    job: str,
+    status: str,
+    ai_stage_name: str | None = None,
+    log_text: str | None = None,
+    error_message: str | None = None,
+    confidence: float | None = None,
+    processing_time_ms: int | None = None,
+    provider: str | None = None,
+    model_name: str | None = None,
+) -> None:
+    """Log processing history with detailed information."""
+    if db_cursor is None:
+        return
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                INSERT_HISTORY_SQL,
+                (
+                    file_id,
+                    job,
+                    status,
+                    ai_stage_name,
+                    log_text,
+                    error_message,
+                    confidence,
+                    processing_time_ms,
+                    provider,
+                    model_name,
+                ),
+            )
+    except Exception:
+        # best-effort history
+        pass
+
+
 @dataclass
 class FetchResult:
     downloaded: List[Tuple[str, str]]  # (id, filename)
@@ -139,6 +184,17 @@ def _insert_unified_file(
                 )
             )
             logger.info(f"Inserted unified_file {file_id} with metadata and hash {content_hash[:16]}...")
+
+            # Log successful FTP fetch
+            file_size = metadata.get('file_size', 'unknown')
+            _history(
+                file_id=file_id,
+                job="ftp_fetch",
+                status="success",
+                ai_stage_name="FTP-FileFetched",
+                log_text=f"File fetched from FTP: filename={filename}, size={file_size} bytes, hash={content_hash[:16]}..., metadata_fields={list(metadata.keys())}",
+                provider="ftp",
+            )
     except Exception as e:
         # Check for duplicate hash
         if 'Duplicate entry' in str(e) and 'idx_content_hash' in str(e):
@@ -250,6 +306,8 @@ def fetch_from_local_inbox() -> FetchResult:
 
             # Load metadata from JSON file if it exists
             metadata = _load_metadata(p)
+            # Add file size to metadata for logging
+            metadata['file_size'] = len(data)
 
             # Insert file record with metadata and hash (handles duplicates)
             try:
@@ -294,6 +352,17 @@ def fetch_from_local_inbox() -> FetchResult:
         except Exception as e:
             logger.error(f"Local: Error processing {p.name}: {e}")
             errors.append(f"{p.name}: {e}")
+            # Log error if we have a file_id
+            if 'file_id' in locals():
+                _history(
+                    file_id=file_id,
+                    job="ftp_fetch",
+                    status="error",
+                    ai_stage_name="FTP-FileFetched",
+                    log_text=f"Failed to process file from local inbox: {p.name}",
+                    error_message=f"{type(e).__name__}: {str(e)}",
+                    provider="ftp",
+                )
 
     return FetchResult(downloaded=downloaded, skipped=skipped, errors=errors)
 
@@ -400,6 +469,8 @@ def fetch_from_ftp() -> FetchResult:
 
                 # Get metadata if available
                 metadata = metadata_cache.get(name, {})
+                # Add file size to metadata for logging
+                metadata['file_size'] = len(data)
 
                 # Insert file record with metadata and hash (handles duplicates)
                 try:
@@ -455,6 +526,17 @@ def fetch_from_ftp() -> FetchResult:
             except Exception as e:
                 logger.error(f"FTP DEBUG: Error processing {name}: {e}")
                 errors.append(f"{name}: {e}")
+                # Log error if we have a file_id
+                if 'file_id' in locals():
+                    _history(
+                        file_id=file_id,
+                        job="ftp_fetch",
+                        status="error",
+                        ai_stage_name="FTP-FileFetched",
+                        log_text=f"Failed to process file from FTP: {name}",
+                        error_message=f"{type(e).__name__}: {str(e)}",
+                        provider="ftp",
+                    )
     except Exception as e:
         logger.error(f"FTP DEBUG: Connection error: {e}")
         errors.append(str(e))

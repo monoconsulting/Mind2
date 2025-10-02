@@ -16,7 +16,10 @@ import {
   FiChevronLeft,
   FiChevronRight,
   FiMapPin,
-  FiUpload
+  FiUpload,
+  FiClock,
+  FiFile,
+  FiCpu
 } from 'react-icons/fi'
 import { api } from '../api'
 
@@ -36,7 +39,8 @@ const initialFilters = {
   from: '',
   to: '',
   orgnr: '',
-  tag: ''
+  tag: '',
+  fileType: 'receipt'
 }
 
 const statusClassMap = {
@@ -318,6 +322,20 @@ function FilterPanel({ open, filters, onApply, onReset, onClose, disabled }) {
                 disabled={disabled}
               />
             </div>
+          </label>
+          <label className="filter-field">
+            <span>Filtyp</span>
+            <select
+              value={draft.fileType}
+              onChange={(event) => update('fileType', event.target.value)}
+              className="dm-input"
+              disabled={disabled}
+            >
+              <option value="">Alla</option>
+              <option value="receipt">Kvitton</option>
+              <option value="invoice">Fakturor</option>
+              <option value="other">Övriga</option>
+            </select>
           </label>
         </div>
         <div className="filter-actions">
@@ -813,6 +831,214 @@ function MapModal({ open, receipt, onClose }) {
 }
 
 
+function AIStageModal({ open, stageData, onClose }) {
+  if (!open || !stageData) {
+    return null;
+  }
+
+  const handleBackdrop = (event) => {
+    if (event.target === event.currentTarget) {
+      onClose();
+    }
+  };
+
+  const getStatusBadgeClass = (status) => {
+    const normalized = String(status || '').toLowerCase();
+    if (normalized === 'success' || normalized === 'completed') return 'status-passed';
+    if (normalized === 'error' || normalized === 'failed') return 'status-failed';
+    if (normalized === 'pending') return 'status-queued';
+    return 'status-processing';
+  };
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-label="AI Stage Details" onClick={handleBackdrop}>
+      <div className="modal modal-lg" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <h3>{stageData.title || 'AI Processing Details'}</h3>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Stäng">
+            <FiX />
+          </button>
+        </div>
+        <div className="modal-body space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="filter-field">
+              <span className="text-sm font-medium text-gray-300">Status</span>
+              <div>
+                <span className={`status-badge ${getStatusBadgeClass(stageData.status)}`}>
+                  {stageData.status || 'N/A'}
+                </span>
+              </div>
+            </div>
+            {stageData.ai_stage_name && (
+              <div className="filter-field">
+                <span className="text-sm font-medium text-gray-300">Stage Name</span>
+                <div className="text-gray-200">{stageData.ai_stage_name}</div>
+              </div>
+            )}
+            {stageData.created_at && (
+              <div className="filter-field">
+                <span className="text-sm font-medium text-gray-300">Created At</span>
+                <div className="text-gray-200">{stageData.created_at}</div>
+              </div>
+            )}
+            {stageData.processing_time_ms !== null && stageData.processing_time_ms !== undefined && (
+              <div className="filter-field">
+                <span className="text-sm font-medium text-gray-300">Processing Time</span>
+                <div className="text-gray-200">{stageData.processing_time_ms} ms</div>
+              </div>
+            )}
+            {stageData.confidence !== null && stageData.confidence !== undefined && (
+              <div className="filter-field">
+                <span className="text-sm font-medium text-gray-300">Confidence</span>
+                <div className="text-gray-200">{(stageData.confidence * 100).toFixed(1)}%</div>
+              </div>
+            )}
+            {stageData.provider && (
+              <div className="filter-field">
+                <span className="text-sm font-medium text-gray-300">Provider</span>
+                <div className="text-gray-200">{stageData.provider}</div>
+              </div>
+            )}
+            {stageData.model && (
+              <div className="filter-field">
+                <span className="text-sm font-medium text-gray-300">Model</span>
+                <div className="text-gray-200">{stageData.model}</div>
+              </div>
+            )}
+          </div>
+
+          {stageData.log_text && (
+            <div className="filter-field">
+              <span className="text-sm font-medium text-gray-300">Log Text</span>
+              <div className="bg-gray-800 p-4 rounded-lg mt-2" style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                <pre className="text-sm text-gray-200 whitespace-pre-wrap font-mono">{stageData.log_text}</pre>
+              </div>
+            </div>
+          )}
+
+          {stageData.ocr_raw && (
+            <div className="filter-field">
+              <span className="text-sm font-medium text-gray-300">OCR Raw Text</span>
+              <div className="bg-gray-800 p-4 rounded-lg mt-2" style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                <pre className="text-sm text-gray-200 whitespace-pre-wrap font-mono">{stageData.ocr_raw}</pre>
+              </div>
+            </div>
+          )}
+
+          {stageData.error_message && (
+            <div className="alert alert-error">
+              <FiAlertCircle className="text-xl" />
+              <div>
+                <div className="font-medium">Error Message</div>
+                <div className="text-sm">{stageData.error_message}</div>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button type="button" className="btn btn-primary" onClick={onClose}>
+            Stäng
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function WorkflowBadges({ receipt, onStageClick }) {
+  const [workflow, setWorkflow] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    const fetchWorkflow = async () => {
+      try {
+        setLoading(true);
+        const res = await api.fetch(`/ai/api/receipts/${receipt.id}/workflow-status`);
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        if (!cancelled) {
+          setWorkflow(data);
+        }
+      } catch (error) {
+        console.error('Failed to fetch workflow status:', error);
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchWorkflow();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [receipt.id]);
+
+  const getBadgeClass = (status) => {
+    if (typeof status === 'object' && status !== null) {
+      status = status.status;
+    }
+    const normalized = String(status || '').toLowerCase();
+    if (normalized === 'success' || normalized === 'completed') return 'bg-green-600 text-white';
+    if (normalized === 'error' || normalized === 'failed') return 'bg-red-600 text-white';
+    if (normalized === 'pending') return 'bg-gray-500 text-white';
+    if (normalized === 'n/a') return 'bg-gray-400 text-white';
+    return 'bg-blue-500 text-white';
+  };
+
+  const renderBadge = (label, value, onClick = null) => {
+    const displayValue = typeof value === 'object' && value !== null ? value.status || 'N/A' : value || 'N/A';
+    const isClickable = onClick !== null;
+
+    return (
+      <div
+        className={`flex flex-col items-center ${isClickable ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+        onClick={isClickable ? onClick : undefined}
+        role={isClickable ? 'button' : undefined}
+        tabIndex={isClickable ? 0 : undefined}
+      >
+        <div className="text-xs text-gray-400 mb-1">{label}</div>
+        <span className={`status-badge ${getBadgeClass(value)} text-xs px-2 py-1`}>
+          {displayValue}
+        </span>
+      </div>
+    );
+  };
+
+  if (loading || !workflow) {
+    return (
+      <div className="flex items-center gap-2 text-gray-400 text-sm">
+        <div className="loading-spinner" style={{ width: '16px', height: '16px' }} />
+        <span>Loading...</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap gap-3 items-start" style={{ minWidth: '800px' }}>
+      {renderBadge('Title', workflow.title || `ID: ${workflow.file_id}`)}
+      {renderBadge('Datum', workflow.datetime || '-')}
+      {renderBadge('Upload', workflow.upload)}
+      {renderBadge('FileName', workflow.filename || '-')}
+      {renderBadge('PDFConvert', workflow.pdf_convert)}
+      {renderBadge('OCR', workflow.ocr, workflow.ocr && workflow.ocr.status !== 'pending' ? () => onStageClick({ ...workflow.ocr, title: 'OCR Processing', ocr_raw: workflow.ocr_raw }) : null)}
+      {renderBadge('AI1', workflow.ai1, workflow.ai1 && workflow.ai1.status !== 'pending' ? () => onStageClick({ ...workflow.ai1, title: 'AI1 - Document Classification' }) : null)}
+      {renderBadge('AI2', workflow.ai2, workflow.ai2 && workflow.ai2.status !== 'pending' ? () => onStageClick({ ...workflow.ai2, title: 'AI2 - Expense Classification' }) : null)}
+      {renderBadge('AI3', workflow.ai3, workflow.ai3 && workflow.ai3.status !== 'pending' ? () => onStageClick({ ...workflow.ai3, title: 'AI3 - Data Extraction' }) : null)}
+      {renderBadge('AI4', workflow.ai4, workflow.ai4 && workflow.ai4.status !== 'pending' ? () => onStageClick({ ...workflow.ai4, title: 'AI4 - Accounting Proposal' }) : null)}
+      {renderBadge('AI5', workflow.ai5, workflow.ai5 && workflow.ai5.status !== 'pending' ? () => onStageClick({ ...workflow.ai5, title: 'AI5 - Credit Card Match' }) : null)}
+      {renderBadge('Match', workflow.match, workflow.match && workflow.match.status !== 'pending' ? () => onStageClick({ ...workflow.match, title: 'Match Status' }) : null)}
+    </div>
+  );
+}
+
+
 function PreviewModal({ previewState, onClose, onDownload }) {
   const [ocrBoxes, setOcrBoxes] = React.useState([]);
   const [imageLoaded, setImageLoaded] = React.useState(false);
@@ -1010,6 +1236,8 @@ export default function Receipts() {
   const [isUploadOpen, setUploadOpen] = React.useState(false)
   const [isMapOpen, setMapOpen] = React.useState(false)
   const [selectedReceiptForMap, setSelectedReceiptForMap] = React.useState(null)
+  const [isAIStageOpen, setAIStageOpen] = React.useState(false)
+  const [selectedAIStage, setSelectedAIStage] = React.useState(null)
   const [previewState, setPreviewState] = React.useState(initialPreviewState)
   const previewCache = React.useRef(new Map())
 
@@ -1028,6 +1256,7 @@ export default function Receipts() {
     if (filters.from) params.set('from', filters.from)
     if (filters.to) params.set('to', filters.to)
     if (filters.tag) params.set('tags', filters.tag)
+    if (filters.fileType) params.set('file_type', filters.fileType)
 
     try {
       const res = await api.fetch(`/ai/api/receipts?${params.toString()}`)
@@ -1257,6 +1486,96 @@ export default function Receipts() {
     setSelectedReceiptForMap(null);
   };
 
+  const handleShowAIStage = (stageData) => {
+    setSelectedAIStage(stageData);
+    setAIStageOpen(true);
+  };
+
+  const closeAIStage = () => {
+    setAIStageOpen(false);
+    setSelectedAIStage(null);
+  };
+
+  const handleResume = async (fileId) => {
+    try {
+      const res = await api.fetch(`/ai/api/ingest/process/${fileId}/resume`, {
+        method: 'POST',
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+
+      if (data.queued) {
+        setBanner({
+          type: 'success',
+          message: `Bearbetning återupptagen: ${data.action || 'processing resumed'}`,
+        });
+        // Reload receipts after a short delay to show updated status
+        setTimeout(() => {
+          loadReceipts(true);
+        }, 2000);
+      } else {
+        setBanner({
+          type: 'error',
+          message: data.error || 'Kunde inte återuppta bearbetning',
+        });
+      }
+    } catch (error) {
+      console.error('Error resuming processing:', error);
+      setBanner({
+        type: 'error',
+        message: 'Fel vid återupptagning av bearbetning',
+      });
+    }
+  };
+
+  const handleResumeAll = async () => {
+    if (displayedItems.length === 0) {
+      setBanner({
+        type: 'error',
+        message: 'Inga kvitton att återuppta',
+      });
+      return;
+    }
+
+    setBanner({
+      type: 'info',
+      message: `Återupptar ${displayedItems.length} kvitton...`,
+    });
+
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const receipt of displayedItems) {
+      try {
+        const res = await api.fetch(`/ai/api/ingest/process/${receipt.id}/resume`, {
+          method: 'POST',
+        });
+
+        if (res.ok) {
+          successCount++;
+        } else {
+          errorCount++;
+        }
+      } catch (error) {
+        console.error(`Error resuming ${receipt.id}:`, error);
+        errorCount++;
+      }
+    }
+
+    setBanner({
+      type: successCount > 0 ? 'success' : 'error',
+      message: `Återupptagning klar: ${successCount} lyckades, ${errorCount} misslyckades`,
+    });
+
+    setTimeout(() => {
+      loadReceipts(true);
+    }, 2000);
+  };
+
   React.useEffect(() => {
     if (!previewState.receipt) {
       return;
@@ -1365,6 +1684,10 @@ export default function Receipts() {
               <FiFilter />
               Filter
             </button>
+            <button className="btn btn-primary" onClick={handleResumeAll} disabled={loading}>
+              <FiRefreshCw />
+              Återuppta alla
+            </button>
           </div>
         </div>
       </div>
@@ -1397,24 +1720,25 @@ export default function Receipts() {
           </div>
         </div>
 
-        <div className="table-wrapper">
+        <div className="table-wrapper" style={{ overflowX: 'auto' }}>
           <table className="table-dark">
             <thead>
               <tr>
                 <th>Förhandsgranskning</th>
+                <th>Process</th>
                 <th>Datum</th>
                 <th>Företag</th>
                 <th className="text-right">Exkl. moms</th>
                 <th className="text-right">Inkl. moms</th>
                 <th className="text-center">Status</th>
-                <th>Filnamn</th>
+                <th>Filtyp</th>
                 <th className="text-center">Åtgärder</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="table-loading">
+                  <td colSpan={9} className="table-loading">
                     <div className="loading-inline">
                       <div className="loading-spinner" />
                       <span>Laddar kvitton...</span>
@@ -1423,7 +1747,7 @@ export default function Receipts() {
                 </tr>
               ) : displayedItems.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="table-empty">
+                  <td colSpan={9} className="table-empty">
                     <div className="space-y-2">
                       <div>Inga kvitton hittades</div>
                       <div className="text-sm text-gray-400">Justera filter eller hämta nya filer från FTP</div>
@@ -1448,6 +1772,9 @@ export default function Receipts() {
                       />
                     </td>
                     <td>
+                      <WorkflowBadges receipt={receipt} onStageClick={handleShowAIStage} />
+                    </td>
+                    <td>
                       <div className="font-medium">{formatDate(receipt.file_creation_timestamp)}</div>
                       {receipt.file_creation_timestamp && (
                         <div className="text-xs text-gray-400">{receipt.file_creation_timestamp}</div>
@@ -1465,15 +1792,14 @@ export default function Receipts() {
                       <StatusBadge status={receipt.status || receipt.ai_status} />
                     </td>
                     <td>
-                      <div className="font-mono text-sm truncate" title={receipt.original_filename || ''}>
-                        {receipt.original_filename || '-'}
+                      <div className="font-medium text-sm">
+                        {receipt.file_type === 'receipt' ? 'Kvitto' :
+                         receipt.file_type === 'invoice' ? 'Faktura' :
+                         receipt.file_type || 'Okänd'}
                       </div>
-                      {receipt.tags?.length ? (
-                        <div className="text-xs text-gray-400 truncate">Taggar: {receipt.tags.join(', ')}</div>
-                      ) : null}
                     </td>
                     <td className="text-center">
-                      <div className="flex gap-2 justify-center">
+                      <div className="flex gap-2 justify-center flex-wrap">
                         <button
                           type="button"
                           className="btn btn-secondary btn-sm"
@@ -1484,6 +1810,20 @@ export default function Receipts() {
                         <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleDownload(receipt)}>
                           <FiDownload />
                           Ladda ned
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          style={{
+                            backgroundColor: '#dc2626',
+                            color: 'white',
+                            fontSize: '0.75rem',
+                            padding: '0.375rem 0.625rem'
+                          }}
+                          onClick={() => handleResume(receipt.id)}
+                          title="Återuppta bearbetning från där den stannade">
+                          <FiRefreshCw style={{ fontSize: '0.875rem' }} />
+                          Återuppta
                         </button>
                       </div>
                     </td>
@@ -1539,6 +1879,7 @@ export default function Receipts() {
       />
       <ExportModal open={isExportOpen} filters={filters} onClose={() => setExportOpen(false)} />
       <MapModal open={isMapOpen} receipt={selectedReceiptForMap} onClose={closeMap} />
+      <AIStageModal open={isAIStageOpen} stageData={selectedAIStage} onClose={closeAIStage} />
       <PreviewModal previewState={previewState} onClose={closePreview} onDownload={handleDownload} />
     </div>
   )

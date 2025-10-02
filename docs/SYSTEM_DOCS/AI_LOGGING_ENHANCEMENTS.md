@@ -14,6 +14,10 @@ New columns added to `ai_processing_history`:
 
 | Column | Type | Description |
 |--------|------|-------------|
+| `id` | VARCHAR(64) | Human-readable AI stage name (e.g., "AI1-DocumentClassification") |
+| `log_text` | TEXT | Detailed explanation of what happened in this stage |
+| `error_message` | TEXT | Full error message if the stage failed |
+| `confidence` | FLOAT | Confidence score for this AI stage result |
 | `ai_stage_name` | VARCHAR(64) | Human-readable AI stage name (e.g., "AI1-DocumentClassification") |
 | `log_text` | TEXT | Detailed explanation of what happened in this stage |
 | `error_message` | TEXT | Full error message if the stage failed |
@@ -53,7 +57,7 @@ Each AI stage has both a descriptive name (for logging) and a status value (for 
 
 | Stage | Log Name | Status Value | Description |
 |-------|----------|--------------|-------------|
-| FTP | `FTP-FileFetched` | `ftp_fetched` | File fetched from FTP server |
+| FTP | `FTP-FileFetched` | `ftp_fetched` or `uploaded`  | File fetched from FTP server or uploaded in frontend |
 | OCR | `OCR-TextExtraction` | `ocr_done` | Text extraction from receipt images |
 | AI1 | `AI1-DocumentClassification` | `ai1_completed` | Classify document type (receipt, invoice, other) |
 | AI2 | `AI2-ExpenseClassification` | `ai2_completed` | Classify expense type (personal, corporate) |

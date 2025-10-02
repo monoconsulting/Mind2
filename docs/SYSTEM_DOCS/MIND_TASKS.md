@@ -102,4 +102,65 @@ _______________________
 
   
 
-Databas: 
+#### **Phase 5 - Process log in frontend**
+
+- [ ] **Task 5.1 - Rebuild menu option "Process"**
+
+  **Description:** Jag vill göra om menyn "Process" och ändra denna så att resultat från alla olika workflow-faser presenteras enligt följande från vänster till höger i varsin kolumn. 
+
+  Process: This should be great looking badges matching the design. Every badge should be possible to click to open a modal
+
+  Title->DateTime->Upload -> FileName -> PDFConvert -> OCR -> AI1 -> AI2 -> AI3 -> AI4 -> AI5 -> Match
+
+  **Title**: If exists: companies.name otherwise unified_files.id: Companies.name - if exists otherwise until it arrives original file name from unified files
+
+  **Title**: If exists: companies.name otherwise unified_files.id: YYYY-MM-DD HH:MM - when conversion was started
+
+  **Upload**: How was the file ingested (Answer: FTP or Upload)
+
+  **PDFConvert:** Completed or N/A depending of if a conversion from pdf to png has been done. **RIGHT NOW - NOT IMPLEMENTED WRITE N/A**
+
+  **OCR:** Status. Links to full OCR-text or error with all other fields available
+
+  **AI1 - AI5:** Status badge showing data from the status-field for each AI-step. Link to should open a modal with full report of everything that is included for AI one in table ai_processing_history. 
+
+  * id
+  * file_id
+  * job_type
+  * status
+  * created_at
+  * ai_stage_name
+  * log_text (FULL LOG TEXT!)
+  * error_message
+  * confidence
+  * processing_time_ms
+  * provider
+  * model
+
+  **How to verify:** Test with confirmed system-file to inject: @web/test_pdf.pdf for pdf-files. @web/test/test_image.jpg and confirm all the steps are providing the correct output in the modal
+
+  
+
+- [ ] **Task 5.2 - Convert PDF to png**
+
+  **Description:** If a PDF is uploaded (with the correct mime-type OR the correct file ending). This should be converted to a jpg at step 0. This should create a 300dpi png-picture with dpi configurable in the settings menu option. Do a full plan on how to implement this. Step by step. Add new task in this file. DO NOT IMPLEMENT THE FUNCTION YET.
+
+  **How to verify:**
+
+- [ ] **Task 5.3 - Task title**
+
+  **System prompt for agent:** A specific clear and very descriptive system prompt for the agent.
+
+  **Description:** Description of the task
+
+  **How to verify:** Description of how this should be verified and presented to the user
+
+- [ ] **Task 5.3 - Task title**
+
+  **System prompt:**
+
+  **Description:** 
+
+  **How to verify:**
+
+  

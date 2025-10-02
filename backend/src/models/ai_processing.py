@@ -19,7 +19,7 @@ class UnifiedFileBase(BaseModel):
     gross_amount_original: Optional[Decimal] = Field(None, decimal_places=2)
     net_amount_original: Optional[Decimal] = Field(None, decimal_places=2)
     exchange_rate: Optional[Decimal] = Field(None, decimal_places=6)
-    currency: Optional[str] = Field("SEK", max_length=222)
+    currency: Optional[str] = Field(None, max_length=222)
     gross_amount_sek: Optional[Decimal] = Field(None, decimal_places=2)
     net_amount_sek: Optional[Decimal] = Field(None, decimal_places=2)
     ai_status: Optional[str] = Field(None, max_length=32)
@@ -50,17 +50,18 @@ class UnifiedFileAIStatus(BaseModel):
 
 class ReceiptItem(BaseModel):
     """Model for individual receipt items."""
+    id: Optional[int] = Field(None, description="Database ID (auto-generated)")
     main_id: str = Field(description="Reference to unified_files.id")
     article_id: str = Field(max_length=222)
     name: str = Field(max_length=222)
     number: int = Field(gt=0, description="Quantity of items")
-    item_price_ex_vat: Decimal = Field(decimal_places=2)
-    item_price_inc_vat: Decimal = Field(decimal_places=2)
-    item_total_price_ex_vat: Decimal = Field(decimal_places=2)
-    item_total_price_inc_vat: Decimal = Field(decimal_places=2)
+    item_price_ex_vat: Optional[Decimal] = Field(None, decimal_places=2)
+    item_price_inc_vat: Optional[Decimal] = Field(None, decimal_places=2)
+    item_total_price_ex_vat: Optional[Decimal] = Field(None, decimal_places=2)
+    item_total_price_inc_vat: Optional[Decimal] = Field(None, decimal_places=2)
     currency: str = Field(default="SEK", max_length=11)
-    vat: Decimal = Field(decimal_places=2)
-    vat_percentage: Decimal = Field(decimal_places=6)
+    vat: Optional[Decimal] = Field(None, decimal_places=2)
+    vat_percentage: Optional[Decimal] = Field(None, decimal_places=6)
 
 
 class Company(BaseModel):
@@ -172,6 +173,7 @@ class AccountingProposal(BaseModel):
     credit: Decimal = Field(decimal_places=2, default=Decimal("0.00"))
     vat_rate: Optional[Decimal] = Field(None, decimal_places=2)
     notes: Optional[str] = Field(None, max_length=255)
+    item_id: Optional[int] = Field(None, description="Reference to receipt_items.id")
 
 
 class AccountingClassificationRequest(BaseModel):
