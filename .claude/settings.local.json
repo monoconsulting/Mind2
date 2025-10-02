@@ -3,7 +3,13 @@
     "allow": [
       "Bash(git push:*)",
       "Bash(git checkout:*)",
-      "Bash(npx playwright test:*)"
+      "Bash(npx playwright test:*)",
+      "Bash(mkdir:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(gh issue create:*)",
+      "Bash(gh label:*)",
+      "Bash(gh pr view:*)"
     ],
     "deny": [],
     "ask": []
