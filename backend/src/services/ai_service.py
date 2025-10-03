@@ -418,9 +418,31 @@ def parse_accounting_proposals(payload: Dict[str, Any], fallback_receipt_id: str
             normalized = dict(entry)
             normalized.setdefault("receipt_id", receipt_id)
             raw_entries.append((normalized, f"proposals[{idx}]"))
+    elif payload.get("entries") is not None:
+        # Accept 'entries' as an alias for 'proposals' (common LLM output format)
+        entries = payload.get("entries")
+        if not isinstance(entries, list) or not entries:
+            raise AccountingProposalValidationError("entries must be a non-empty array")
+        for idx, entry in enumerate(entries, start=1):
+            if not isinstance(entry, dict):
+                raise AccountingProposalValidationError(f"entries[{idx}] must be an object")
+            normalized = dict(entry)
+            normalized.setdefault("receipt_id", receipt_id)
+            raw_entries.append((normalized, f"entries[{idx}]"))
+    elif payload.get("accounting_entries") is not None:
+        # Accept 'accounting_entries' as an alias for 'proposals' (common LLM output format)
+        accounting_entries = payload.get("accounting_entries")
+        if not isinstance(accounting_entries, list) or not accounting_entries:
+            raise AccountingProposalValidationError("accounting_entries must be a non-empty array")
+        for idx, entry in enumerate(accounting_entries, start=1):
+            if not isinstance(entry, dict):
+                raise AccountingProposalValidationError(f"accounting_entries[{idx}] must be an object")
+            normalized = dict(entry)
+            normalized.setdefault("receipt_id", receipt_id)
+            raw_entries.append((normalized, f"accounting_entries[{idx}]"))
     else:
         raise AccountingProposalValidationError(
-            "Payload must include either 'items' or 'proposals'"
+            "Payload must include either 'items', 'proposals', 'entries', or 'accounting_entries'"
         )
 
     parsed: List[AccountingProposal] = []
@@ -595,12 +617,23 @@ class AIService:
         provider = self.prompt_providers.get(stage_key) or self.provider_adapter
 
         if not provider:
+            logger.warning(f"No provider configured for {stage_key}")
             return None
 
         prompt = self.prompts.get(stage_key, "")
         try:
             response = provider.generate(prompt=prompt, payload=payload)
+
+            # Log raw response for AI4 debugging
+            if stage_key == "accounting_classification":
+                logger.info(
+                    "AI4 raw LLM response - parsed: %s, raw: %s",
+                    json.dumps(response.parsed, ensure_ascii=False)[:300] if response.parsed else "None",
+                    response.raw[:300] if response.raw else "None"
+                )
+
             if not response.raw and response.parsed is None:
+                logger.warning(f"Provider returned empty response for {stage_key}")
                 return None
             if response.parsed is not None:
                 return response.parsed
@@ -618,7 +651,7 @@ class AIService:
                     logger.warning(f"Provider returned raw text for {stage_key}, expected JSON: {raw_text[:100]}")
                     return None
         except Exception as exc:  # pragma: no cover - network/parse errors
-            logger.warning("Provider call for %s failed: %s", stage_key, exc)
+            logger.error("Provider call for %s failed: %s", stage_key, exc, exc_info=True)
             return None
 
     # ------------------------------------------------------------------
@@ -859,6 +892,16 @@ class AIService:
                 "currency": item.currency,
             })
 
+        # Log receipt items count for debugging
+        logger.info(
+            "AI4 input for %s: %d receipt_items, vendor='%s', gross=%s, net=%s",
+            request.file_id,
+            len(items_data),
+            request.vendor_name,
+            request.gross_amount,
+            request.net_amount
+        )
+
         llm_result = self._provider_generate(
             "accounting_classification",
             {
@@ -873,13 +916,25 @@ class AIService:
             },
         )
 
+        # Detailed logging for debugging
+        logger.info(
+            "AI4 LLM response for %s: %s",
+            request.file_id,
+            json.dumps(llm_result, ensure_ascii=False)[:500] if llm_result else "None"
+        )
+
         if not llm_result:
             raise AccountingProposalValidationError("LLM returned no data for accounting classification")
 
         try:
             proposals = parse_accounting_proposals(llm_result, request.file_id)
         except AccountingProposalValidationError as exc:
-            logger.error("Invalid AI4 payload for %s: %s", request.file_id, exc)
+            logger.error(
+                "Invalid AI4 payload for %s: %s. Full payload: %s",
+                request.file_id,
+                exc,
+                json.dumps(llm_result, ensure_ascii=False)
+            )
             raise
 
         if "confidence" in llm_result:

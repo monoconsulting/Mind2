@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
-import { FiEdit3, FiPlus, FiTrash2, FiSettings, FiMaximize2, FiX, FiSave } from 'react-icons/fi'
+import { FiEdit3, FiPlus, FiTrash2, FiSettings, FiMaximize2, FiX, FiSave, FiCheckCircle } from 'react-icons/fi'
 import { api } from '../api'
 
 // Modal component for expanded prompt editing
@@ -95,7 +95,7 @@ function PromptModal({ isOpen, onClose, prompt, onSave }) {
 }
 
 // Modal for adding/editing providers
-function ProviderModal({ isOpen, onClose, provider, onSave, existingProviders }) {
+function ProviderModal({ isOpen, onClose, provider, onSave, existingProviders, onTest }) {
   const [editedProvider, setEditedProvider] = useState(
     provider || {
       provider_name: 'OpenAI',
@@ -105,6 +105,8 @@ function ProviderModal({ isOpen, onClose, provider, onSave, existingProviders })
       enabled: false
     }
   )
+  const [isTesting, setIsTesting] = useState(false)
+  const [testResult, setTestResult] = useState(null)
 
   useEffect(() => {
     if (provider) {
@@ -118,12 +120,40 @@ function ProviderModal({ isOpen, onClose, provider, onSave, existingProviders })
         enabled: false
       })
     }
+    setTestResult(null)
   }, [provider])
 
   if (!isOpen) return null
 
   // Get unique provider types from existing providers
   const providerTypes = [...new Set(existingProviders?.map(p => p.provider_name) || [])].sort()
+
+  const handleTest = async () => {
+    if (!provider?.id) {
+      setTestResult({
+        success: false,
+        message: 'Kan inte testa',
+        details: 'Spara leverantören först innan du testar'
+      })
+      return
+    }
+
+    setIsTesting(true)
+    setTestResult(null)
+
+    try {
+      const result = await onTest(provider.id)
+      setTestResult(result)
+    } catch (err) {
+      setTestResult({
+        success: false,
+        message: 'Test misslyckades',
+        details: err.message
+      })
+    } finally {
+      setIsTesting(false)
+    }
+  }
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
@@ -205,6 +235,48 @@ function ProviderModal({ isOpen, onClose, provider, onSave, existingProviders })
               <label htmlFor="enabled" className="text-sm font-medium text-gray-300">
                 Aktiverad
               </label>
+            </div>
+            <div className="pt-3 border-t border-gray-700">
+              {provider?.id ? (
+                <>
+                  <button
+                    onClick={handleTest}
+                    disabled={isTesting}
+                    className={`w-full px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-2 ${
+                      isTesting
+                        ? 'bg-gray-700 text-gray-400 cursor-wait'
+                        : 'bg-gray-700 text-white hover:bg-gray-600'
+                    }`}
+                  >
+                    <FiCheckCircle />
+                    {isTesting ? 'Testar anslutning...' : 'Testa anslutning'}
+                  </button>
+                  {testResult && (
+                    <div className={`mt-3 p-3 rounded-lg ${
+                      testResult.success
+                        ? 'bg-green-600 bg-opacity-20 border border-green-600'
+                        : 'bg-red-600 bg-opacity-20 border border-red-600'
+                    }`}>
+                      <p className={`text-sm font-medium ${
+                        testResult.success ? 'text-green-400' : 'text-red-400'
+                      }`}>
+                        {testResult.message}
+                      </p>
+                      {testResult.details && (
+                        <p className="text-sm text-gray-400 mt-1">
+                          {testResult.details}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="p-3 bg-gray-700 bg-opacity-50 rounded-lg">
+                  <p className="text-sm text-gray-400 text-center">
+                    Spara leverantören först för att kunna testa anslutningen
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -507,6 +579,51 @@ export default function AiPage() {
     }
   }
 
+  const [testingProviders, setTestingProviders] = useState(new Set())
+  const [testResults, setTestResults] = useState({})
+
+  const handleTestProvider = async (providerId) => {
+    setTestingProviders(prev => new Set([...prev, providerId]))
+    setTestResults(prev => ({ ...prev, [providerId]: null }))
+    setError(null)
+
+    try {
+      const response = await api.fetch(`/ai/api/ai-config/providers/${providerId}/test`, {
+        method: 'POST'
+      })
+
+      const data = await response.json()
+
+      if (response.ok) {
+        setTestResults(prev => ({ ...prev, [providerId]: data }))
+      } else {
+        setTestResults(prev => ({
+          ...prev,
+          [providerId]: {
+            success: false,
+            message: 'Test misslyckades',
+            details: data.error || 'Okänt fel'
+          }
+        }))
+      }
+    } catch (err) {
+      setTestResults(prev => ({
+        ...prev,
+        [providerId]: {
+          success: false,
+          message: 'Test misslyckades',
+          details: err.message
+        }
+      }))
+    } finally {
+      setTestingProviders(prev => {
+        const next = new Set(prev)
+        next.delete(providerId)
+        return next
+      })
+    }
+  }
+
   const handlePromptEdit = (prompt) => {
     if (!prompt) return
     setSelectedPromptId(prompt.id)
@@ -715,6 +832,22 @@ export default function AiPage() {
                   </div>
                   <div className="flex gap-2">
                     <button
+                      onClick={() => handleTestProvider(provider.id)}
+                      disabled={testingProviders.has(provider.id)}
+                      className={`p-2 rounded-lg transition-colors ${
+                        testingProviders.has(provider.id)
+                          ? 'bg-gray-700 text-gray-500 cursor-wait'
+                          : testResults[provider.id]?.success
+                          ? 'text-green-400 hover:bg-gray-700'
+                          : testResults[provider.id]?.success === false
+                          ? 'text-red-400 hover:bg-gray-700'
+                          : 'text-gray-400 hover:bg-gray-700'
+                      }`}
+                      title={testingProviders.has(provider.id) ? 'Testar...' : 'Testa anslutning'}
+                    >
+                      <FiCheckCircle />
+                    </button>
+                    <button
                       onClick={() => openModelModal(provider)}
                       className="p-2 hover:bg-gray-700 rounded-lg transition-colors text-gray-400"
                       title="Hantera modeller"
@@ -740,6 +873,24 @@ export default function AiPage() {
                     </button>
                   </div>
                 </div>
+                {testResults[provider.id] && (
+                  <div className={`mt-3 p-3 rounded-lg ${
+                    testResults[provider.id].success
+                      ? 'bg-green-600 bg-opacity-20 border border-green-600'
+                      : 'bg-red-600 bg-opacity-20 border border-red-600'
+                  }`}>
+                    <p className={`text-sm font-medium ${
+                      testResults[provider.id].success ? 'text-green-400' : 'text-red-400'
+                    }`}>
+                      {testResults[provider.id].message}
+                    </p>
+                    {testResults[provider.id].details && (
+                      <p className="text-sm text-gray-400 mt-1">
+                        {testResults[provider.id].details}
+                      </p>
+                    )}
+                  </div>
+                )}
                 {provider.enabled && provider.models?.length > 0 && (
                   <div className="mt-3 pt-3 border-t border-gray-700">
                     <p className="text-sm text-gray-400 mb-2">Tillgängliga modeller:</p>
@@ -870,6 +1021,21 @@ export default function AiPage() {
         provider={selectedProvider}
         onSave={handleProviderSave}
         existingProviders={providers}
+        onTest={async (providerId) => {
+          const response = await api.fetch(`/ai/api/ai-config/providers/${providerId}/test`, {
+            method: 'POST'
+          })
+          const data = await response.json()
+          if (response.ok) {
+            return data
+          } else {
+            return {
+              success: false,
+              message: 'Test misslyckades',
+              details: data.error || 'Okänt fel'
+            }
+          }
+        }}
       />
 
       <ModelModal

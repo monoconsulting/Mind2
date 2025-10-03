@@ -24,7 +24,20 @@
       "Bash(docker-compose restart:*)",
       "Bash(git pull:*)",
       "Bash(git tag:*)",
-      "Bash(git merge:*)"
+      "Bash(git merge:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm run:*)",
+      "Bash(find:*)",
+      "Bash(docker system prune:*)",
+      "Bash(mind_docker_build_nocache.bat)",
+      "Bash(cmd /c:*)",
+      "Bash(docker ps:*)",
+      "Bash(curl -s -X POST http://localhost:8008/ai/api/ai-processing/classify/accounting )",
+      "Bash(docker cp:*)",
+      "Bash(curl:*)",
+      "Bash(docker images:*)",
+      "Bash(docker-compose stop:*)",
+      "Bash(docker-compose rm:*)"
     ],
     "deny": [],
     "ask": []
