@@ -8,7 +8,7 @@ import re
 import requests
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from models.ai_processing import (
@@ -199,6 +199,238 @@ class OllamaProvider(BaseLLMProvider):
 
 
 logger = logging.getLogger(__name__)
+
+ACCOUNT_CODE_KEYS = ("account_code", "account", "accountCode", "account_number")
+DEBIT_KEYS = ("debit", "debit_amount")
+CREDIT_KEYS = ("credit", "credit_amount")
+VAT_KEYS = ("vat_rate", "vat", "vat_rate_percent", "vatPercent")
+NOTES_KEYS = ("notes", "note", "memo", "description")
+ITEM_ID_KEYS = ("item_id", "line_id", "line_item_id", "entry_id")
+TWO_DECIMAL_PLACES = Decimal("0.01")
+ZERO_DECIMAL = Decimal("0.00")
+
+
+class AccountingProposalValidationError(ValueError):
+    """Raised when AI4 accounting proposals fail validation."""
+
+
+def _quantize_two_decimals(value: Decimal) -> Decimal:
+    return value.quantize(TWO_DECIMAL_PLACES, rounding=ROUND_HALF_UP)
+
+
+def _ensure_decimal(
+    raw_value: Any,
+    field: str,
+    *,
+    allow_zero: bool = True,
+    allow_negative: bool = False,
+) -> Decimal:
+    """Normalize various numeric representations to Decimal with two decimals."""
+
+    if raw_value is None:
+        raise AccountingProposalValidationError(f"{field} is missing")
+
+    if isinstance(raw_value, Decimal):
+        value = raw_value
+    elif isinstance(raw_value, (int, float)):
+        value = Decimal(str(raw_value))
+    elif isinstance(raw_value, str):
+        cleaned = raw_value.strip()
+        if not cleaned:
+            raise AccountingProposalValidationError(f"{field} is empty")
+        cleaned = cleaned.replace(" ", "")
+        cleaned = cleaned.replace(",", ".")
+        cleaned = cleaned.replace("%", "")
+        cleaned = re.sub(r"[^0-9.\-]", "", cleaned)
+        if cleaned.count(".") > 1:
+            parts = cleaned.split(".")
+            cleaned = "".join(parts[:-1]) + "." + parts[-1]
+        try:
+            value = Decimal(cleaned)
+        except InvalidOperation as exc:  # pragma: no cover - defensive branch
+            raise AccountingProposalValidationError(
+                f"{field} has invalid numeric value: {raw_value!r}"
+            ) from exc
+    else:
+        raise AccountingProposalValidationError(
+            f"{field} has unsupported type: {type(raw_value).__name__}"
+        )
+
+    if not allow_negative and value < 0:
+        raise AccountingProposalValidationError(f"{field} must be non-negative")
+    if not allow_zero and value == 0:
+        raise AccountingProposalValidationError(f"{field} must be greater than zero")
+
+    return _quantize_two_decimals(value)
+
+
+def _first_present(data: Dict[str, Any], keys: Iterable[str], field: str) -> Any:
+    for key in keys:
+        if key in data:
+            return data[key]
+    raise AccountingProposalValidationError(f"{field} is missing")
+
+
+def _extract_account_code(entry: Dict[str, Any]) -> str:
+    for key in ACCOUNT_CODE_KEYS:
+        value = entry.get(key)
+        if value is None:
+            continue
+        code = str(value).strip()
+        if not code:
+            continue
+        if len(code) > 32:
+            raise AccountingProposalValidationError("account_code exceeds 32 characters")
+        return code
+    raise AccountingProposalValidationError("account_code is missing")
+
+
+def _coerce_item_id(raw_value: Any, context: str) -> int:
+    if raw_value is None:
+        raise AccountingProposalValidationError(f"{context} is missing")
+    try:
+        item_id = int(str(raw_value))
+    except (TypeError, ValueError) as exc:
+        raise AccountingProposalValidationError(f"{context} must be an integer") from exc
+    if item_id <= 0:
+        raise AccountingProposalValidationError(f"{context} must be a positive integer")
+    return item_id
+
+
+def _extract_vat_rate(entry: Dict[str, Any]) -> Optional[Decimal]:
+    for key in VAT_KEYS:
+        if key in entry and entry[key] not in (None, ""):
+            rate = _ensure_decimal(entry[key], "vat_rate")
+            if rate < 0 or rate > 100:
+                raise AccountingProposalValidationError("vat_rate must be between 0 and 100")
+            return rate
+    return None
+
+
+def _extract_notes(entry: Dict[str, Any]) -> Optional[str]:
+    for key in NOTES_KEYS:
+        if key in entry and entry[key] is not None:
+            text = str(entry[key]).strip()
+            if not text:
+                return None
+            if len(text) > 255:
+                logger.warning("AI4 note truncated to 255 characters: %s...", text[:32])
+                return text[:255]
+            return text
+    return None
+
+
+def _build_accounting_proposal(
+    entry: Dict[str, Any],
+    expected_receipt_id: str,
+    *,
+    context: str,
+) -> AccountingProposal:
+    receipt_id = str(entry.get("receipt_id") or "").strip()
+    if not receipt_id:
+        receipt_id = expected_receipt_id
+    if receipt_id != expected_receipt_id:
+        raise AccountingProposalValidationError(
+            f"receipt_id mismatch (expected {expected_receipt_id}, got {receipt_id})"
+        )
+
+    raw_item_id = entry.get("item_id")
+    if raw_item_id is None:
+        raise AccountingProposalValidationError(f"{context}.item_id is missing")
+    item_id = _coerce_item_id(raw_item_id, f"{context}.item_id")
+
+    account_code = _extract_account_code(entry)
+    debit_raw = _first_present(entry, DEBIT_KEYS, "debit")
+    credit_raw = _first_present(entry, CREDIT_KEYS, "credit")
+    debit = _ensure_decimal(debit_raw, "debit")
+    credit = _ensure_decimal(credit_raw, "credit")
+
+    if debit > 0 and credit > 0:
+        raise AccountingProposalValidationError("debit and credit cannot both be greater than zero")
+    if debit == 0 and credit == 0:
+        raise AccountingProposalValidationError("debit and credit cannot both be zero")
+
+    vat_rate = _extract_vat_rate(entry)
+    notes = _extract_notes(entry)
+
+    return AccountingProposal(
+        receipt_id=expected_receipt_id,
+        item_id=item_id,
+        account_code=account_code,
+        debit=_quantize_two_decimals(debit if debit > 0 else ZERO_DECIMAL),
+        credit=_quantize_two_decimals(credit if credit > 0 else ZERO_DECIMAL),
+        vat_rate=_quantize_two_decimals(vat_rate) if vat_rate is not None else None,
+        notes=notes,
+    )
+
+
+def parse_accounting_proposals(payload: Dict[str, Any], fallback_receipt_id: str) -> List[AccountingProposal]:
+    """Parse and validate AI4 payload into accounting proposals."""
+
+    if not isinstance(payload, dict):
+        raise AccountingProposalValidationError("LLM response must be a JSON object")
+
+    receipt_id = str(payload.get("receipt_id") or fallback_receipt_id or "").strip()
+    if not receipt_id:
+        raise AccountingProposalValidationError("receipt_id is missing from payload")
+
+    raw_entries: List[Tuple[Dict[str, Any], str]] = []
+
+    if payload.get("items") is not None:
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            raise AccountingProposalValidationError("items must be a non-empty array")
+        for item_index, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                raise AccountingProposalValidationError(
+                    f"items[{item_index}] must be an object"
+                )
+            raw_item_id = None
+            for key in ITEM_ID_KEYS:
+                if key in item and item[key] not in (None, ""):
+                    raw_item_id = item[key]
+                    break
+            if raw_item_id is None:
+                raise AccountingProposalValidationError(
+                    f"items[{item_index}] is missing item_id"
+                )
+            entries = item.get("entries")
+            if not isinstance(entries, list) or not entries:
+                raise AccountingProposalValidationError(
+                    f"items[{item_index}].entries must be a non-empty array"
+                )
+            for entry_index, entry in enumerate(entries, start=1):
+                if not isinstance(entry, dict):
+                    raise AccountingProposalValidationError(
+                        f"items[{item_index}].entries[{entry_index}] must be an object"
+                    )
+                normalized = dict(entry)
+                normalized.setdefault("item_id", raw_item_id)
+                normalized.setdefault("receipt_id", receipt_id)
+                raw_entries.append((normalized, f"items[{item_index}].entries[{entry_index}]"))
+    elif payload.get("proposals") is not None:
+        proposals = payload.get("proposals")
+        if not isinstance(proposals, list) or not proposals:
+            raise AccountingProposalValidationError("proposals must be a non-empty array")
+        for idx, entry in enumerate(proposals, start=1):
+            if not isinstance(entry, dict):
+                raise AccountingProposalValidationError(f"proposals[{idx}] must be an object")
+            normalized = dict(entry)
+            normalized.setdefault("receipt_id", receipt_id)
+            raw_entries.append((normalized, f"proposals[{idx}]"))
+    else:
+        raise AccountingProposalValidationError(
+            "Payload must include either 'items' or 'proposals'"
+        )
+
+    parsed: List[AccountingProposal] = []
+    for entry, context in raw_entries:
+        parsed.append(_build_accounting_proposal(entry, receipt_id, context=context))
+
+    if not parsed:
+        raise AccountingProposalValidationError("No accounting proposals generated from payload")
+
+    return parsed
 
 ORGNR_PATTERN = re.compile(r"\b\d{6}[- ]?\d{4}\b")
 ISO_CURRENCY_PATTERN = re.compile(r"\b(USD|EUR|SEK|NOK|DKK|GBP)\b", re.IGNORECASE)
@@ -640,17 +872,21 @@ class AIService:
                 "expense_type": request.expense_type,
             },
         )
-        if llm_result:
-            if llm_result.get("proposals"):
-                try:
-                    proposals = [AccountingProposal(**p) for p in llm_result["proposals"]]
-                except Exception as exc:  # pragma: no cover
-                    logger.warning("Failed to parse LLM accounting proposals: %s", exc)
-            if "confidence" in llm_result:
-                try:
-                    confidence = float(llm_result["confidence"])
-                except (TypeError, ValueError):  # pragma: no cover
-                    pass
+
+        if not llm_result:
+            raise AccountingProposalValidationError("LLM returned no data for accounting classification")
+
+        try:
+            proposals = parse_accounting_proposals(llm_result, request.file_id)
+        except AccountingProposalValidationError as exc:
+            logger.error("Invalid AI4 payload for %s: %s", request.file_id, exc)
+            raise
+
+        if "confidence" in llm_result:
+            try:
+                confidence = float(llm_result["confidence"])
+            except (TypeError, ValueError):  # pragma: no cover
+                pass
 
         return AccountingClassificationResponse(
             file_id=request.file_id,
