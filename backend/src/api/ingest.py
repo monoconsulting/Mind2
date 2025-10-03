@@ -518,8 +518,15 @@ def upload_files() -> Any:
                         )
                         continue
 
-                    fs.save(page_id, "page-1.png", page.bytes)
-                    logger.info(f"File {idx}: Stored PDF page {page_number} as {page_id}/page-1.png")
+                    stored_page_name = f"page-{page_number:04d}.png"
+                    fs.save(page_id, stored_page_name, page.bytes)
+                    logger.info(
+                        "File %s: Stored PDF page %s as %s/%s",
+                        idx,
+                        page_number,
+                        page_id,
+                        stored_page_name,
+                    )
                     page_refs.append({"file_id": page_id, "page_number": page_number})
                     _queue_ocr_task(page_id)
                     uploaded_count += 1
