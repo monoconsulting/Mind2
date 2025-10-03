@@ -132,7 +132,8 @@ def _build_extraction_response() -> DataExtractionResponse:
 
 
 def test_persist_extraction_result_writes_company_and_receipts(monkeypatch):
-    fake_cursor = FakeCursor(fetchone=[None, None])
+    # fetchone returns: [company lookup by orgnr, company lookup by name, file exists check]
+    fake_cursor = FakeCursor(fetchone=[None, None, ("file-1",)])
     fake_conn = FakeConnection(fake_cursor)
     monkeypatch.setattr(ai_processing, "get_connection", lambda: fake_conn)
 
