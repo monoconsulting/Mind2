@@ -231,7 +231,15 @@ def get_prompts():
                 FROM ai_system_prompts sp
                 LEFT JOIN ai_llm_model m ON sp.selected_model_id = m.id
                 LEFT JOIN ai_llm l ON m.llm_id = l.id
-                ORDER BY sp.id
+                ORDER BY
+                    CASE sp.prompt_key
+                        WHEN 'document_analysis' THEN 1
+                        WHEN 'expense_classification' THEN 2
+                        WHEN 'data_extraction' THEN 3
+                        WHEN 'accounting_classification' THEN 4
+                        WHEN 'credit_card_matching' THEN 5
+                        ELSE 99
+                    END
             """)
 
             prompts = []
