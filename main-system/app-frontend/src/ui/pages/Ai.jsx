@@ -95,7 +95,7 @@ function PromptModal({ isOpen, onClose, prompt, onSave }) {
 }
 
 // Modal for adding/editing providers
-function ProviderModal({ isOpen, onClose, provider, onSave }) {
+function ProviderModal({ isOpen, onClose, provider, onSave, existingProviders }) {
   const [editedProvider, setEditedProvider] = useState(
     provider || {
       provider_name: 'OpenAI',
@@ -122,7 +122,8 @@ function ProviderModal({ isOpen, onClose, provider, onSave }) {
 
   if (!isOpen) return null
 
-  const providerTypes = ['OpenAI', 'Anthropic', 'Ollama', 'OpenRouter', 'Google Gemini']
+  // Get unique provider types from existing providers
+  const providerTypes = [...new Set(existingProviders?.map(p => p.provider_name) || [])].sort()
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
@@ -868,6 +869,7 @@ export default function AiPage() {
         }}
         provider={selectedProvider}
         onSave={handleProviderSave}
+        existingProviders={providers}
       />
 
       <ModelModal
