@@ -37,7 +37,8 @@
       "Bash(curl:*)",
       "Bash(docker images:*)",
       "Bash(docker-compose stop:*)",
-      "Bash(docker-compose rm:*)"
+      "Bash(docker-compose rm:*)",
+      "Bash(gh pr list:*)"
     ],
     "deny": [],
     "ask": []
