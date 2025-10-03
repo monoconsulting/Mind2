@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
 import uuid
-import shutil
 import hashlib
 import logging
 from pathlib import Path
@@ -13,14 +13,22 @@ from werkzeug.utils import secure_filename
 from api.middleware import auth_required
 from services.queue_manager import get_celery
 from services.storage import FileStorage
+from services.file_detection import detect_file
+from services.pdf_conversion import pdf_to_png_pages
 
 logger = logging.getLogger(__name__)
 try:
-    from services.tasks import process_ocr, process_classification, process_ai_pipeline  # type: ignore
+    from services.tasks import (  # type: ignore
+        process_ocr,
+        process_classification,
+        process_ai_pipeline,
+        process_audio_transcription,
+    )
 except Exception:  # pragma: no cover - allow running without Celery in tests/dev
     process_ocr = None  # type: ignore
     process_classification = None  # type: ignore
     process_ai_pipeline = None  # type: ignore
+    process_audio_transcription = None  # type: ignore
 try:
     from services.db.files import list_unprocessed
 except Exception:  # pragma: no cover
@@ -73,6 +81,91 @@ def _history(
             )
     except Exception:
         # best-effort history
+        pass
+
+
+class DuplicateFileError(Exception):
+    """Raised when attempting to store a duplicate file."""
+
+
+def _hash_exists(content_hash: str) -> bool:
+    if db_cursor is None:
+        return False
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT id FROM unified_files WHERE content_hash = %s LIMIT 1",
+                (content_hash,),
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def _insert_unified_file(
+    *,
+    file_id: str,
+    file_type: str,
+    content_hash: str,
+    submitted_by: str,
+    original_filename: str,
+    ai_status: str,
+    mime_type: str | None = None,
+    file_suffix: str | None = None,
+    original_file_id: str | None = None,
+    original_file_name: str | None = None,
+    original_file_size: int | None = None,
+    other_data: dict[str, Any] | None = None,
+) -> None:
+    if db_cursor is None:
+        return
+
+    payload = json.dumps(other_data or {})
+
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO unified_files (
+                    id, file_type, ocr_raw, other_data, content_hash,
+                    submitted_by, original_filename, ai_status,
+                    mime_type, file_suffix, original_file_id,
+                    original_file_name, original_file_size
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    file_id,
+                    file_type,
+                    "",
+                    payload,
+                    content_hash,
+                    submitted_by,
+                    original_filename,
+                    ai_status,
+                    mime_type,
+                    file_suffix,
+                    original_file_id or file_id,
+                    original_file_name or original_filename,
+                    original_file_size,
+                ),
+            )
+    except Exception as db_error:
+        msg = str(db_error)
+        if "Duplicate entry" in msg and "idx_content_hash" in msg:
+            raise DuplicateFileError from db_error
+        raise
+
+
+def _update_other_data(file_id: str, other_data: dict[str, Any]) -> None:
+    if db_cursor is None:
+        return
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "UPDATE unified_files SET other_data=%s WHERE id=%s",
+                (json.dumps(other_data or {}), file_id),
+            )
+    except Exception:
         pass
 
 
@@ -240,6 +333,27 @@ def upload_files() -> Any:
 
     storage_dir = os.getenv('STORAGE_DIR', '/data/storage')
     fs = FileStorage(storage_dir)
+    submitted_by = request.headers.get('X-User') or 'upload'
+
+    def _queue_ocr_task(target_id: str) -> None:
+        try:
+            if process_ocr is not None:
+                process_ocr.delay(target_id)
+                logger.info(f"Queued OCR task for {target_id}")
+            else:
+                logger.warning(f"OCR task unavailable for {target_id}")
+        except Exception as exc:
+            logger.warning(f"Failed to enqueue OCR for {target_id}: {exc}")
+
+    def _queue_audio_task(target_id: str) -> None:
+        try:
+            if process_audio_transcription is not None:
+                process_audio_transcription.delay(target_id)
+                logger.info(f"Queued transcription task for {target_id}")
+            else:
+                logger.warning(f"Transcription task unavailable for {target_id}")
+        except Exception as exc:
+            logger.warning(f"Failed to enqueue transcription for {target_id}: {exc}")
 
     for idx, file in enumerate(files, 1):
         if not file or not file.filename:
@@ -258,73 +372,326 @@ def upload_files() -> Any:
             logger.info(f"File {idx}: Hash calculated: {file_hash[:16]}...")
 
             receipt_id = str(uuid.uuid4())
-            safe_filename = secure_filename(file.filename) if file.filename else f"upload_{receipt_id}.jpg"
-            stored_filename = f"page-1{os.path.splitext(safe_filename)[1] or '.jpg'}"
+            safe_filename = secure_filename(file.filename) if file.filename else f"upload_{receipt_id}"
+            detection = detect_file(data, safe_filename)
+            logger.info(
+                f"File {idx}: Detected kind={detection.kind}, mime={detection.mime_type}, ext={detection.extension}"
+            )
 
-            logger.info(f"File {idx}: Generated ID={receipt_id}, stored_filename={stored_filename}")
+            if _hash_exists(file_hash):
+                logger.warning(f"File {idx}: SKIPPED - Duplicate detected before insert")
+                skipped_count += 1
+                _history(
+                    file_id=receipt_id,
+                    job="upload",
+                    status="error",
+                    ai_stage_name="Upload-FileReceived",
+                    log_text=f"Skipped duplicate file: hash={file_hash[:16]}..., filename={safe_filename}",
+                    error_message="Duplicate file detected by content hash",
+                    provider="web_upload",
+                )
+                continue
 
-            # Insert into database with duplicate detection
-            if db_cursor is not None:
+            if detection.kind == "pdf":
+                logger.info(f"File {idx}: Handling as PDF document")
+                pdf_id = receipt_id
+
                 try:
-                    with db_cursor() as cur:
-                        cur.execute(
-                            """
-                            INSERT INTO unified_files (
-                                id, file_type, ocr_raw, other_data, content_hash,
-                                submitted_by, original_filename, ai_status, created_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                            """,
-                            (
-                                receipt_id, 'receipt', '', '{}', file_hash,
-                                (request.headers.get('X-User') or 'upload'), safe_filename, 'uploaded'
-                            ),
-                        )
-                    logger.info(f"File {idx}: Database record created")
-
-                    # Log successful upload
+                    pages = pdf_to_png_pages(data, fs.base / "converted", pdf_id, dpi=300)
+                except Exception as conv_error:
+                    error_msg = f"PDF conversion failed: {conv_error}"
+                    logger.error(f"File {idx}: {error_msg}")
+                    errors.append(error_msg)
                     _history(
-                        file_id=receipt_id,
+                        file_id=pdf_id,
                         job="upload",
-                        status="success",
-                        ai_stage_name="Upload-FileReceived",
-                        log_text=f"File uploaded successfully: filename={safe_filename}, size={len(data)} bytes, hash={file_hash[:16]}..., user={request.headers.get('X-User') or 'upload'}",
+                        status="error",
+                        ai_stage_name="Upload-PdfStored",
+                        log_text=f"Failed to convert PDF: filename={safe_filename}",
+                        error_message=str(conv_error),
                         provider="web_upload",
                     )
-                except Exception as db_error:
-                    # Check for duplicate hash
-                    if 'Duplicate entry' in str(db_error) and 'idx_content_hash' in str(db_error):
-                        logger.warning(f"File {idx}: SKIPPED - Duplicate file (hash={file_hash[:16]}...)")
+                    continue
+
+                if not pages:
+                    error_msg = f"PDF has no pages: {safe_filename}"
+                    logger.error(f"File {idx}: {error_msg}")
+                    errors.append(error_msg)
+                    _history(
+                        file_id=pdf_id,
+                        job="upload",
+                        status="error",
+                        ai_stage_name="Upload-PdfStored",
+                        log_text=error_msg,
+                        error_message="empty_pdf",
+                        provider="web_upload",
+                    )
+                    continue
+
+                try:
+                    _insert_unified_file(
+                        file_id=pdf_id,
+                        file_type="pdf",
+                        content_hash=file_hash,
+                        submitted_by=submitted_by,
+                        original_filename=safe_filename,
+                        ai_status="uploaded",
+                        mime_type="application/pdf",
+                        file_suffix=Path(safe_filename).suffix or ".pdf",
+                        original_file_id=pdf_id,
+                        original_file_name=safe_filename,
+                        original_file_size=len(data),
+                        other_data={
+                            "detected_kind": "pdf",
+                            "page_count": len(pages),
+                            "source": "web_upload",
+                        },
+                    )
+                    logger.info(f"File {idx}: PDF database record created ({pdf_id})")
+                except DuplicateFileError:
+                    logger.warning(f"File {idx}: SKIPPED - Duplicate PDF (hash={file_hash[:16]}...)")
+                    skipped_count += 1
+                    _history(
+                        file_id=pdf_id,
+                        job="upload",
+                        status="error",
+                        ai_stage_name="Upload-PdfStored",
+                        log_text=f"Skipped duplicate PDF: hash={file_hash[:16]}..., filename={safe_filename}",
+                        error_message="Duplicate file detected by content hash",
+                        provider="web_upload",
+                    )
+                    for page in pages:
+                        try:
+                            page.path.unlink(missing_ok=True)  # type: ignore[arg-type]
+                        except Exception:
+                            pass
+                    continue
+
+                fs.save_original(pdf_id, safe_filename, data)
+
+                page_refs = []
+                for page in pages:
+                    page_id = str(uuid.uuid4())
+                    page_hash = hashlib.sha256(page.bytes).hexdigest()
+                    try:
+                        _insert_unified_file(
+                            file_id=page_id,
+                            file_type="receipt",
+                            content_hash=page_hash,
+                            submitted_by=submitted_by,
+                            original_filename=f"{safe_filename}-page-{page.index:04d}.png",
+                            ai_status="uploaded",
+                            mime_type="image/png",
+                            file_suffix=".png",
+                            original_file_id=pdf_id,
+                            original_file_name=safe_filename,
+                            original_file_size=len(page.bytes),
+                            other_data={
+                                "detected_kind": "pdf_page",
+                                "page_number": page.index,
+                                "source_pdf": pdf_id,
+                                "source": "web_upload",
+                            },
+                        )
+                    except DuplicateFileError:
+                        logger.warning(
+                            f"File {idx}: Duplicate PDF page skipped (page={page.index}, hash={page_hash[:16]}...)"
+                        )
                         skipped_count += 1
-                        # Log duplicate
+                        try:
+                            page.path.unlink(missing_ok=True)  # type: ignore[arg-type]
+                        except Exception:
+                            pass
                         _history(
-                            file_id=receipt_id,
+                            file_id=page_id,
                             job="upload",
                             status="error",
-                            ai_stage_name="Upload-FileReceived",
-                            log_text=f"Skipped duplicate file: hash={file_hash[:16]}..., filename={safe_filename}",
-                            error_message="Duplicate file detected by content hash",
+                            ai_stage_name="Upload-PdfPageGenerated",
+                            log_text=f"Skipped duplicate PDF page {page.index}",
+                            error_message="Duplicate PDF page detected",
                             provider="web_upload",
                         )
                         continue
-                    else:
-                        raise
 
-            # Save file to storage
-            fs.save(receipt_id, stored_filename, data)
-            logger.info(f"File {idx}: Saved to storage at {receipt_id}/{stored_filename}")
+                    fs.save(page_id, "page-1.png", page.bytes)
+                    logger.info(f"File {idx}: Stored PDF page {page.index} as {page_id}/page-1.png")
+                    page_refs.append({"file_id": page_id, "page_number": page.index})
+                    _queue_ocr_task(page_id)
+                    uploaded_count += 1
+                    _history(
+                        file_id=page_id,
+                        job="upload",
+                        status="success",
+                        ai_stage_name="Upload-PdfPageGenerated",
+                        log_text=f"Generated PDF page {page.index} for {pdf_id}",
+                        provider="web_upload",
+                    )
 
-            # Queue OCR processing
+                _update_other_data(
+                    pdf_id,
+                    {
+                        "detected_kind": "pdf",
+                        "page_count": len(page_refs),
+                        "pages": page_refs,
+                        "source": "web_upload",
+                    },
+                )
+                _history(
+                    file_id=pdf_id,
+                    job="upload",
+                    status="success",
+                    ai_stage_name="Upload-PdfStored",
+                    log_text=f"PDF stored with {len(page_refs)} page(s)",
+                    provider="web_upload",
+                )
+                continue
+
+            if detection.kind == "audio":
+                logger.info(f"File {idx}: Handling as audio file")
+                audio_id = receipt_id
+                extension = detection.extension or Path(safe_filename).suffix or ".audio"
+                stored_name = f"source{extension}"
+                try:
+                    _insert_unified_file(
+                        file_id=audio_id,
+                        file_type="audio",
+                        content_hash=file_hash,
+                        submitted_by=submitted_by,
+                        original_filename=safe_filename,
+                        ai_status="awaiting_transcription",
+                        mime_type=detection.mime_type or "audio/octet-stream",
+                        file_suffix=extension,
+                        original_file_id=audio_id,
+                        original_file_name=safe_filename,
+                        original_file_size=len(data),
+                        other_data={
+                            "detected_kind": "audio",
+                            "source": "web_upload",
+                        },
+                    )
+                except DuplicateFileError:
+                    logger.warning(f"File {idx}: SKIPPED - Duplicate audio (hash={file_hash[:16]}...)")
+                    skipped_count += 1
+                    _history(
+                        file_id=audio_id,
+                        job="upload",
+                        status="error",
+                        ai_stage_name="Upload-AudioRouted",
+                        log_text=f"Skipped duplicate audio: hash={file_hash[:16]}...",
+                        error_message="Duplicate file detected by content hash",
+                        provider="web_upload",
+                    )
+                    continue
+
+                fs.save_audio(audio_id, safe_filename, data)
+                fs.save(audio_id, stored_name, data)
+                uploaded_count += 1
+                _queue_audio_task(audio_id)
+                _history(
+                    file_id=audio_id,
+                    job="upload",
+                    status="success",
+                    ai_stage_name="Upload-AudioRouted",
+                    log_text=f"Audio routed to transcription: filename={safe_filename}",
+                    provider="web_upload",
+                )
+                continue
+
+            if detection.kind == "image":
+                logger.info(f"File {idx}: Handling as image")
+                extension = detection.extension or Path(safe_filename).suffix or ".jpg"
+                stored_filename = f"page-1{extension if extension.startswith('.') else '.' + extension}"
+                try:
+                    _insert_unified_file(
+                        file_id=receipt_id,
+                        file_type="receipt",
+                        content_hash=file_hash,
+                        submitted_by=submitted_by,
+                        original_filename=safe_filename,
+                        ai_status="uploaded",
+                        mime_type=detection.mime_type or "image/octet-stream",
+                        file_suffix=extension,
+                        original_file_id=receipt_id,
+                        original_file_name=safe_filename,
+                        original_file_size=len(data),
+                        other_data={
+                            "detected_kind": "image",
+                            "source": "web_upload",
+                        },
+                    )
+                except DuplicateFileError:
+                    logger.warning(f"File {idx}: SKIPPED - Duplicate image (hash={file_hash[:16]}...)")
+                    skipped_count += 1
+                    _history(
+                        file_id=receipt_id,
+                        job="upload",
+                        status="error",
+                        ai_stage_name="Upload-FileReceived",
+                        log_text=f"Skipped duplicate image: hash={file_hash[:16]}...",
+                        error_message="Duplicate file detected by content hash",
+                        provider="web_upload",
+                    )
+                    continue
+
+                fs.save(receipt_id, stored_filename, data)
+                fs.save_original(receipt_id, safe_filename, data)
+                uploaded_count += 1
+                _queue_ocr_task(receipt_id)
+                _history(
+                    file_id=receipt_id,
+                    job="upload",
+                    status="success",
+                    ai_stage_name="Upload-FileReceived",
+                    log_text=f"Image uploaded successfully: filename={safe_filename}",
+                    provider="web_upload",
+                )
+                continue
+
+            logger.info(f"File {idx}: Handling as unsupported/other type")
+            other_id = receipt_id
             try:
-                if process_ocr is not None:
-                    process_ocr.delay(receipt_id)
-                    logger.info(f"File {idx}: OCR task queued for {receipt_id}")
-                else:
-                    logger.warning(f"File {idx}: OCR not available, skipping queue")
-            except Exception as e:
-                logger.warning(f"File {idx}: OCR enqueue failed for {receipt_id}: {e}")
+                _insert_unified_file(
+                    file_id=other_id,
+                    file_type="other",
+                    content_hash=file_hash,
+                    submitted_by=submitted_by,
+                    original_filename=safe_filename,
+                    ai_status="manual_review",
+                    mime_type=detection.mime_type or "application/octet-stream",
+                    file_suffix=Path(safe_filename).suffix,
+                    original_file_id=other_id,
+                    original_file_name=safe_filename,
+                    original_file_size=len(data),
+                    other_data={
+                        "detected_kind": detection.kind,
+                        "source": "web_upload",
+                    },
+                )
+            except DuplicateFileError:
+                logger.warning(f"File {idx}: SKIPPED - Duplicate other file (hash={file_hash[:16]}...)")
+                skipped_count += 1
+                _history(
+                    file_id=other_id,
+                    job="upload",
+                    status="error",
+                    ai_stage_name="Upload-OtherRouted",
+                    log_text=f"Skipped duplicate file: hash={file_hash[:16]}...",
+                    error_message="Duplicate file detected by content hash",
+                    provider="web_upload",
+                )
+                continue
 
-            uploaded_count += 1
-            logger.info(f"File {idx}: SUCCESS - Uploaded as {receipt_id}")
+            stored_other_name = secure_filename(safe_filename) or f"file_{other_id}"
+            fs.save(other_id, stored_other_name, data)
+            fs.save_original(other_id, safe_filename, data)
+            _history(
+                file_id=other_id,
+                job="upload",
+                status="success",
+                ai_stage_name="Upload-OtherRouted",
+                log_text=f"File routed to manual review: filename={safe_filename}",
+                provider="web_upload",
+            )
 
         except Exception as e:
             error_msg = f"File processing error for {file.filename}: {str(e)}"
