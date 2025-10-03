@@ -462,7 +462,9 @@ def upload_files() -> Any:
                     )
                     for page in pages:
                         try:
-                            page.path.unlink(missing_ok=True)  # type: ignore[arg-type]
+                            page.path.unlink()
+                        except FileNotFoundError:
+                            pass
                         except Exception:
                             pass
                     continue
@@ -471,6 +473,7 @@ def upload_files() -> Any:
 
                 page_refs = []
                 for page in pages:
+                    page_number = page.index + 1
                     page_id = str(uuid.uuid4())
                     page_hash = hashlib.sha256(page.bytes).hexdigest()
                     try:
@@ -479,7 +482,7 @@ def upload_files() -> Any:
                             file_type="receipt",
                             content_hash=page_hash,
                             submitted_by=submitted_by,
-                            original_filename=f"{safe_filename}-page-{page.index:04d}.png",
+                            original_filename=f"{safe_filename}-page-{page_number:04d}.png",
                             ai_status="uploaded",
                             mime_type="image/png",
                             file_suffix=".png",
@@ -488,18 +491,20 @@ def upload_files() -> Any:
                             original_file_size=len(page.bytes),
                             other_data={
                                 "detected_kind": "pdf_page",
-                                "page_number": page.index,
+                                "page_number": page_number,
                                 "source_pdf": pdf_id,
                                 "source": "web_upload",
                             },
                         )
                     except DuplicateFileError:
                         logger.warning(
-                            f"File {idx}: Duplicate PDF page skipped (page={page.index}, hash={page_hash[:16]}...)"
+                            f"File {idx}: Duplicate PDF page skipped (page={page_number}, hash={page_hash[:16]}...)"
                         )
                         skipped_count += 1
                         try:
-                            page.path.unlink(missing_ok=True)  # type: ignore[arg-type]
+                            page.path.unlink()
+                        except FileNotFoundError:
+                            pass
                         except Exception:
                             pass
                         _history(
@@ -507,15 +512,15 @@ def upload_files() -> Any:
                             job="upload",
                             status="error",
                             ai_stage_name="Upload-PdfPageGenerated",
-                            log_text=f"Skipped duplicate PDF page {page.index}",
+                            log_text=f"Skipped duplicate PDF page {page_number}",
                             error_message="Duplicate PDF page detected",
                             provider="web_upload",
                         )
                         continue
 
                     fs.save(page_id, "page-1.png", page.bytes)
-                    logger.info(f"File {idx}: Stored PDF page {page.index} as {page_id}/page-1.png")
-                    page_refs.append({"file_id": page_id, "page_number": page.index})
+                    logger.info(f"File {idx}: Stored PDF page {page_number} as {page_id}/page-1.png")
+                    page_refs.append({"file_id": page_id, "page_number": page_number})
                     _queue_ocr_task(page_id)
                     uploaded_count += 1
                     _history(
@@ -523,7 +528,7 @@ def upload_files() -> Any:
                         job="upload",
                         status="success",
                         ai_stage_name="Upload-PdfPageGenerated",
-                        log_text=f"Generated PDF page {page.index} for {pdf_id}",
+                        log_text=f"Generated PDF page {page_number} for {pdf_id}",
                         provider="web_upload",
                     )
 
@@ -550,7 +555,6 @@ def upload_files() -> Any:
                 logger.info(f"File {idx}: Handling as audio file")
                 audio_id = receipt_id
                 extension = detection.extension or Path(safe_filename).suffix or ".audio"
-                stored_name = f"source{extension}"
                 try:
                     _insert_unified_file(
                         file_id=audio_id,
@@ -583,8 +587,7 @@ def upload_files() -> Any:
                     )
                     continue
 
-                fs.save_audio(audio_id, safe_filename, data)
-                fs.save(audio_id, stored_name, data)
+                fs.save_original(audio_id, safe_filename, data)
                 uploaded_count += 1
                 _queue_audio_task(audio_id)
                 _history(
@@ -600,7 +603,6 @@ def upload_files() -> Any:
             if detection.kind == "image":
                 logger.info(f"File {idx}: Handling as image")
                 extension = detection.extension or Path(safe_filename).suffix or ".jpg"
-                stored_filename = f"page-1{extension if extension.startswith('.') else '.' + extension}"
                 try:
                     _insert_unified_file(
                         file_id=receipt_id,
@@ -633,7 +635,6 @@ def upload_files() -> Any:
                     )
                     continue
 
-                fs.save(receipt_id, stored_filename, data)
                 fs.save_original(receipt_id, safe_filename, data)
                 uploaded_count += 1
                 _queue_ocr_task(receipt_id)

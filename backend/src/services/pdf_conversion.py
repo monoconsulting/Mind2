@@ -1,4 +1,5 @@
 """Utilities for converting PDF documents to images."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,6 +13,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class PdfPage:
+    """Represents a rendered PDF page.
+
+    The ``index`` is zero-based to match the source document ordering.
+    """
+
     index: int
     path: Path
     bytes: bytes
@@ -40,7 +46,7 @@ def pdf_to_png_pages(pdf_bytes: bytes, output_dir: Path, base_name: str, dpi: in
             file_path = output_dir / filename
             page_bytes = pix.tobytes("png")
             file_path.write_bytes(page_bytes)
-            pages.append(PdfPage(index=page_index + 1, path=file_path, bytes=page_bytes))
+            pages.append(PdfPage(index=page_index, path=file_path, bytes=page_bytes))
     finally:
         doc.close()
 
