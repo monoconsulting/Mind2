@@ -879,6 +879,40 @@ def process_ai_pipeline(file_id: str) -> dict[str, Any]:
 
 
 @celery_app.task
+@track_task("process_audio_transcription")
+def process_audio_transcription(file_id: str) -> dict[str, Any]:
+    import time
+
+    start_time = time.time()
+    try:
+        ok = _update_file_status(file_id, status="transcription_queued")
+        elapsed = int((time.time() - start_time) * 1000)
+        _history(
+            file_id,
+            job="transcription",
+            status="success",
+            ai_stage_name="Audio-Queued",
+            log_text="Audio file queued for transcription pipeline",
+            processing_time_ms=elapsed,
+            provider="audio_pipeline",
+        )
+        return {"file_id": file_id, "status": "transcription_queued", "ok": ok}
+    except Exception as exc:
+        elapsed = int((time.time() - start_time) * 1000)
+        _history(
+            file_id,
+            job="transcription",
+            status="error",
+            ai_stage_name="Audio-Queued",
+            log_text="Failed to queue audio for transcription",
+            error_message=str(exc),
+            processing_time_ms=elapsed,
+            provider="audio_pipeline",
+        )
+        return {"file_id": file_id, "status": "error", "ok": False, "error": str(exc)}
+
+
+@celery_app.task
 @track_task("process_classification")
 def process_classification(file_id: str) -> dict[str, Any]:
     """Legacy task - most processing now done via AI pipeline."""

@@ -18,3 +18,4 @@ gunicorn
 opencv-python-headless==4.10.0.84
 paddlepaddle
 paddleocr
+PyMuPDF
