@@ -16,6 +16,7 @@ class FakeDB:
         self.invoice_documents: Dict[str, Dict[str, Any]] = {}
         self.invoice_lines: List[Dict[str, Any]] = []
         self._results: List[Any] = []
+        self._rowcount: int = 0
 
     def cursor(self):
         return self
@@ -32,6 +33,7 @@ class FakeDB:
     def execute(self, sql: Any, params: Any | None = None) -> None:
         statement = " ".join(str(sql).split()).lower()
         params = params or ()
+        self._rowcount = 0
 
         if statement.startswith("insert into unified_files"):
             (
@@ -66,10 +68,12 @@ class FakeDB:
                 "original_file_name": original_file_name,
                 "original_file_size": original_file_size,
             }
+            self._rowcount = 1
         elif statement.startswith("update unified_files set other_data"):
             other_data, file_id = params
             if file_id in self.unified_files:
                 self.unified_files[file_id]["other_data"] = other_data
+                self._rowcount = 1
         elif "from unified_files" in statement and "content_hash" in statement:
             content_hash = params[0]
             matches = [
@@ -97,28 +101,68 @@ class FakeDB:
             ai_status, _confidence, file_id = params
             if file_id in self.unified_files:
                 self.unified_files[file_id]["ai_status"] = ai_status
+                self._rowcount = 1
         elif statement.startswith("update unified_files set ai_status"):
             ai_status, file_id = params
             if file_id in self.unified_files:
                 self.unified_files[file_id]["ai_status"] = ai_status
+                self._rowcount = 1
+        elif statement.startswith("select original_file_id from unified_files where id=%s"):
+            file_id = params[0]
+            entry = self.unified_files.get(file_id)
+            value = entry.get("original_file_id") if entry else None
+            self._results = [(value,)] if entry else []
         elif statement.startswith("insert into invoice_documents"):
-            doc_id, invoice_type, status, metadata_json = params
+            doc_id, invoice_type, status, processing_status, metadata_json = params
             self.invoice_documents[doc_id] = {
                 "invoice_type": invoice_type,
                 "status": status,
+                "processing_status": processing_status,
                 "metadata_json": metadata_json,
             }
-        elif statement.startswith("update invoice_documents set status="):
-            status, metadata_json, doc_id = params
+            self._rowcount = 1
+        elif statement.startswith("update invoice_documents set metadata_json="):
+            metadata_json, doc_id = params
             if doc_id in self.invoice_documents:
-                self.invoice_documents[doc_id]["status"] = status
                 self.invoice_documents[doc_id]["metadata_json"] = metadata_json
+                self._rowcount = 1
+        elif statement.startswith("update invoice_documents set status=%s where id=%s and status in"):
+            new_status, doc_id, *allowed = params
+            doc = self.invoice_documents.get(doc_id)
+            if doc and (not allowed or doc["status"] in allowed):
+                doc["status"] = new_status
+                self._rowcount = 1
+        elif statement.startswith(
+            "update invoice_documents set processing_status=%s where id=%s and processing_status in"
+        ):
+            new_status, doc_id, *allowed = params
+            doc = self.invoice_documents.get(doc_id)
+            if doc and (not allowed or doc.get("processing_status") in allowed):
+                doc["processing_status"] = new_status
+                self._rowcount = 1
         elif statement.startswith("select status, metadata_json from invoice_documents"):
             doc_id = params[0]
             doc = self.invoice_documents.get(doc_id)
             self._results = [
                 (doc["status"], doc["metadata_json"])
             ] if doc else []
+        elif statement.startswith("select invoice_type, processing_status, metadata_json from invoice_documents"):
+            doc_id = params[0]
+            doc = self.invoice_documents.get(doc_id)
+            if doc:
+                self._results = [
+                    (
+                        doc.get("invoice_type"),
+                        doc.get("processing_status"),
+                        doc.get("metadata_json"),
+                    )
+                ]
+            else:
+                self._results = []
+        elif statement.startswith("select metadata_json from invoice_documents where id=%s"):
+            doc_id = params[0]
+            doc = self.invoice_documents.get(doc_id)
+            self._results = [(doc.get("metadata_json"),)] if doc else []
         elif statement.startswith("select count(1), sum(case when match_status") and "from invoice_lines" in statement:
             invoice_id = params[0]
             lines = [ln for ln in self.invoice_lines if ln["invoice_id"] == invoice_id]
@@ -160,6 +204,7 @@ class FakeDB:
                     "matched_file_id": None,
                 }
             )
+            self._rowcount = 1
         else:
             # Unused query in these tests.
             self._results = []
@@ -172,11 +217,40 @@ class FakeDB:
     def fetchall(self):
         return list(self._results)
 
+    @property
+    def rowcount(self) -> int:
+        return self._rowcount
+
 
 @pytest.fixture()
 def app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Flask:
     monkeypatch.setenv("DB_AUTO_MIGRATE", "0")
     monkeypatch.setenv("STORAGE_DIR", str(tmp_path / "storage"))
+    import sys
+    import types
+
+    if "flask_limiter" not in sys.modules:
+        limiter_ns = types.SimpleNamespace()
+
+        class DummyLimiter:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - simple stub
+                pass
+
+            def init_app(self, _app: Flask) -> None:  # pragma: no cover - simple stub
+                return None
+
+            def limit(self, *args: Any, **kwargs: Any):  # pragma: no cover - simple stub
+                def _decorator(func):
+                    return func
+
+                return _decorator
+
+        limiter_ns.Limiter = DummyLimiter
+        sys.modules["flask_limiter"] = limiter_ns
+        sys.modules.setdefault(
+            "flask_limiter.util",
+            types.SimpleNamespace(get_remote_address=lambda *_args, **_kwargs: "0.0.0.0"),
+        )
     from api.app import app as flask_app
     return flask_app
 
@@ -184,12 +258,14 @@ def app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Flask:
 def _patch_db(monkeypatch: pytest.MonkeyPatch, fake: FakeDB) -> None:
     from api import reconciliation_firstcard as module
     import api.ingest as ingest
+    import services.invoice_status as invoice_status
 
     def cursor_factory():
         return fake.cursor()
 
     monkeypatch.setattr(module, "db_cursor", cursor_factory)
     monkeypatch.setattr(ingest, "db_cursor", cursor_factory)
+    monkeypatch.setattr(invoice_status, "db_cursor", cursor_factory)
 
 
 def _stub_tasks(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -240,6 +316,8 @@ def test_upload_invoice_pdf_creates_records(app: Flask, monkeypatch: pytest.Monk
     metadata = json.loads(fake.invoice_documents[invoice_id]["metadata_json"])
     assert metadata["page_count"] == 2
     assert metadata["processing_status"] == "ocr_pending"
+    assert fake.invoice_documents[invoice_id]["status"] == "imported"
+    assert fake.invoice_documents[invoice_id]["processing_status"] == "ocr_pending"
 
     # Unified files include the parent and pages
     assert invoice_id in fake.unified_files
@@ -258,11 +336,12 @@ def test_invoice_status_and_lines_endpoint(app: Flask, monkeypatch: pytest.Monke
     invoice_id = str(uuid.uuid4())
     fake.invoice_documents[invoice_id] = {
         "invoice_type": "credit_card_invoice",
-        "status": "processing",
+        "status": "imported",
+        "processing_status": "ocr_done",
         "metadata_json": json.dumps(
             {
                 "source_file_id": invoice_id,
-                "processing_status": "ocr_pending",
+                "processing_status": "ocr_done",
                 "page_count": 1,
                 "page_ids": [invoice_id],
                 "detected_kind": "image",

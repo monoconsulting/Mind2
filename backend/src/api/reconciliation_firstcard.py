@@ -82,20 +82,33 @@ def _create_invoice_document(
     *,
     invoice_id: str,
     invoice_type: str,
-    status: str,
+    status: InvoiceDocumentStatus | str,
+    processing_status: InvoiceProcessingStatus | str,
     metadata: dict[str, Any],
 ) -> None:
     if db_cursor is None:  # pragma: no cover - database optional in tests
         return
+    status_value = status.value if isinstance(status, InvoiceDocumentStatus) else str(status)
+    processing_value = (
+        processing_status.value
+        if isinstance(processing_status, InvoiceProcessingStatus)
+        else str(processing_status)
+    )
     try:
         with db_cursor() as cur:
             cur.execute(
                 (
                     "INSERT INTO invoice_documents "
-                    "(id, invoice_type, status, metadata_json) "
-                    "VALUES (%s, %s, %s, %s)"
+                    "(id, invoice_type, status, processing_status, metadata_json) "
+                    "VALUES (%s, %s, %s, %s, %s)"
                 ),
-                (invoice_id, invoice_type, status, json.dumps(metadata)),
+                (
+                    invoice_id,
+                    invoice_type,
+                    status_value,
+                    processing_value,
+                    json.dumps(metadata),
+                ),
             )
     except Exception:
         # Allow idempotent re-uploads to update metadata.
@@ -104,9 +117,9 @@ def _create_invoice_document(
                 cur.execute(
                     (
                         "UPDATE invoice_documents "
-                        "SET status=%s, metadata_json=%s WHERE id=%s"
+                        "SET metadata_json=%s WHERE id=%s"
                     ),
-                    (status, json.dumps(metadata), invoice_id),
+                    (json.dumps(metadata), invoice_id),
                 )
         except Exception:
             pass
@@ -329,13 +342,31 @@ def upload_invoice() -> Any:
     _create_invoice_document(
         invoice_id=invoice_id,
         invoice_type="credit_card_invoice",
-        status="processing",
+        status=InvoiceDocumentStatus.IMPORTED,
+        processing_status=InvoiceProcessingStatus.UPLOADED,
         metadata=metadata,
+    )
+
+    transition_document_status(
+        invoice_id,
+        InvoiceDocumentStatus.IMPORTED,
+        (
+            InvoiceDocumentStatus.IMPORTED,
+            InvoiceDocumentStatus.MATCHING,
+        ),
+    )
+    transition_processing_status(
+        invoice_id,
+        InvoiceProcessingStatus.OCR_PENDING,
+        (
+            InvoiceProcessingStatus.UPLOADED,
+            InvoiceProcessingStatus.OCR_PENDING,
+        ),
     )
 
     response = {
         "invoice_id": invoice_id,
-        "status": "processing",
+        "status": InvoiceDocumentStatus.IMPORTED.value,
         "processing_status": metadata["processing_status"],
         "page_count": len(page_refs),
         "page_ids": metadata["page_ids"],
@@ -798,17 +829,32 @@ def list_statements() -> Any:
             with db_cursor() as cur:
                 cur.execute(
                     (
-                        "SELECT id, uploaded_at, status FROM invoice_documents "
-                        "WHERE invoice_type='company_card' ORDER BY uploaded_at DESC LIMIT 100"
+                        "SELECT id, uploaded_at, status, processing_status, invoice_type, metadata_json "
+                        "FROM invoice_documents "
+                        "WHERE invoice_type IN ('company_card','credit_card_invoice') "
+                        "ORDER BY uploaded_at DESC LIMIT 100"
                     )
                 )
-                for sid, uploaded_at, status in cur.fetchall():
+                for sid, uploaded_at, status, processing_status, invoice_type, metadata_json in cur.fetchall():
+                    metadata: dict[str, Any]
+                    if metadata_json:
+                        try:
+                            metadata = json.loads(metadata_json)
+                        except Exception:
+                            metadata = {}
+                    else:
+                        metadata = {}
+                    if processing_status and metadata.get("processing_status") != processing_status:
+                        metadata["processing_status"] = processing_status
                     items.append(
                         {
                             "id": sid,
                             "uploaded_at": str(uploaded_at),
                             "created_at": str(uploaded_at),
                             "status": status,
+                            "processing_status": processing_status,
+                            "invoice_type": invoice_type,
+                            "metadata": metadata,
                         }
                     )
         except Exception:

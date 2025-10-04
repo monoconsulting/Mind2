@@ -72,6 +72,7 @@ class FakeDB:
                 "status": "imported",
                 "uploaded_at": "2025-09-20",
                 "processing_status": "uploaded",
+                "metadata_json": "{}",
             }
             self._lastrowid += 1
         elif s.startswith("insert into invoice_lines"):
@@ -150,6 +151,11 @@ class FakeDB:
             if doc and doc.get("processing_status") in allowed:
                 doc["processing_status"] = new_status
                 self._rowcount = 1
+        elif s.startswith("update invoice_documents set metadata_json="):
+            metadata_json, doc_id = p
+            if doc_id in self.documents:
+                self.documents[doc_id]["metadata_json"] = metadata_json
+                self._rowcount = 1
         elif s.startswith("select processing_status from invoice_documents"):
             doc_id = p[0]
             doc = self.documents.get(doc_id)
@@ -175,11 +181,18 @@ class FakeDB:
                 if ln["match_status"] in ("auto", "manual", "confirmed"):
                     matched += 1
             self._results = [(total, matched)]
-        elif s.startswith("select id, uploaded_at, status from invoice_documents"):
+        elif s.startswith("select id, uploaded_at, status, processing_status, invoice_type, metadata_json from invoice_documents"):
             rows = [
-                (doc_id, doc["uploaded_at"], doc["status"])
+                (
+                    doc_id,
+                    doc["uploaded_at"],
+                    doc["status"],
+                    doc.get("processing_status"),
+                    doc.get("invoice_type"),
+                    doc.get("metadata_json"),
+                )
                 for doc_id, doc in self.documents.items()
-                if doc.get("invoice_type") == "company_card"
+                if doc.get("invoice_type") in {"company_card", "credit_card_invoice"}
             ]
             self._results = rows
         else:
@@ -254,6 +267,12 @@ def test_firstcard_import_match_confirm(monkeypatch):
     assert r3.status_code == 200
     items = r3.get_json()["items"]
     assert any(it["id"] == doc_id for it in items)
+    for item in items:
+        if item["id"] == doc_id:
+            assert item["processing_status"] == fake.documents[doc_id]["processing_status"]
+            assert item["invoice_type"] == fake.documents[doc_id]["invoice_type"]
+            assert isinstance(item.get("metadata"), dict)
+            break
 
     # 4) Confirm
     r4 = client.post(f"/reconciliation/firstcard/statements/{doc_id}/confirm")
