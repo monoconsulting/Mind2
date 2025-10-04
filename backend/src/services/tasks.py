@@ -41,6 +41,15 @@ from api.ai_processing import (
     extract_data_internal,
 )
 
+
+_INVOICE_PAGE_COMPLETE_STATUSES = {
+    "ocr_done",
+    InvoiceProcessingStatus.OCR_DONE.value,
+    InvoiceProcessingStatus.READY_FOR_MATCHING.value,
+    InvoiceProcessingStatus.MATCHING_COMPLETED.value,
+    InvoiceProcessingStatus.COMPLETED.value,
+}
+
 celery_app = get_celery()
 
 
@@ -141,6 +150,206 @@ def _update_file_fields(
             return cur.rowcount > 0
     except Exception:
         return False
+
+
+def _load_unified_file_info(file_id: str) -> dict[str, Any] | None:
+    if db_cursor is None:
+        return None
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT id, file_type, original_file_id, other_data FROM unified_files WHERE id=%s",
+                (file_id,),
+            )
+            row = cur.fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    raw_other = row[3]
+    other_data: dict[str, Any]
+    if raw_other:
+        try:
+            other_data = json.loads(raw_other)
+        except Exception:
+            other_data = {}
+    else:
+        other_data = {}
+    return {
+        "id": row[0],
+        "file_type": row[1] or "",
+        "original_file_id": row[2],
+        "other_data": other_data,
+    }
+
+
+def _get_invoice_parent_id(file_id: str) -> Optional[str]:
+    info = _load_unified_file_info(file_id)
+    if not info:
+        return None
+    file_type = str(info.get("file_type") or "").lower()
+    if file_type == "invoice_page":
+        parent = info.get("original_file_id")
+        return str(parent) if isinstance(parent, str) and parent else None
+    if file_type == "invoice":
+        identifier = info.get("id")
+        return str(identifier) if isinstance(identifier, str) and identifier else None
+    return None
+
+
+def _load_invoice_metadata(invoice_id: str) -> dict[str, Any] | None:
+    if db_cursor is None:
+        return None
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT metadata_json FROM invoice_documents WHERE id=%s",
+                (invoice_id,),
+            )
+            row = cur.fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    payload = row[0]
+    if not payload:
+        return {}
+    if isinstance(payload, (bytes, bytearray)):
+        try:
+            payload = payload.decode("utf-8")
+        except Exception:
+            payload = payload.decode("latin1", errors="ignore")
+    try:
+        return json.loads(payload)
+    except Exception:
+        return {}
+
+
+def _update_invoice_metadata(invoice_id: str, metadata: dict[str, Any]) -> bool:
+    if db_cursor is None:
+        return False
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "UPDATE invoice_documents SET metadata_json=%s WHERE id=%s",
+                (json.dumps(metadata or {}), invoice_id),
+            )
+        return True
+    except Exception:
+        return False
+
+
+def _set_invoice_metadata_field(invoice_id: str, field: str, value: Any) -> dict[str, Any] | None:
+    metadata = _load_invoice_metadata(invoice_id)
+    if metadata is None:
+        return None
+    metadata[field] = value
+    if _update_invoice_metadata(invoice_id, metadata):
+        return metadata
+    return None
+
+
+def _invoice_page_progress(invoice_id: str, metadata: dict[str, Any] | None = None) -> dict[str, int]:
+    data = metadata if metadata is not None else (_load_invoice_metadata(invoice_id) or {})
+    page_ids = data.get("page_ids")
+    if not isinstance(page_ids, list):
+        page_ids = []
+    page_status = data.get("page_status")
+    if not isinstance(page_status, dict):
+        page_status = {}
+    completed = 0
+    for pid in page_ids:
+        status = (page_status.get(pid) or "").lower()
+        if status in _INVOICE_PAGE_COMPLETE_STATUSES:
+            completed += 1
+    if not page_ids and page_status:
+        completed = sum(
+            1
+            for status in page_status.values()
+            if (status or "").lower() in _INVOICE_PAGE_COMPLETE_STATUSES
+        )
+    total = data.get("page_count")
+    if not isinstance(total, int) or total <= 0:
+        fallback = len(page_ids) or len(page_status)
+        total = fallback if fallback > 0 else 0
+    pending = max(total - completed, 0)
+    return {"total": total, "completed": completed, "pending": pending}
+
+
+def _enqueue_invoice_document(invoice_id: str) -> bool:
+    try:
+        task = process_invoice_document  # type: ignore[name-defined]
+    except NameError:
+        return False
+    try:
+        if hasattr(task, "delay"):
+            task.delay(invoice_id)  # type: ignore[attr-defined]
+        else:
+            task(invoice_id)  # type: ignore[misc]
+        return True
+    except Exception:
+        return False
+
+
+def _maybe_advance_invoice_from_file(file_id: str, success: bool) -> None:
+    invoice_id = _get_invoice_parent_id(file_id)
+    if not invoice_id:
+        return
+
+    metadata = _load_invoice_metadata(invoice_id) or {}
+    page_ids = metadata.get("page_ids")
+    if not isinstance(page_ids, list):
+        page_ids = []
+    if file_id not in page_ids:
+        page_ids.append(file_id)
+        metadata["page_ids"] = page_ids
+
+    page_status = metadata.get("page_status")
+    if not isinstance(page_status, dict):
+        page_status = {}
+    page_status[file_id] = "ocr_done" if success else "ocr_failed"
+    metadata["page_status"] = page_status
+
+    progress = _invoice_page_progress(invoice_id, metadata)
+    metadata["ocr_completed_pages"] = progress["completed"]
+    existing_count = metadata.get("page_count")
+    if isinstance(existing_count, int) and existing_count > 0:
+        metadata["page_count"] = max(existing_count, progress["total"])
+    else:
+        metadata["page_count"] = progress["total"]
+
+    should_schedule = False
+    if success and progress["total"] > 0 and progress["completed"] >= progress["total"]:
+        metadata["processing_status"] = InvoiceProcessingStatus.OCR_DONE.value
+        next_state = InvoiceProcessingStatus.OCR_DONE
+        allowed_states = (
+            InvoiceProcessingStatus.UPLOADED,
+            InvoiceProcessingStatus.OCR_PENDING,
+            InvoiceProcessingStatus.OCR_DONE,
+        )
+        should_schedule = not metadata.get("invoice_document_scheduled")
+    elif success:
+        metadata["processing_status"] = InvoiceProcessingStatus.OCR_PENDING.value
+        next_state = InvoiceProcessingStatus.OCR_PENDING
+        allowed_states = (
+            InvoiceProcessingStatus.UPLOADED,
+            InvoiceProcessingStatus.OCR_PENDING,
+        )
+    else:
+        metadata["processing_status"] = InvoiceProcessingStatus.FAILED.value
+        next_state = InvoiceProcessingStatus.FAILED
+        allowed_states = (
+            InvoiceProcessingStatus.UPLOADED,
+            InvoiceProcessingStatus.OCR_PENDING,
+            InvoiceProcessingStatus.OCR_DONE,
+            InvoiceProcessingStatus.AI_PROCESSING,
+        )
+
+    _update_invoice_metadata(invoice_id, metadata)
+    transition_processing_status(invoice_id, next_state, allowed_states)
+
+    if should_schedule and _enqueue_invoice_document(invoice_id):
+        _set_invoice_metadata_field(invoice_id, "invoice_document_scheduled", True)
 
 
 def _load_receipt_model(file_id: str) -> Optional[Receipt]:
@@ -818,6 +1027,8 @@ def process_ocr(file_id: str) -> dict[str, Any]:
             provider="paddleocr",
         )
 
+        _maybe_advance_invoice_from_file(file_id, success=True)
+
         # Only continue to AI pipeline if OCR succeeded
         try:
             process_ai_pipeline.delay(file_id)  # type: ignore[attr-defined]
@@ -844,6 +1055,8 @@ def process_ocr(file_id: str) -> dict[str, Any]:
             processing_time_ms=elapsed,
             provider="paddleocr",
         )
+
+        _maybe_advance_invoice_from_file(file_id, success=False)
 
         return {"file_id": file_id, "status": "manual_review", "ok": False, "error": error_msg or "OCR failed"}
 
