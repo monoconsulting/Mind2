@@ -654,6 +654,20 @@ input::placeholder {
   flex-direction: column;
 }
 
+.modal-xxl {
+  max-width: 1200px;
+  width: 96vw;
+  height: 92vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-xxl .modal-body {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+}
+
 .modal-lg .modal-body {
   flex: 1;
   min-height: 0;
@@ -751,6 +765,234 @@ input::placeholder {
   border-radius: 0.75rem;
   border: 1px dashed var(--border-color);
   color: var(--text-secondary);
+}
+
+.receipt-preview-modal {
+  background: var(--bg-primary);
+}
+
+.receipt-modal-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.receipt-modal-content {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 320px 1fr 340px;
+  gap: 1.5rem;
+  padding: 1.5rem;
+  overflow: hidden;
+}
+
+@media (max-width: 1200px) {
+  .receipt-modal-content {
+    grid-template-columns: 280px 1fr 300px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .receipt-modal-content {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+}
+
+.receipt-modal-column {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-height: 0;
+}
+
+.receipt-modal-section {
+  background: rgba(26, 32, 44, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  min-height: 0;
+}
+
+.receipt-modal-section h4 {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.receipt-modal-field {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  margin-bottom: 0.65rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.receipt-modal-field.highlighted {
+  border-color: rgba(253, 224, 71, 0.9);
+  background: rgba(253, 224, 71, 0.12);
+  box-shadow: 0 0 0 1px rgba(253, 224, 71, 0.35);
+}
+
+.receipt-modal-field.muted {
+  opacity: 0.45;
+}
+
+.receipt-modal-field .dm-input {
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  color: var(--text-primary);
+}
+
+.receipt-modal-field .field-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: 0.35rem;
+}
+
+.receipt-modal-field .field-value {
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.receipt-modal-image-wrapper {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  border-radius: 0.9rem;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.receipt-modal-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.receipt-modal-image-fallback {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.receipt-modal-overlay {
+  position: absolute;
+  border: 2px solid rgba(253, 224, 71, 0.7);
+  background: rgba(253, 224, 71, 0.18);
+  transition: opacity 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+
+.receipt-modal-overlay.highlighted {
+  border-color: rgba(253, 224, 71, 0.95);
+  background: rgba(253, 224, 71, 0.32);
+  z-index: 2;
+}
+
+.receipt-modal-overlay.muted {
+  opacity: 0.25;
+}
+
+.receipt-modal-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  color: var(--text-secondary);
+}
+
+.receipt-modal-footer {
+  padding: 1rem 1.5rem 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.receipt-modal-footer .footer-hint {
+  flex: 1;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.modal-footer-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.receipt-item-card {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(15, 23, 42, 0.6);
+  margin-bottom: 1rem;
+}
+
+.receipt-item-header {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.proposal-group {
+  margin-top: 0.75rem;
+}
+
+.proposal-group-header {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.proposal-card {
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 0.65rem;
+  padding: 0.6rem;
+  background: rgba(15, 23, 42, 0.45);
+  margin-bottom: 0.6rem;
+}
+
+.proposal-field {
+  margin-bottom: 0.5rem;
+}
+
+.proposal-field:last-child {
+  margin-bottom: 0;
+}
+
+.muted {
+  color: var(--text-secondary);
+  opacity: 0.75;
+}
+
+.ocr-section .ocr-content {
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.proposal-card .dm-input,
+.receipt-item-card .dm-input {
+  font-size: 0.85rem;
 }
 
 /* Tables */
