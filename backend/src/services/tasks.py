@@ -762,6 +762,123 @@ def _save_accounting_entries(file_id: str, entries: List[AccountingEntry]) -> bo
         return False
 
 
+_OCR_COMPLETE_STATUSES = {
+    "ocr_done",
+    "document_processed",
+    "ready_for_matching",
+    "matching_completed",
+    "completed",
+}
+
+
+def _set_invoice_metadata_field(document_id: str, key: str, value: Any) -> None:
+    if db_cursor is None:
+        return
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT metadata_json FROM invoice_documents WHERE id=%s",
+                (document_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return
+        metadata_json = row[0]
+        metadata: dict[str, Any]
+        if metadata_json:
+            try:
+                metadata = json.loads(metadata_json)
+            except Exception:
+                metadata = {}
+        else:
+            metadata = {}
+        if metadata.get(key) == value:
+            return
+        metadata[key] = value
+        with db_cursor() as cur:
+            cur.execute(
+                "UPDATE invoice_documents SET metadata_json=%s WHERE id=%s",
+                (json.dumps(metadata), document_id),
+            )
+    except Exception:
+        # Metadata updates are best-effort.
+        pass
+
+
+def _maybe_advance_invoice_from_file(file_id: str) -> None:
+    if db_cursor is None:
+        return
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT original_file_id FROM unified_files WHERE id=%s",
+                (file_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return
+        original_file_id = row[0]
+        invoice_id = original_file_id or file_id
+        if not invoice_id:
+            return
+
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT invoice_type, processing_status, metadata_json FROM invoice_documents WHERE id=%s",
+                (invoice_id,),
+            )
+            doc_row = cur.fetchone()
+        if not doc_row:
+            return
+        invoice_type, current_processing, metadata_json = doc_row
+        if invoice_type != "credit_card_invoice":
+            return
+
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT ai_status FROM unified_files WHERE id=%s OR original_file_id=%s",
+                (invoice_id, invoice_id),
+            )
+            status_rows = cur.fetchall() or []
+        if not status_rows:
+            return
+        statuses = [(row[0] or "").lower() for row in status_rows]
+        if not all(status in _OCR_COMPLETE_STATUSES for status in statuses):
+            return
+
+        transitioned = transition_processing_status(
+            invoice_id,
+            InvoiceProcessingStatus.OCR_DONE,
+            (
+                InvoiceProcessingStatus.OCR_PENDING,
+                InvoiceProcessingStatus.UPLOADED,
+            ),
+        )
+
+        _set_invoice_metadata_field(
+            invoice_id,
+            "processing_status",
+            InvoiceProcessingStatus.OCR_DONE.value,
+        )
+
+        schedule_ai = transitioned or (
+            current_processing == InvoiceProcessingStatus.OCR_DONE.value
+        )
+        if not schedule_ai:
+            return
+
+        try:
+            process_invoice_document.delay(invoice_id)  # type: ignore[attr-defined]
+        except Exception:
+            try:
+                process_invoice_document.run(invoice_id)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+    except Exception:
+        # Never allow invoice orchestration to break OCR handling.
+        return
+
+
 @celery_app.task
 @track_task("process_ocr")
 def process_ocr(file_id: str) -> dict[str, Any]:
@@ -817,6 +934,8 @@ def process_ocr(file_id: str) -> dict[str, Any]:
             processing_time_ms=elapsed,
             provider="paddleocr",
         )
+
+        _maybe_advance_invoice_from_file(file_id)
 
         # Only continue to AI pipeline if OCR succeeded
         try:
@@ -1079,6 +1198,12 @@ def process_invoice_document(document_id: str) -> dict[str, Any]:
             "ok": False,
         }
 
+    _set_invoice_metadata_field(
+        document_id,
+        "processing_status",
+        InvoiceProcessingStatus.AI_PROCESSING.value,
+    )
+
     # Placeholder for AI extraction work. Once implemented this block will call
     # the dedicated invoice extraction service and populate invoice_lines.
     _history(document_id, job="invoice_document", status="success", log_text="ai_processing_started")
@@ -1089,11 +1214,23 @@ def process_invoice_document(document_id: str) -> dict[str, Any]:
         (InvoiceProcessingStatus.AI_PROCESSING,),
     )
     if ready:
+        _set_invoice_metadata_field(
+            document_id,
+            "processing_status",
+            InvoiceProcessingStatus.READY_FOR_MATCHING.value,
+        )
         transition_document_status(
             document_id,
             InvoiceDocumentStatus.MATCHING,
             (InvoiceDocumentStatus.IMPORTED,),
         )
+        try:
+            process_invoice_matching.delay(document_id)  # type: ignore[attr-defined]
+        except Exception:
+            try:
+                process_invoice_matching.run(document_id)  # type: ignore[attr-defined]
+            except Exception:
+                pass
     return {
         "document_id": document_id,
         "status": InvoiceProcessingStatus.READY_FOR_MATCHING.value,
@@ -1101,9 +1238,7 @@ def process_invoice_document(document_id: str) -> dict[str, Any]:
     }
 
 
-@celery_app.task
-@track_task("process_matching")
-def process_matching(statement_id: str) -> dict[str, Any]:
+def _run_invoice_matching(invoice_id: str) -> dict[str, Any]:
     matched = 0
     total_lines = 0
     if db_cursor is not None:
@@ -1114,7 +1249,7 @@ def process_matching(statement_id: str) -> dict[str, Any]:
                         "SELECT COUNT(*), SUM(CASE WHEN match_status IN ('auto','manual','confirmed') "
                         "THEN 1 ELSE 0 END) FROM invoice_lines WHERE invoice_id=%s"
                     ),
-                    (statement_id,),
+                    (invoice_id,),
                 )
                 row = cur.fetchone()
                 if row:
@@ -1125,7 +1260,7 @@ def process_matching(statement_id: str) -> dict[str, Any]:
             matched = 0
 
     processing_ok = transition_processing_status(
-        statement_id,
+        invoice_id,
         InvoiceProcessingStatus.MATCHING_COMPLETED,
         (
             InvoiceProcessingStatus.READY_FOR_MATCHING,
@@ -1135,7 +1270,7 @@ def process_matching(statement_id: str) -> dict[str, Any]:
 
     if matched == 0:
         transition_document_status(
-            statement_id,
+            invoice_id,
             InvoiceDocumentStatus.IMPORTED,
             (
                 InvoiceDocumentStatus.MATCHING,
@@ -1145,7 +1280,7 @@ def process_matching(statement_id: str) -> dict[str, Any]:
         )
     elif total_lines and matched < total_lines:
         transition_document_status(
-            statement_id,
+            invoice_id,
             InvoiceDocumentStatus.PARTIALLY_MATCHED,
             (
                 InvoiceDocumentStatus.IMPORTED,
@@ -1155,7 +1290,7 @@ def process_matching(statement_id: str) -> dict[str, Any]:
         )
     else:
         transition_document_status(
-            statement_id,
+            invoice_id,
             InvoiceDocumentStatus.MATCHED,
             (
                 InvoiceDocumentStatus.IMPORTED,
@@ -1165,11 +1300,23 @@ def process_matching(statement_id: str) -> dict[str, Any]:
         )
 
     return {
-        "statement_id": statement_id,
+        "statement_id": invoice_id,
         "matched": matched,
         "total": total_lines,
         "processing_ok": processing_ok,
     }
+
+
+@celery_app.task
+@track_task("process_invoice_matching")
+def process_invoice_matching(invoice_id: str) -> dict[str, Any]:
+    return _run_invoice_matching(invoice_id)
+
+
+@celery_app.task
+@track_task("process_matching")
+def process_matching(statement_id: str) -> dict[str, Any]:
+    return _run_invoice_matching(statement_id)
 
 
 @celery_app.task
