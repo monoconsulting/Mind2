@@ -93,7 +93,7 @@ The following endpoints will be implemented or enhanced in `backend/src/api/reco
 The implementation of the upload endpoint will **prioritize code reuse and maintainability**.
 
 - **Centralized Logic:** Instead of duplicating file handling logic, the endpoint will use **shared helper functions from `backend/src/api/ingest.py`** and `backend/src/services/storage.py`. This ensures that hash-based duplicate checks, file type detection, and storage operations are consistent across the application.
-- **Efficient File Writes:** To prevent redundant I/O operations, the process will be optimized. The `pdf_to_png_pages` function will write page images to their final destination. The upload handler will then receive the paths to these generated files and create the database records (`unified_files`) without reading and re-writing the image data.
+- **Efficient File Writes:** To prevent redundant I/O operations, the process now keeps the rendered PDF pages on disk and has the upload handlers adopt those files via the shared `FileStorage.adopt` helper. This guarantees that page metadata is registered without re-reading or re-writing the image content while also enabling robust cleanup if processing fails mid-way.
 - **Orchestration:** The endpoint's primary responsibility is to orchestrate the process:
     1.  Invoke shared helpers to validate and store the uploaded file.
     2.  If it's a PDF, call `pdf_to_png_pages` for conversion.

@@ -67,6 +67,9 @@ All phases, sprints, tasks, and subtasks reference the adjustments captured in s
     - 2.1.3.1 Refactor storage logic to accept pre-existing file paths for invoice pages.
     - 2.1.3.2 Add cleanup routines for temporary files when processing fails.
     - 2.1.3.3 Update documentation to reflect the new storage pattern.
+  - **Implementation Notes:**
+    - `FileStorage.adopt` is responsible for moving rendered PDF pages into their permanent locations, making repeated calls safe and idempotent.
+    - Upload handlers clear any leftover converted pages via shared cleanup utilities whenever a failure interrupts processing.
   - **Test Guidance:**
     - Add unit tests for storage helpers verifying idempotency.
     - During integration tests, inspect storage directories to confirm single copies per page.
