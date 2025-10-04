@@ -284,9 +284,9 @@ def transition_line_status_and_link(
         return False
     placeholders = ", ".join(["%s"] * len(states))
     sql = (
-        "UPDATE invoice_lines SET matched_file_id=%s, match_score=%s, match_status=%s "
-        "WHERE id=%s AND (match_status IS NULL OR match_status IN ({placeholders}))"
-    ).format(placeholders=placeholders)
+        f"UPDATE invoice_lines SET matched_file_id=%s, match_score=%s, match_status=%s "
+        f"WHERE id=%s AND (match_status IS NULL OR match_status IN ({placeholders}))"
+    )
     params: tuple[object, ...] = (
         matched_file_id,
         score,
