@@ -36,6 +36,12 @@ INVOICE_MATCH_COUNT = Counter(
     ["decision"],  # matched|rejected|confirmed|unmatched
 )
 
+INVOICE_STATE_ASSERTIONS = Counter(
+    "mind_invoice_state_assertions_total",
+    "Illegal invoice lifecycle transitions detected",
+    ["entity", "from_state", "to_state"],
+)
+
 
 def metrics_endpoint() -> Response:
     return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
@@ -79,5 +85,16 @@ def track_task(task_name: str):
 def record_invoice_decision(decision: str) -> None:
     try:
         INVOICE_MATCH_COUNT.labels(decision=decision).inc()
+    except Exception:
+        pass
+
+
+def record_invoice_state_assertion(entity: str, from_state: str | None, to_state: str) -> None:
+    try:
+        INVOICE_STATE_ASSERTIONS.labels(
+            entity=entity,
+            from_state=(from_state or "missing"),
+            to_state=to_state,
+        ).inc()
     except Exception:
         pass

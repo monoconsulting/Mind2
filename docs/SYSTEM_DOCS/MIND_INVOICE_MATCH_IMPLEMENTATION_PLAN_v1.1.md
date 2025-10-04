@@ -121,6 +121,22 @@ This new Celery task will:
 4.  Update the `invoice_documents` record with period dates and set `processing_status='ready_for_matching'`.
 5.  Trigger the `process_invoice_matching` task.
 
+#### 4.3.4 Processing Status Lifecycle
+
+The helper module `backend/src/services/invoice_status.py` codifies the state
+machine for invoice reconciliation. The transitions are enforced in the Celery
+tasks and Flask endpoints via atomic `UPDATE ... WHERE current_state` queries.
+
+| Column | States | Notes |
+|--------|--------|-------|
+| `invoice_documents.processing_status` | `uploaded → ocr_pending → ocr_done → ai_processing → ready_for_matching → matching_completed → completed` (with `failed` reachable from any step) | Manual JSON imports are allowed to skip directly from `uploaded` to `ready_for_matching`. |
+| `invoice_documents.status` | `imported → matching → matched/partially_matched → completed` (`failed` available from any intermediate step) | Business-facing flag used by the dashboard. |
+| `invoice_lines.match_status` | `pending → auto/manual → confirmed` or `pending → unmatched/ignored` | Transitions are logged in `invoice_line_history`. |
+
+Illegal transitions increment the Prometheus counter
+`mind_invoice_state_assertions_total` so that operations can alert on race
+conditions or unexpected task ordering.
+
 ### 4.4 AI Service for Invoice Extraction (`invoice_ai.py`)
 A new service will be created at `backend/src/services/invoice_ai.py`. It will contain the logic for prompting a large language model (e.g., GPT-4o-mini) to parse the raw OCR text and return structured JSON. It will also include a **fallback mechanism using regular expressions** to ensure basic functionality even if the AI service is unavailable or fails.
 

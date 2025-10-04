@@ -18,6 +18,15 @@ try:
 except Exception:  # pragma: no cover
     db_cursor = None  # type: ignore
 
+from services.invoice_status import (
+    InvoiceDocumentStatus,
+    InvoiceLineMatchStatus,
+    InvoiceProcessingStatus,
+    transition_document_status,
+    transition_line_status_and_link,
+    transition_processing_status,
+)
+
 
 recon_bp = Blueprint("reconciliation_firstcard", __name__)
 
@@ -111,8 +120,8 @@ def firstcard_import() -> Any:
                     for ln in lines:
                         cur.execute(
                             (
-                                "INSERT INTO invoice_lines (invoice_id, transaction_date, amount, merchant_name, description) "
-                                "VALUES (%s, %s, %s, %s, %s)"
+                                "INSERT INTO invoice_lines (invoice_id, transaction_date, amount, merchant_name, description, match_status) "
+                                "VALUES (%s, %s, %s, %s, %s, %s)"
                             ),
                             (
                                 doc_id,
@@ -120,9 +129,19 @@ def firstcard_import() -> Any:
                                 ln.get("amount"),
                                 (ln.get("merchant_name") or ln.get("merchant") or None),
                                 ln.get("description"),
+                                InvoiceLineMatchStatus.PENDING.value,
                             ),
                         )
                         inserted += 1
+            transition_processing_status(
+                doc_id,
+                InvoiceProcessingStatus.READY_FOR_MATCHING,
+                (
+                    InvoiceProcessingStatus.UPLOADED,
+                    InvoiceProcessingStatus.OCR_DONE,
+                    InvoiceProcessingStatus.OCR_PENDING,
+                ),
+            )
         except Exception:
             pass
     return jsonify({"status": "ok", "id": doc_id, "lines": inserted}), 200
@@ -140,20 +159,36 @@ def firstcard_match() -> Any:
     payload = request.get_json(silent=True) or {}
     document_id = payload.get("document_id") or payload.get("doc_id") or payload.get("file_id")
     matched = 0
+    total_lines = 0
     if not document_id or db_cursor is None:
         return jsonify({"matched": matched}), 200
 
     try:
         with db_cursor() as cur:
-            # Fetch candidate lines
+            cur.execute(
+                "SELECT COUNT(*) FROM invoice_lines WHERE invoice_id=%s",
+                (document_id,),
+            )
+            total_row = cur.fetchone()
+            if total_row:
+                total_lines = int(total_row[0] or 0)
             cur.execute(
                 (
                     "SELECT id, transaction_date, amount FROM invoice_lines "
-                    "WHERE invoice_id=%s AND matched_file_id IS NULL"
+                    "WHERE invoice_id=%s AND (match_status IS NULL OR match_status IN ('pending','unmatched'))"
                 ),
                 (document_id,),
             )
             lines = cur.fetchall() or []
+
+        transition_document_status(
+            document_id,
+            InvoiceDocumentStatus.MATCHING,
+            (
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.MATCHING,
+            ),
+        )
 
         for line_id, tx_date, amount in lines:
             file_id = None
@@ -173,36 +208,94 @@ def firstcard_match() -> Any:
                     row = cur.fetchone()
                     if row:
                         (file_id,) = row
-                        cur.execute(
-                            (
-                                "UPDATE invoice_lines SET matched_file_id=%s, match_score=%s, match_status='auto' WHERE id=%s"
-                            ),
-                            (file_id, 0.8, line_id),
-                        )
-                        cur.execute(
-                            (
-                                "INSERT INTO invoice_line_history (invoice_line_id, action, performed_by, old_matched_file_id, new_matched_file_id, reason) "
-                                "VALUES (%s, 'matched', 'system', NULL, %s, 'auto-match')"
-                            ),
-                            (line_id, file_id),
-                        )
-                        matched += 1
-                        record_invoice_decision("matched")
             except Exception:
+                file_id = None
+
+            if not file_id:
                 continue
 
-        # If any matched, bump document status
-        if matched > 0:
+            updated = transition_line_status_and_link(
+                line_id,
+                file_id,
+                0.8,
+                InvoiceLineMatchStatus.AUTO,
+                (
+                    InvoiceLineMatchStatus.PENDING,
+                    InvoiceLineMatchStatus.UNMATCHED,
+                ),
+            )
+            if not updated:
+                continue
+            matched += 1
             try:
                 with db_cursor() as cur:
                     cur.execute(
-                        "UPDATE invoice_documents SET status='matched' WHERE id=%s AND status='imported'",
-                        (document_id,),
+                        (
+                            "INSERT INTO invoice_line_history (invoice_line_id, action, performed_by, old_matched_file_id, new_matched_file_id, reason) "
+                            "VALUES (%s, 'matched', 'system', NULL, %s, 'auto-match')"
+                        ),
+                        (line_id, file_id),
                     )
             except Exception:
                 pass
+            record_invoice_decision("matched")
+
+        # Refresh counts for status transitions
+        with db_cursor() as cur:
+            cur.execute(
+                (
+                    "SELECT COUNT(*), SUM(CASE WHEN match_status IN ('auto','manual','confirmed') THEN 1 ELSE 0 END) "
+                    "FROM invoice_lines WHERE invoice_id=%s"
+                ),
+                (document_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                total_lines = int(row[0] or total_lines)
+                matched_lines = int(row[1] or 0)
+            else:
+                matched_lines = matched
+
+        transition_processing_status(
+            document_id,
+            InvoiceProcessingStatus.MATCHING_COMPLETED,
+            (
+                InvoiceProcessingStatus.READY_FOR_MATCHING,
+                InvoiceProcessingStatus.AI_PROCESSING,
+            ),
+        )
+
+        if matched_lines == 0:
+            transition_document_status(
+                document_id,
+                InvoiceDocumentStatus.IMPORTED,
+                (
+                    InvoiceDocumentStatus.MATCHING,
+                    InvoiceDocumentStatus.IMPORTED,
+                ),
+            )
+        elif total_lines and matched_lines < total_lines:
+            transition_document_status(
+                document_id,
+                InvoiceDocumentStatus.PARTIALLY_MATCHED,
+                (
+                    InvoiceDocumentStatus.IMPORTED,
+                    InvoiceDocumentStatus.MATCHING,
+                    InvoiceDocumentStatus.MATCHED,
+                ),
+            )
+        else:
+            transition_document_status(
+                document_id,
+                InvoiceDocumentStatus.MATCHED,
+                (
+                    InvoiceDocumentStatus.IMPORTED,
+                    InvoiceDocumentStatus.MATCHING,
+                    InvoiceDocumentStatus.PARTIALLY_MATCHED,
+                ),
+            )
     except Exception:
-        pass
+        matched = 0
     return jsonify({"matched": matched, "document_id": document_id}), 200
 
 
@@ -234,29 +327,44 @@ def list_statements() -> Any:
 
 @recon_bp.post("/reconciliation/firstcard/statements/<sid>/confirm")
 def confirm_statement(sid: str) -> Any:
-    if db_cursor is not None:
-        try:
-            with db_cursor() as cur:
-                cur.execute(
-                    "UPDATE invoice_documents SET status='completed' WHERE id=%s",
-                    (sid,),
-                )
-        except Exception:
-            pass
+    transition_processing_status(
+        sid,
+        InvoiceProcessingStatus.COMPLETED,
+        (
+            InvoiceProcessingStatus.MATCHING_COMPLETED,
+            InvoiceProcessingStatus.READY_FOR_MATCHING,
+        ),
+    )
+    transition_document_status(
+        sid,
+        InvoiceDocumentStatus.COMPLETED,
+        (
+            InvoiceDocumentStatus.MATCHED,
+            InvoiceDocumentStatus.PARTIALLY_MATCHED,
+        ),
+    )
     return jsonify({"id": sid, "status": "confirmed"}), 200
 
 
 @recon_bp.post("/reconciliation/firstcard/statements/<sid>/reject")
 def reject_statement(sid: str) -> Any:
-    if db_cursor is not None:
-        try:
-            with db_cursor() as cur:
-                cur.execute(
-                    "UPDATE invoice_documents SET status='imported' WHERE id=%s",
-                    (sid,),
-                )
-        except Exception:
-            pass
+    transition_processing_status(
+        sid,
+        InvoiceProcessingStatus.READY_FOR_MATCHING,
+        (
+            InvoiceProcessingStatus.MATCHING_COMPLETED,
+            InvoiceProcessingStatus.COMPLETED,
+        ),
+    )
+    transition_document_status(
+        sid,
+        InvoiceDocumentStatus.IMPORTED,
+        (
+            InvoiceDocumentStatus.MATCHED,
+            InvoiceDocumentStatus.PARTIALLY_MATCHED,
+            InvoiceDocumentStatus.COMPLETED,
+        ),
+    )
     return jsonify({"id": sid, "status": "rejected"}), 200
 
 
@@ -267,11 +375,20 @@ def update_line_match(line_id: int) -> Any:
     if not new_file_id or db_cursor is None:
         return jsonify({"ok": False}), 400
     try:
+        updated = transition_line_status_and_link(
+            line_id,
+            new_file_id,
+            None,
+            InvoiceLineMatchStatus.MANUAL,
+            (
+                InvoiceLineMatchStatus.AUTO,
+                InvoiceLineMatchStatus.PENDING,
+                InvoiceLineMatchStatus.UNMATCHED,
+            ),
+        )
+        if not updated:
+            return jsonify({"ok": False, "reason": "conflict"}), 409
         with db_cursor() as cur:
-            cur.execute(
-                "UPDATE invoice_lines SET matched_file_id=%s, match_status='manual' WHERE id=%s",
-                (new_file_id, line_id),
-            )
             cur.execute(
                 (
                     "INSERT INTO invoice_line_history (invoice_line_id, action, performed_by, old_matched_file_id, new_matched_file_id, reason) "
