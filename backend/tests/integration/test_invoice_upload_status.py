@@ -1,11 +1,25 @@
 import io
 import json
+import sys
+import types
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
 from flask import Flask
+
+if 'mysql' not in sys.modules:
+    mysql_pkg = types.ModuleType('mysql')
+    mysql_connector = types.ModuleType('mysql.connector')
+
+    def _stub_connect(*args, **kwargs):
+        raise RuntimeError('mysql connector stub is not available in tests')
+
+    mysql_connector.connect = _stub_connect
+    mysql_pkg.connector = mysql_connector
+    sys.modules['mysql'] = mysql_pkg
+    sys.modules['mysql.connector'] = mysql_connector
 
 
 class FakeDB:
@@ -108,6 +122,10 @@ class FakeDB:
                 "status": status,
                 "metadata_json": metadata_json,
             }
+        elif statement.startswith("update invoice_documents set metadata_json="):
+            metadata_json, doc_id = params
+            if doc_id in self.invoice_documents:
+                self.invoice_documents[doc_id]["metadata_json"] = metadata_json
         elif statement.startswith("update invoice_documents set status="):
             status, metadata_json, doc_id = params
             if doc_id in self.invoice_documents:
@@ -119,6 +137,10 @@ class FakeDB:
             self._results = [
                 (doc["status"], doc["metadata_json"])
             ] if doc else []
+        elif statement.startswith("select metadata_json from invoice_documents"):
+            doc_id = params[0]
+            doc = self.invoice_documents.get(doc_id)
+            self._results = [(doc["metadata_json"],)] if doc else []
         elif statement.startswith("select count(1), sum(case when match_status") and "from invoice_lines" in statement:
             invoice_id = params[0]
             lines = [ln for ln in self.invoice_lines if ln["invoice_id"] == invoice_id]
@@ -177,6 +199,30 @@ class FakeDB:
 def app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Flask:
     monkeypatch.setenv("DB_AUTO_MIGRATE", "0")
     monkeypatch.setenv("STORAGE_DIR", str(tmp_path / "storage"))
+
+    class _LimiterStub:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def limit(self, *args: Any, **kwargs: Any):
+            def decorator(func):
+                return func
+
+            return decorator
+
+        def init_app(self, app: Flask) -> None:  # type: ignore[name-defined]
+            return None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "flask_limiter",
+        types.SimpleNamespace(Limiter=lambda *args, **kwargs: _LimiterStub()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "flask_limiter.util",
+        types.SimpleNamespace(get_remote_address=lambda *args, **kwargs: "127.0.0.1"),
+    )
     from api.app import app as flask_app
     return flask_app
 
@@ -194,6 +240,7 @@ def _patch_db(monkeypatch: pytest.MonkeyPatch, fake: FakeDB) -> None:
 
 def _stub_tasks(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     from api import reconciliation_firstcard as module
+    from services import tasks as tasks_module
 
     calls: list[str] = []
 
@@ -202,6 +249,8 @@ def _stub_tasks(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             calls.append(file_id)
 
     monkeypatch.setattr(module, "process_ocr", StubTask())
+    monkeypatch.setattr(tasks_module, "_maybe_advance_invoice_from_file", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_set_invoice_metadata_field", lambda *args, **kwargs: None)
     return calls
 
 
