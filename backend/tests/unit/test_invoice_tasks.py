@@ -2,6 +2,21 @@ import json
 
 import pytest
 
+import sys
+import types
+
+if 'mysql' not in sys.modules:
+    mysql_pkg = types.ModuleType('mysql')
+    mysql_connector = types.ModuleType('mysql.connector')
+
+    def _stub_connect(*args, **kwargs):
+        raise RuntimeError('mysql connector stub is not available in tests')
+
+    mysql_connector.connect = _stub_connect
+    mysql_pkg.connector = mysql_connector
+    sys.modules['mysql'] = mysql_pkg
+    sys.modules['mysql.connector'] = mysql_connector
+
 from services import tasks
 from services.invoice_status import InvoiceProcessingStatus
 

@@ -9,6 +9,18 @@ from typing import Any, Dict, List
 import pytest
 from flask import Flask
 
+if 'mysql' not in sys.modules:
+    mysql_pkg = types.ModuleType('mysql')
+    mysql_connector = types.ModuleType('mysql.connector')
+
+    def _stub_connect(*args, **kwargs):
+        raise RuntimeError('mysql connector stub is not available in tests')
+
+    mysql_connector.connect = _stub_connect
+    mysql_pkg.connector = mysql_connector
+    sys.modules['mysql'] = mysql_pkg
+    sys.modules['mysql.connector'] = mysql_connector
+
 
 class FakeDB:
     """In-memory simulation of the limited SQL used by the invoice endpoints."""
