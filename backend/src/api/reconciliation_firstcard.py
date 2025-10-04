@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import uuid
 import base64
@@ -16,6 +17,7 @@ from api.ingest import (  # type: ignore
     DuplicateFileError,
     _hash_exists,
     _insert_unified_file,
+    _cleanup_paths,
     _update_other_data,
 )
 from services.file_detection import detect_file
@@ -229,11 +231,15 @@ def upload_invoice() -> Any:
     }
 
     page_refs: list[dict[str, Any]] = []
+    cleanup_paths: set[Path] = set()
 
     try:
         if detection.kind == "pdf":
             pages = pdf_to_png_pages(data, fs.base / "invoices", invoice_id, dpi=300)
+            cleanup_paths = {page.path for page in pages}
             if not pages:
+                _cleanup_paths(cleanup_paths)
+                cleanup_paths.clear()
                 return jsonify({"error": "empty_pdf"}), 400
 
             _insert_unified_file(
@@ -261,6 +267,7 @@ def upload_invoice() -> Any:
                 page_number = int(getattr(page, "index", 0)) + 1
                 page_hash = hashlib.sha256(page.bytes).hexdigest()
                 stored_name = f"page-{page_number:04d}.png"
+                original_path = page.path
                 _insert_unified_file(
                     file_id=page_id,
                     file_type="invoice_page",
@@ -280,7 +287,9 @@ def upload_invoice() -> Any:
                         "source": "invoice_upload",
                     },
                 )
-                fs.save(page_id, stored_name, page.bytes)
+                stored_path = fs.adopt(page_id, stored_name, original_path)
+                cleanup_paths.discard(original_path)
+                page.path = stored_path
                 _queue_ocr(page_id)
                 page_refs.append({"file_id": page_id, "page_number": page_number})
 
@@ -293,6 +302,7 @@ def upload_invoice() -> Any:
                     "source": "invoice_upload",
                 },
             )
+            cleanup_paths.clear()
 
         elif detection.kind == "image":
             _insert_unified_file(
@@ -319,8 +329,10 @@ def upload_invoice() -> Any:
             return jsonify({"error": "unsupported_file_type"}), 400
 
     except DuplicateFileError:
+        _cleanup_paths(cleanup_paths)
         return jsonify({"error": "duplicate_file"}), 409
     except Exception as exc:
+        _cleanup_paths(cleanup_paths)
         return jsonify({"error": "upload_failed", "details": str(exc)}), 500
 
     metadata["page_ids"] = [ref["file_id"] for ref in page_refs]
