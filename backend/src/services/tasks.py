@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 try:
     from services.db.connection import db_cursor
@@ -244,6 +244,126 @@ def _get_file_type(file_id: str) -> Optional[str]:
     except Exception:
         return None
     return None
+
+
+_INVOICE_OCR_COMPLETE_STATUSES = {
+    "ocr_done",
+    "ready_for_matching",
+    "matching_completed",
+    "completed",
+}
+
+
+def _get_invoice_parent_id(file_id: str, file_type: Optional[str]) -> Optional[str]:
+    ft = (file_type or "").lower()
+    if ft == "invoice":
+        return file_id
+    if ft != "invoice_page":
+        return None
+    if db_cursor is None:
+        return None
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT original_file_id FROM unified_files WHERE id=%s AND file_type='invoice_page'",
+                (file_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            (original_file_id,) = row
+            if not original_file_id:
+                return None
+            cur.execute("SELECT file_type FROM unified_files WHERE id=%s", (original_file_id,))
+            parent = cur.fetchone()
+            parent_type = (parent[0] if parent else None) or ""
+            if parent_type.lower() == "invoice":
+                return str(original_file_id)
+    except Exception:
+        return None
+    return None
+
+
+def _invoice_page_progress(invoice_id: str) -> Tuple[int, int]:
+    if db_cursor is None:
+        return (0, 0)
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, file_type, ai_status
+                  FROM unified_files
+                 WHERE original_file_id=%s AND file_type='invoice_page'
+                """,
+                (invoice_id,),
+            )
+            rows = cur.fetchall() or []
+            total_pages = len(rows)
+            completed_pages = sum(1 for _, _, status in rows if status in _INVOICE_OCR_COMPLETE_STATUSES)
+            if total_pages == 0:
+                cur.execute("SELECT ai_status FROM unified_files WHERE id=%s", (invoice_id,))
+                row = cur.fetchone()
+                status = row[0] if row else None
+                total_pages = 1
+                completed_pages = 1 if status in _INVOICE_OCR_COMPLETE_STATUSES else 0
+            return completed_pages, total_pages
+    except Exception:
+        return (0, 0)
+
+
+def _enqueue_invoice_ai_extraction(invoice_id: str) -> None:
+    try:
+        if hasattr(process_invoice_ai_extraction, "delay"):
+            process_invoice_ai_extraction.delay(invoice_id)  # type: ignore[attr-defined]
+        else:
+            process_invoice_ai_extraction(invoice_id)
+    except Exception:
+        pass
+
+
+def _enqueue_invoice_matching(invoice_id: str) -> None:
+    try:
+        if hasattr(process_invoice_matching, "delay"):
+            process_invoice_matching.delay(invoice_id)  # type: ignore[attr-defined]
+        else:
+            process_invoice_matching(invoice_id)
+    except Exception:
+        pass
+
+
+def _fail_invoice_processing(invoice_id: Optional[str], error_message: Optional[str]) -> None:
+    if not invoice_id:
+        return
+    transitioned = transition_processing_status(
+        invoice_id,
+        InvoiceProcessingStatus.FAILED,
+        (
+            InvoiceProcessingStatus.OCR_PENDING,
+            InvoiceProcessingStatus.UPLOADED,
+            InvoiceProcessingStatus.OCR_DONE,
+            InvoiceProcessingStatus.AI_PROCESSING,
+        ),
+    )
+    if transitioned:
+        transition_document_status(
+            invoice_id,
+            InvoiceDocumentStatus.FAILED,
+            (
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.MATCHING,
+                InvoiceDocumentStatus.PARTIALLY_MATCHED,
+                InvoiceDocumentStatus.MATCHED,
+            ),
+        )
+    _history(
+        invoice_id,
+        job="invoice_ocr",
+        status="error",
+        ai_stage_name="Invoice-OCRFailed",
+        log_text="Invoice OCR processing failed",
+        error_message=error_message,
+        provider="paddleocr",
+    )
 
 
 def _collect_text_hints(file_id: str) -> str:
@@ -769,6 +889,19 @@ def process_ocr(file_id: str) -> dict[str, Any]:
 
     start_time = time.time()
 
+    file_type = _get_file_type(file_id)
+    invoice_id = _get_invoice_parent_id(file_id, file_type)
+    if invoice_id:
+        transition_processing_status(
+            invoice_id,
+            InvoiceProcessingStatus.OCR_PENDING,
+            (
+                InvoiceProcessingStatus.UPLOADED,
+                InvoiceProcessingStatus.OCR_PENDING,
+                InvoiceProcessingStatus.OCR_DONE,
+            ),
+        )
+
     # Run real OCR
     result: dict[str, Any] | None = None
     error_msg: str | None = None
@@ -807,18 +940,60 @@ def process_ocr(file_id: str) -> dict[str, Any]:
         if detected:
             log_parts.append(f"detected: {', '.join(detected)}")
 
+        history_job = "invoice_ocr" if invoice_id else "ocr"
+        stage_name = "Invoice-OCRPage" if invoice_id else "OCR-TextExtraction"
         _history(
             file_id,
-            job="ocr",
+            job=history_job,
             status="success",
-            ai_stage_name="OCR-TextExtraction",
+            ai_stage_name=stage_name,
             log_text="; ".join(log_parts),
             confidence=None,
             processing_time_ms=elapsed,
             provider="paddleocr",
         )
 
-        # Only continue to AI pipeline if OCR succeeded
+        if invoice_id:
+            completed_pages, total_pages = _invoice_page_progress(invoice_id)
+            if total_pages and completed_pages >= total_pages:
+                transitioned = transition_processing_status(
+                    invoice_id,
+                    InvoiceProcessingStatus.OCR_DONE,
+                    (
+                        InvoiceProcessingStatus.OCR_PENDING,
+                        InvoiceProcessingStatus.UPLOADED,
+                    ),
+                )
+                if transitioned:
+                    _history(
+                        invoice_id,
+                        job="invoice_ocr",
+                        status="success",
+                        ai_stage_name="Invoice-OCRComplete",
+                        log_text=f"Completed OCR for invoice: pages={completed_pages}",
+                        processing_time_ms=elapsed,
+                        provider="paddleocr",
+                    )
+                    transition_document_status(
+                        invoice_id,
+                        InvoiceDocumentStatus.MATCHING,
+                        (
+                            InvoiceDocumentStatus.IMPORTED,
+                            InvoiceDocumentStatus.MATCHING,
+                        ),
+                    )
+                _enqueue_invoice_ai_extraction(invoice_id)
+            return {
+                "file_id": file_id,
+                "status": "ocr_done",
+                "ok": ok,
+                "real": True,
+                "invoice_id": invoice_id,
+                "pages_completed": completed_pages,
+                "pages_total": total_pages,
+            }
+
+        # Only continue to AI pipeline if OCR succeeded for receipts
         try:
             process_ai_pipeline.delay(file_id)  # type: ignore[attr-defined]
         except Exception:
@@ -833,17 +1008,23 @@ def process_ocr(file_id: str) -> dict[str, Any]:
         ok = _update_file_status(file_id, status="manual_review", confidence=0.0)
         elapsed = int((time.time() - start_time) * 1000)
 
+        history_job = "invoice_ocr" if invoice_id else "ocr"
+        stage_name = "Invoice-OCRPage" if invoice_id else "OCR-TextExtraction"
+
         _history(
             file_id,
-            job="ocr",
+            job=history_job,
             status="error",
-            ai_stage_name="OCR-TextExtraction",
+            ai_stage_name=stage_name,
             log_text="OCR processing failed or returned no results",
             error_message=error_msg or "OCR returned no results",
             confidence=0.0,
             processing_time_ms=elapsed,
             provider="paddleocr",
         )
+
+        if invoice_id:
+            _fail_invoice_processing(invoice_id, error_msg)
 
         return {"file_id": file_id, "status": "manual_review", "ok": False, "error": error_msg or "OCR failed"}
 
@@ -1060,8 +1241,8 @@ def process_accounting_proposal(file_id: str) -> dict[str, Any]:
 
 
 @celery_app.task
-@track_task("process_invoice_document")
-def process_invoice_document(document_id: str) -> dict[str, Any]:
+@track_task("process_invoice_ai_extraction")
+def process_invoice_ai_extraction(document_id: str) -> dict[str, Any]:
     transitioned = transition_processing_status(
         document_id,
         InvoiceProcessingStatus.AI_PROCESSING,
@@ -1072,7 +1253,13 @@ def process_invoice_document(document_id: str) -> dict[str, Any]:
         ),
     )
     if not transitioned:
-        _history(document_id, job="invoice_document", status="error", log_text="invalid_processing_state")
+        _history(
+            document_id,
+            job="invoice_ai",
+            status="error",
+            ai_stage_name="Invoice-AIExtraction",
+            log_text="Invalid processing state for invoice AI extraction",
+        )
         return {
             "document_id": document_id,
             "status": "invalid_state",
@@ -1081,7 +1268,13 @@ def process_invoice_document(document_id: str) -> dict[str, Any]:
 
     # Placeholder for AI extraction work. Once implemented this block will call
     # the dedicated invoice extraction service and populate invoice_lines.
-    _history(document_id, job="invoice_document", status="success", log_text="ai_processing_started")
+    _history(
+        document_id,
+        job="invoice_ai",
+        status="success",
+        ai_stage_name="Invoice-AIExtraction",
+        log_text="Invoice AI extraction placeholder executed",
+    )
 
     ready = transition_processing_status(
         document_id,
@@ -1092,8 +1285,12 @@ def process_invoice_document(document_id: str) -> dict[str, Any]:
         transition_document_status(
             document_id,
             InvoiceDocumentStatus.MATCHING,
-            (InvoiceDocumentStatus.IMPORTED,),
+            (
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.MATCHING,
+            ),
         )
+        _enqueue_invoice_matching(document_id)
     return {
         "document_id": document_id,
         "status": InvoiceProcessingStatus.READY_FOR_MATCHING.value,
@@ -1102,8 +1299,8 @@ def process_invoice_document(document_id: str) -> dict[str, Any]:
 
 
 @celery_app.task
-@track_task("process_matching")
-def process_matching(statement_id: str) -> dict[str, Any]:
+@track_task("process_invoice_matching")
+def process_invoice_matching(statement_id: str) -> dict[str, Any]:
     matched = 0
     total_lines = 0
     if db_cursor is not None:
@@ -1164,12 +1361,32 @@ def process_matching(statement_id: str) -> dict[str, Any]:
             ),
         )
 
+    _history(
+        statement_id,
+        job="invoice_matching",
+        status="success",
+        ai_stage_name="Invoice-MatchingSummary",
+        log_text=f"Matched {matched} of {total_lines} invoice lines",
+    )
+
     return {
         "statement_id": statement_id,
         "matched": matched,
         "total": total_lines,
         "processing_ok": processing_ok,
     }
+
+
+import warnings
+
+def process_matching(*args, **kwargs):
+    warnings.warn(
+        "process_matching is deprecated and will be removed in a future release. "
+        "Please use process_invoice_matching instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return process_invoice_matching(*args, **kwargs)
 
 
 @celery_app.task
