@@ -19,6 +19,12 @@ from services.ocr import run_ocr
 from services.enrichment import enrich_receipt, provider_from_env
 from services.validation import validate_receipt
 from services.accounting import propose_accounting_entries
+from services.invoice_status import (
+    InvoiceDocumentStatus,
+    InvoiceProcessingStatus,
+    transition_document_status,
+    transition_processing_status,
+)
 from models.accounting import AccountingRule
 from models.ai_processing import (
     AccountingClassificationRequest,
@@ -1056,27 +1062,114 @@ def process_accounting_proposal(file_id: str) -> dict[str, Any]:
 @celery_app.task
 @track_task("process_invoice_document")
 def process_invoice_document(document_id: str) -> dict[str, Any]:
-    ok = _update_file_status(document_id, status="document_processed")
-    _history(document_id, job="invoice_document", status="success" if ok else "error")
-    return {"document_id": document_id, "status": "document_processed", "ok": ok}
+    transitioned = transition_processing_status(
+        document_id,
+        InvoiceProcessingStatus.AI_PROCESSING,
+        (
+            InvoiceProcessingStatus.OCR_DONE,
+            InvoiceProcessingStatus.OCR_PENDING,
+            InvoiceProcessingStatus.UPLOADED,
+        ),
+    )
+    if not transitioned:
+        _history(document_id, job="invoice_document", status="error", log_text="invalid_processing_state")
+        return {
+            "document_id": document_id,
+            "status": "invalid_state",
+            "ok": False,
+        }
+
+    # Placeholder for AI extraction work. Once implemented this block will call
+    # the dedicated invoice extraction service and populate invoice_lines.
+    _history(document_id, job="invoice_document", status="success", log_text="ai_processing_started")
+
+    ready = transition_processing_status(
+        document_id,
+        InvoiceProcessingStatus.READY_FOR_MATCHING,
+        (InvoiceProcessingStatus.AI_PROCESSING,),
+    )
+    if ready:
+        transition_document_status(
+            document_id,
+            InvoiceDocumentStatus.MATCHING,
+            (InvoiceDocumentStatus.IMPORTED,),
+        )
+    return {
+        "document_id": document_id,
+        "status": InvoiceProcessingStatus.READY_FOR_MATCHING.value,
+        "ok": ready,
+    }
 
 
 @celery_app.task
 @track_task("process_matching")
 def process_matching(statement_id: str) -> dict[str, Any]:
     matched = 0
-    file_id = None
+    total_lines = 0
     if db_cursor is not None:
         try:
             with db_cursor() as cur:
-                cur.execute("SELECT file_id FROM ai_processing_queue WHERE id=%s", (statement_id,))
+                cur.execute(
+                    (
+                        "SELECT COUNT(*), SUM(CASE WHEN match_status IN ('auto','manual','confirmed') "
+                        "THEN 1 ELSE 0 END) FROM invoice_lines WHERE invoice_id=%s"
+                    ),
+                    (statement_id,),
+                )
                 row = cur.fetchone()
                 if row:
-                    (file_id,) = row
-                    _history(file_id, job="firstcard_match", status="success")
+                    total_lines = int(row[0] or 0)
+                    matched = int(row[1] or 0)
         except Exception:
-            pass
-    return {"statement_id": statement_id, "file_id": file_id, "matched": matched}
+            total_lines = 0
+            matched = 0
+
+    processing_ok = transition_processing_status(
+        statement_id,
+        InvoiceProcessingStatus.MATCHING_COMPLETED,
+        (
+            InvoiceProcessingStatus.READY_FOR_MATCHING,
+            InvoiceProcessingStatus.AI_PROCESSING,
+        ),
+    )
+
+    if matched == 0:
+        transition_document_status(
+            statement_id,
+            InvoiceDocumentStatus.IMPORTED,
+            (
+                InvoiceDocumentStatus.MATCHING,
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.PARTIALLY_MATCHED,
+            ),
+        )
+    elif total_lines and matched < total_lines:
+        transition_document_status(
+            statement_id,
+            InvoiceDocumentStatus.PARTIALLY_MATCHED,
+            (
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.MATCHING,
+                InvoiceDocumentStatus.MATCHED,
+            ),
+        )
+    else:
+        transition_document_status(
+            statement_id,
+            InvoiceDocumentStatus.MATCHED,
+            (
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.MATCHING,
+                InvoiceDocumentStatus.PARTIALLY_MATCHED,
+            ),
+        )
+
+    return {
+        "statement_id": statement_id,
+        "matched": matched,
+        "total": total_lines,
+        "processing_ok": processing_ok,
+    }
 
 
 @celery_app.task
