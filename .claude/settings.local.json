@@ -38,7 +38,10 @@
       "Bash(docker images:*)",
       "Bash(docker-compose stop:*)",
       "Bash(docker-compose rm:*)",
-      "Bash(gh pr list:*)"
+      "Bash(gh pr list:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(docker-compose:*)",
+      "Bash(mysql:*)"
     ],
     "deny": [],
     "ask": []
