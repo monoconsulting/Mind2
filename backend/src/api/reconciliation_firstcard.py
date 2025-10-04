@@ -442,7 +442,7 @@ def invoice_lines(invoice_id: str) -> Any:
         offset = 0
 
     if db_cursor is None:  # pragma: no cover
-        return jsonify({"items": [], "total": 0, "limit": limit, "offset": offset}), 200
+        return jsonify({"items": [], "total": 0, "matched": 0, "limit": limit, "offset": offset, "next_offset": None}), 200
 
     total = 0
     matched = 0
