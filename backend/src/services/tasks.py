@@ -1360,9 +1360,16 @@ def process_invoice_matching(statement_id: str) -> dict[str, Any]:
     }
 
 
-process_matching = process_invoice_matching
+import warnings
 
-
+def process_matching(*args, **kwargs):
+    warnings.warn(
+        "process_matching is deprecated and will be removed in a future release. "
+        "Please use process_invoice_matching instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return process_invoice_matching(*args, **kwargs)
 @celery_app.task
 def hello(name):
     print(f"Hello, {name}!")
