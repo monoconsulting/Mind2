@@ -5,6 +5,8 @@ import {
   FiRefreshCw,
   FiEye,
   FiX,
+  FiEdit2,
+  FiSave,
   FiCheckCircle,
   FiXCircle,
   FiMapPin,
@@ -51,6 +53,91 @@ function formatDate(value) {
     return parsed.toLocaleDateString('sv-SE')
   } catch (error) {
     return typeof value === 'string' ? value : '-'
+  }
+}
+
+function normaliseFieldId(value) {
+  if (!value) {
+    return ''
+  }
+  return String(value)
+    .toLowerCase()
+    .replace(/receipt[_\.]/g, '')
+    .replace(/unified_files[_\.]/g, '')
+    .replace(/line_items/g, 'items')
+    .replace(/accounting_proposals/g, 'proposals')
+    .replace(/[^a-z0-9]/g, '')
+}
+
+function resolveBoxField(boxes, candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return ''
+  }
+  if (!Array.isArray(boxes) || boxes.length === 0) {
+    return candidates[0]
+  }
+  const normalised = candidates.map((candidate) => normaliseFieldId(candidate))
+  const match = boxes.find((box) => normalised.includes(normaliseFieldId(box.field)))
+  return match?.field || candidates[0]
+}
+
+function decorateModalPayload(payload) {
+  if (!payload) {
+    return payload
+  }
+  const items = Array.isArray(payload.items) ? payload.items : []
+  const proposals = Array.isArray(payload.proposals) ? payload.proposals : []
+  const itemCount = items.length || 1
+  const decoratedProposals = proposals.map((entry, index) => {
+    const itemIndex = typeof entry.item_index === 'number' ? entry.item_index : Math.min(index, Math.max(itemCount - 1, 0))
+    return { ...entry, item_index: itemIndex }
+  })
+  return { ...payload, items, proposals: decoratedProposals }
+}
+
+function prepareDraft(payload) {
+  if (!payload) {
+    return { receipt: {}, items: [], proposals: [] }
+  }
+  const receipt = payload.receipt || {}
+  const items = (payload.items || []).map((item) => ({
+    id: item.id ?? null,
+    article_id: item.article_id || '',
+    name: item.name || item.description || '',
+    number: item.number != null ? String(item.number) : '',
+    item_price_ex_vat: item.item_price_ex_vat != null ? String(item.item_price_ex_vat) : '',
+    item_price_inc_vat: item.item_price_inc_vat != null ? String(item.item_price_inc_vat) : '',
+    item_total_price_ex_vat: item.item_total_price_ex_vat != null ? String(item.item_total_price_ex_vat) : '',
+    item_total_price_inc_vat: item.item_total_price_inc_vat != null ? String(item.item_total_price_inc_vat) : '',
+    vat: item.vat != null ? String(item.vat) : '',
+    vat_percentage: item.vat_percentage != null ? String(item.vat_percentage) : '',
+    currency: item.currency || 'SEK',
+  }))
+  const itemCount = Math.max(items.length, 1)
+  const proposals = (payload.proposals || []).map((entry, index) => ({
+    id: entry.id ?? null,
+    account: entry.account || entry.account_code || '',
+    debit: entry.debit != null ? String(entry.debit) : '',
+    credit: entry.credit != null ? String(entry.credit) : '',
+    vat_rate: entry.vat_rate != null ? String(entry.vat_rate) : '',
+    notes: entry.notes || '',
+    item_index: typeof entry.item_index === 'number' ? entry.item_index : Math.min(index, itemCount - 1),
+  }))
+  return {
+    receipt: {
+      merchant: receipt.merchant || receipt.merchant_name || '',
+      orgnr: receipt.orgnr || '',
+      purchase_datetime: receipt.purchase_datetime || receipt.purchase_date || '',
+      gross_amount: receipt.gross_amount != null ? String(receipt.gross_amount) : '',
+      net_amount: receipt.net_amount != null ? String(receipt.net_amount) : '',
+      expense_type: receipt.expense_type || '',
+      ai_status: receipt.ai_status || receipt.status || '',
+      ai_confidence: receipt.ai_confidence != null ? String(receipt.ai_confidence) : '',
+      tags: Array.isArray(receipt.tags) ? receipt.tags.join(', ') : receipt.tags || '',
+      ocr_raw: receipt.ocr_raw || '',
+    },
+    items,
+    proposals,
   }
 }
 
@@ -344,6 +431,564 @@ function ReceiptPreview({ receipt, onPreview, onCache }) {
   );
 }
 
+function ReceiptPreviewModal({ open, receipt, previewImage, onClose, onReceiptUpdate }) {
+  const [loading, setLoading] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const [payload, setPayload] = React.useState(null);
+  const [draft, setDraft] = React.useState(null);
+  const [editing, setEditing] = React.useState(false);
+  const [hoverField, setHoverField] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!open) {
+      setPayload(null);
+      setDraft(null);
+      setEditing(false);
+      setHoverField(null);
+      setError(null);
+      setLoading(false);
+      setSaving(false);
+    }
+  }, [open]);
+
+  React.useEffect(() => {
+    if (!open || !receipt?.id) {
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setEditing(false);
+    setHoverField(null);
+
+    const fetchData = async () => {
+      try {
+        const res = await api.fetch(`/ai/api/receipts/${receipt.id}/modal`);
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const json = decorateModalPayload(await res.json());
+        if (cancelled) {
+          return;
+        }
+        setPayload(json);
+        setDraft(prepareDraft(json));
+        setLoading(false);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchData();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, receipt?.id]);
+
+  if (!open || !receipt) {
+    return null;
+  }
+
+  const boxes = payload?.boxes || [];
+  const resolveCandidates = React.useCallback(
+    (candidates) => resolveBoxField(boxes, (candidates || []).filter(Boolean)),
+    [boxes]
+  );
+
+  const matchHighlight = React.useCallback(
+    (key) => {
+      if (!hoverField || !key) {
+        return '';
+      }
+      return normaliseFieldId(hoverField) === normaliseFieldId(key) ? 'highlighted' : 'muted';
+    },
+    [hoverField]
+  );
+
+  const highlightReceiptField = React.useCallback(
+    (field, extras = []) => resolveCandidates([field, `receipt.${field}`, `unified_files.${field}`, ...extras]),
+    [resolveCandidates]
+  );
+
+  const highlightItemField = React.useCallback(
+    (index, field, extras = []) =>
+      resolveCandidates([
+        `items[${index}].${field}`,
+        `line_items[${index}].${field}`,
+        `receipt_items[${index}].${field}`,
+        ...extras,
+      ]),
+    [resolveCandidates]
+  );
+
+  const highlightProposalField = React.useCallback(
+    (index, field, extras = []) =>
+      resolveCandidates(
+        [
+          `accounting_proposals[${index}].${field}`,
+          field === 'account' ? `accounting_proposals[${index}].account_code` : null,
+          `proposals[${index}].${field}`,
+          ...extras,
+        ].filter(Boolean)
+      ),
+    [resolveCandidates]
+  );
+
+  const receiptData = payload?.receipt || {};
+  const receiptDraft = draft?.receipt || {};
+
+  const itemsSource = React.useMemo(
+    () => (editing && draft ? draft.items : payload?.items || []),
+    [editing, draft, payload]
+  );
+
+  const proposalsSource = React.useMemo(
+    () => (editing && draft ? draft.proposals : payload?.proposals || []),
+    [editing, draft, payload]
+  );
+
+  const proposalsByItem = React.useMemo(() => {
+    if (!itemsSource.length) {
+      return [];
+    }
+    const groups = itemsSource.map(() => []);
+    proposalsSource.forEach((entry, index) => {
+      const targetIndex =
+        typeof entry.item_index === 'number' && entry.item_index >= 0 && entry.item_index < groups.length
+          ? entry.item_index
+          : Math.min(groups.length - 1, Math.max(index, 0));
+      groups[targetIndex].push({ ...entry, _globalIndex: index });
+    });
+    return groups;
+  }, [itemsSource, proposalsSource]);
+
+  const updateReceiptDraft = (field, value) => {
+    setDraft((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      return { ...prev, receipt: { ...prev.receipt, [field]: value } };
+    });
+  };
+
+  const updateItemDraft = (index, field, value) => {
+    setDraft((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      const nextItems = prev.items.map((item, idx) => (idx === index ? { ...item, [field]: value } : item));
+      return { ...prev, items: nextItems };
+    });
+  };
+
+  const updateProposalDraft = (index, field, value) => {
+    setDraft((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      const next = prev.proposals.map((proposal, idx) => {
+        if (idx !== index) {
+          return proposal;
+        }
+        if (field === 'item_index') {
+          return { ...proposal, item_index: Number(value) };
+        }
+        return { ...proposal, [field]: value };
+      });
+      return { ...prev, proposals: next };
+    });
+  };
+
+  const handleToggleEdit = () => {
+    if (!payload) {
+      return;
+    }
+    if (editing) {
+      setDraft(prepareDraft(payload));
+      setEditing(false);
+    } else {
+      setDraft(prepareDraft(payload));
+      setEditing(true);
+    }
+    setHoverField(null);
+    setError(null);
+  };
+
+  const handleSave = async () => {
+    if (!receipt?.id || !draft) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    const serialisedItems = draft.items.map((item) => ({
+      article_id: item.article_id || '',
+      name: item.name || '',
+      number: item.number === '' ? null : Number(item.number),
+      item_price_ex_vat: item.item_price_ex_vat,
+      item_price_inc_vat: item.item_price_inc_vat,
+      item_total_price_ex_vat: item.item_total_price_ex_vat,
+      item_total_price_inc_vat: item.item_total_price_inc_vat,
+      vat: item.vat,
+      vat_percentage: item.vat_percentage,
+      currency: item.currency || 'SEK',
+    }));
+    const serialisedProposals = draft.proposals.map((entry) => ({
+      account: entry.account || '',
+      debit: entry.debit,
+      credit: entry.credit,
+      vat_rate: entry.vat_rate,
+      notes: entry.notes,
+      item_index: entry.item_index,
+    }));
+    const body = {
+      receipt: {
+        merchant: receiptDraft.merchant,
+        orgnr: receiptDraft.orgnr,
+        purchase_datetime: receiptDraft.purchase_datetime,
+        gross_amount: receiptDraft.gross_amount,
+        net_amount: receiptDraft.net_amount,
+        expense_type: receiptDraft.expense_type,
+        ai_status: receiptDraft.ai_status,
+      },
+      items: serialisedItems,
+      proposals: serialisedProposals,
+    };
+
+    try {
+      const res = await api.fetch(`/ai/api/receipts/${receipt.id}/modal`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const json = await res.json();
+      const refreshed = decorateModalPayload(json.data || {});
+      const nextPayload = {
+        ...(payload || {}),
+        receipt: refreshed.receipt || payload?.receipt || {},
+        items: refreshed.items || [],
+        proposals: refreshed.proposals || [],
+      };
+      setPayload(nextPayload);
+      setDraft(prepareDraft(nextPayload));
+      setEditing(false);
+      setHoverField(null);
+      if (refreshed.receipt && typeof onReceiptUpdate === 'function') {
+        onReceiptUpdate(refreshed.receipt);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleBackdrop = (event) => {
+    if (event.target === event.currentTarget && !saving) {
+      onClose();
+    }
+  };
+
+  const baseImageSrc = previewImage || `/ai/api/receipts/${receipt.id}/image?size=preview&rotate=portrait`;
+
+  const leftFields = [
+    { key: 'merchant', label: 'Företag', highlight: highlightReceiptField('merchant', ['merchant_name']) },
+    { key: 'orgnr', label: 'Organisationsnummer', highlight: highlightReceiptField('orgnr') },
+    { key: 'purchase_datetime', label: 'Köpdatum', highlight: highlightReceiptField('purchase_datetime', ['purchase_date']) },
+    { key: 'gross_amount', label: 'Belopp ink. moms', highlight: highlightReceiptField('gross_amount') },
+    { key: 'net_amount', label: 'Belopp ex. moms', highlight: highlightReceiptField('net_amount') },
+    { key: 'expense_type', label: 'Utgiftstyp', highlight: highlightReceiptField('expense_type') },
+    { key: 'ai_status', label: 'AI-status', highlight: highlightReceiptField('ai_status', ['status']) },
+  ];
+
+  const additionalInfo = [
+    {
+      key: 'ai_confidence',
+      label: 'AI-säkerhet',
+      highlight: highlightReceiptField('ai_confidence'),
+      value: receiptData.ai_confidence != null ? `${Number(receiptData.ai_confidence).toFixed(2)}` : '-',
+    },
+    {
+      key: 'tags',
+      label: 'Taggar',
+      highlight: highlightReceiptField('tags'),
+      value: Array.isArray(receiptData.tags) ? receiptData.tags.join(', ') : receiptDraft.tags || '-',
+    },
+  ];
+
+  const ocrFieldKey = highlightReceiptField('ocr_raw', ['ocr']);
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-label={`Förhandsgranskning kvitto ${receipt.id}`} onClick={handleBackdrop}>
+      <div className="modal modal-xxl receipt-preview-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <h3>Förhandsgranska kvitto</h3>
+            <p className="card-subtitle">
+              {receiptData.merchant || receipt.merchant || 'Kvitto'} · {formatDate(receiptData.purchase_datetime)}
+            </p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Stäng förhandsgranskning" disabled={saving}>
+            <FiX />
+          </button>
+        </div>
+        <div className="modal-body receipt-modal-body">
+          {loading ? (
+            <div className="receipt-modal-loading">
+              <div className="loading-inline">
+                <div className="loading-spinner" />
+                <span>Laddar kvitto...</span>
+              </div>
+            </div>
+          ) : error ? (
+            <div className="alert alert-error">
+              <FiXCircle />
+              <span>{error}</span>
+            </div>
+          ) : !payload ? (
+            <div className="receipt-modal-loading">Ingen data tillgänglig</div>
+          ) : (
+            <div className="receipt-modal-content">
+              <div className="receipt-modal-column receipt-modal-left">
+                <div className="receipt-modal-section">
+                  <h4>Grunddata</h4>
+                  {leftFields.map((field) => {
+                    const highlight = field.highlight;
+                    return (
+                      <div
+                        key={field.key}
+                        className={`receipt-modal-field ${matchHighlight(highlight)}`}
+                        onMouseEnter={() => setHoverField(highlight)}
+                        onMouseLeave={() => setHoverField(null)}
+                      >
+                        <label className="field-label" htmlFor={`receipt-${field.key}`}>{field.label}</label>
+                        {editing ? (
+                          <input
+                            id={`receipt-${field.key}`}
+                            className="dm-input"
+                            value={receiptDraft[field.key] ?? ''}
+                            onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
+                            disabled={saving}
+                          />
+                        ) : field.key === 'gross_amount' || field.key === 'net_amount' ? (
+                          <div className="field-value">{formatCurrency(Number(receiptData[field.key] || 0))}</div>
+                        ) : field.key === 'purchase_datetime' ? (
+                          <div className="field-value">{formatDate(receiptData.purchase_datetime)}</div>
+                        ) : (
+                          <div className="field-value">{receiptData[field.key] || receiptDraft[field.key] || '-'}</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="receipt-modal-section">
+                  <h4>Status & metadata</h4>
+                  {additionalInfo.map((info) => (
+                    <div
+                      key={info.key}
+                      className={`receipt-modal-field ${matchHighlight(info.highlight)}`}
+                      onMouseEnter={() => setHoverField(info.highlight)}
+                      onMouseLeave={() => setHoverField(null)}
+                    >
+                      <div className="field-label">{info.label}</div>
+                      <div className="field-value">{info.value}</div>
+                    </div>
+                  ))}
+                </div>
+                <div
+                  className={`receipt-modal-section ocr-section ${matchHighlight(ocrFieldKey)}`}
+                  onMouseEnter={() => setHoverField(ocrFieldKey)}
+                  onMouseLeave={() => setHoverField(null)}
+                >
+                  <h4>OCR-text</h4>
+                  <div className="ocr-content">{receiptDraft.ocr_raw || 'Ingen OCR-data tillgänglig'}</div>
+                </div>
+              </div>
+              <div className="receipt-modal-center">
+                <div className="receipt-modal-image-wrapper">
+                  {baseImageSrc ? (
+                    <img src={baseImageSrc} alt={`Kvitto ${receipt.id}`} className="receipt-modal-image" />
+                  ) : (
+                    <div className="receipt-modal-image-fallback">Ingen bild</div>
+                  )}
+                  {boxes.map((box, index) => {
+                    const overlayKey = box.field || `box-${index}`;
+                    const toCss = (val) => {
+                      if (typeof val !== 'number') {
+                        return '0%';
+                      }
+                      if (val > 1) {
+                        return `${val}px`;
+                      }
+                      const clamped = Math.min(Math.max(val, 0), 1);
+                      return `${clamped * 100}%`;
+                    };
+                    return (
+                      <div
+                        key={`${overlayKey}-${index}`}
+                        className={`receipt-modal-overlay ${matchHighlight(overlayKey)}`}
+                        style={{
+                          top: toCss(box.y ?? box.top ?? 0),
+                          left: toCss(box.x ?? box.left ?? 0),
+                          width: toCss(box.w ?? box.width ?? 0),
+                          height: toCss(box.h ?? box.height ?? 0),
+                        }}
+                        onMouseEnter={() => setHoverField(overlayKey)}
+                        onMouseLeave={() => setHoverField(null)}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="receipt-modal-column receipt-modal-right">
+                <div className="receipt-modal-section">
+                  <h4>Varor och kontering</h4>
+                  {itemsSource.length === 0 ? (
+                    <div className="field-value muted">Inga varor registrerade</div>
+                  ) : (
+                    itemsSource.map((item, itemIndex) => (
+                      <div key={`item-${itemIndex}`} className="receipt-item-card">
+                        <div className="receipt-item-header">Rad {itemIndex + 1}</div>
+                        {['name', 'number', 'item_price_inc_vat', 'item_total_price_inc_vat', 'vat_percentage'].map((field) => {
+                          const labels = {
+                            name: 'Artikel',
+                            number: 'Antal',
+                            item_price_inc_vat: 'Pris (ink. moms)',
+                            item_total_price_inc_vat: 'Totalt (ink. moms)',
+                            vat_percentage: 'Moms %',
+                          };
+                          const highlight = highlightItemField(itemIndex, field);
+                          const value = editing && draft ? draft.items[itemIndex][field] : item[field];
+                          return (
+                            <div
+                              key={`${field}-${itemIndex}`}
+                              className={`receipt-modal-field ${matchHighlight(highlight)}`}
+                              onMouseEnter={() => setHoverField(highlight)}
+                              onMouseLeave={() => setHoverField(null)}
+                            >
+                              <div className="field-label">{labels[field]}</div>
+                              {editing ? (
+                                <input
+                                  className="dm-input"
+                                  value={value ?? ''}
+                                  onChange={(event) => updateItemDraft(itemIndex, field, event.target.value)}
+                                />
+                              ) : (
+                                <div className="field-value">{value || '-'}</div>
+                              )}
+                            </div>
+                          );
+                        })}
+                        <div className="proposal-group">
+                          <div className="proposal-group-header">Konteringsrader</div>
+                          {(proposalsByItem[itemIndex] || []).length === 0 ? (
+                            <div className="field-value muted">Inga konteringsförslag</div>
+                          ) : (
+                            proposalsByItem[itemIndex].map((proposal) => {
+                              const globalIndex = proposal._globalIndex;
+                              return (
+                                <div key={`proposal-${globalIndex}`} className="proposal-card">
+                                  {['account', 'debit', 'credit', 'vat_rate', 'notes'].map((field) => {
+                                    const labels = {
+                                      account: 'Konto',
+                                      debit: 'Debet',
+                                      credit: 'Kredit',
+                                      vat_rate: 'Moms %',
+                                      notes: 'Notering',
+                                    };
+                                    const highlight = highlightProposalField(globalIndex, field);
+                                    const value = editing && draft ? draft.proposals[globalIndex][field] : proposal[field];
+                                    return (
+                                      <div
+                                        key={`${field}-${globalIndex}`}
+                                        className={`receipt-modal-field proposal-field ${matchHighlight(highlight)}`}
+                                        onMouseEnter={() => setHoverField(highlight)}
+                                        onMouseLeave={() => setHoverField(null)}
+                                      >
+                                        <div className="field-label">{labels[field]}</div>
+                                        {editing ? (
+                                          <input
+                                            className="dm-input"
+                                            value={value ?? ''}
+                                            onChange={(event) => updateProposalDraft(globalIndex, field, event.target.value)}
+                                          />
+                                        ) : (
+                                          <div className="field-value">{value || '-'}</div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                  <div
+                                    className={`receipt-modal-field proposal-field ${matchHighlight(highlightProposalField(globalIndex, 'item_index'))}`}
+                                    onMouseEnter={() => setHoverField(highlightProposalField(globalIndex, 'item_index'))}
+                                    onMouseLeave={() => setHoverField(null)}
+                                  >
+                                    <div className="field-label">Kopplad rad</div>
+                                    {editing ? (
+                                      <select
+                                        className="dm-input"
+                                        value={draft?.proposals?.[globalIndex]?.item_index ?? itemIndex}
+                                        onChange={(event) => updateProposalDraft(globalIndex, 'item_index', Number(event.target.value))}
+                                      >
+                                        {itemsSource.map((_, idx) => (
+                                          <option key={`proposal-link-${idx}`} value={idx}>
+                                            Rad {idx + 1}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    ) : (
+                                      <div className="field-value">Rad {(proposal.item_index ?? itemIndex) + 1}</div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="modal-footer receipt-modal-footer">
+          <div className="footer-hint">Hovra över fält eller bildmarkeringar för att se kopplingarna.</div>
+          <div className="modal-footer-actions">
+            {editing ? (
+              <>
+                <button type="button" className="btn btn-secondary" onClick={handleToggleEdit} disabled={saving}>
+                  Avbryt
+                </button>
+                <button type="button" className="btn btn-primary" onClick={handleSave} disabled={saving}>
+                  <FiSave />
+                  {saving ? 'Sparar...' : 'Spara'}
+                </button>
+              </>
+            ) : (
+              <button type="button" className="btn btn-secondary" onClick={handleToggleEdit} disabled={saving || loading || !payload}>
+                <FiEdit2 />
+                Redigera
+              </button>
+            )}
+            <button type="button" className="btn btn-text" onClick={onClose} disabled={saving}>
+              Stäng
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MapModal({ open, receipt, onClose }) {
   if (!open || !receipt) {
     return null;
@@ -582,10 +1227,20 @@ export default function ReceiptsList() {
   const [searchTerm, setSearchTerm] = React.useState('')
   const [filters, setFilters] = React.useState(initialFilters)
   const [isFilterOpen, setFilterOpen] = React.useState(false)
+  const [isPreviewOpen, setPreviewOpen] = React.useState(false)
+  const [previewImage, setPreviewImage] = React.useState(null)
   const [isMapOpen, setMapOpen] = React.useState(false)
   const [isItemsOpen, setItemsOpen] = React.useState(false)
   const [selectedReceipt, setSelectedReceipt] = React.useState(null)
   const previewCache = React.useRef(new Map())
+
+  const updateReceiptInList = React.useCallback((updated) => {
+    if (!updated || !updated.id) {
+      return
+    }
+    setItems((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
+    setSelectedReceipt((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev))
+  }, [])
 
   const loadReceipts = React.useCallback(async () => {
     setLoading(true)
@@ -698,10 +1353,12 @@ export default function ReceiptsList() {
 
   const handlePreview = (receipt, previewData = null) => {
     if (!receipt) {
-      return;
+      return
     }
-    const cachedSrc = previewData?.src || previewCache.current.get(receipt.id) || null;
-    setSelectedReceipt(receipt);
+    const cachedSrc = previewData?.src || previewCache.current.get(receipt.id) || null
+    setSelectedReceipt(receipt)
+    setPreviewImage(cachedSrc)
+    setPreviewOpen(true)
   };
 
   const handleShowMap = (receipt) => {
@@ -712,6 +1369,11 @@ export default function ReceiptsList() {
   const handleShowItems = (receipt) => {
     setSelectedReceipt(receipt);
     setItemsOpen(true);
+  };
+
+  const closePreview = () => {
+    setPreviewOpen(false);
+    setPreviewImage(null);
   };
 
   const closeMap = () => {
@@ -876,6 +1538,13 @@ export default function ReceiptsList() {
 
       <Pagination page={page} totalPages={totalPages} onPrev={handlePrevPage} onNext={handleNextPage} />
 
+      <ReceiptPreviewModal
+        open={isPreviewOpen}
+        receipt={selectedReceipt}
+        previewImage={previewImage}
+        onClose={closePreview}
+        onReceiptUpdate={updateReceiptInList}
+      />
       <MapModal open={isMapOpen} receipt={selectedReceipt} onClose={closeMap} />
       <ItemsModal open={isItemsOpen} receipt={selectedReceipt} onClose={closeItems} />
     </div>

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Iterable
 
 import json
 import logging
@@ -100,14 +100,23 @@ def _fetch_saved_accounting_entries(rid: str) -> list[dict[str, Any]]:
         with db_cursor() as cur:
             cur.execute(
                 (
-                    "SELECT account_code, debit, credit, vat_rate, notes FROM ai_accounting_proposals "
+                    "SELECT id, account_code, debit, credit, vat_rate, notes FROM ai_accounting_proposals "
                     "WHERE receipt_id=%s ORDER BY id ASC"
                 ),
                 (rid,),
             )
-            for account, debit, credit, vat_rate, notes in cur.fetchall() or []:
+            for row in cur.fetchall() or []:
+                (
+                    entry_id,
+                    account,
+                    debit,
+                    credit,
+                    vat_rate,
+                    notes,
+                ) = row
                 entries.append(
                     {
+                        "id": int(entry_id) if entry_id is not None else None,
                         "account": account,
                         "debit": float(debit) if debit is not None else 0.0,
                         "credit": float(credit) if credit is not None else 0.0,
@@ -145,6 +154,279 @@ def _save_accounting_entries(rid: str, entries: list[dict[str, Any]]) -> bool:
         return True
     except Exception:
         return False
+
+
+def _fetch_receipt_details(rid: str) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "id": rid,
+        "merchant": None,
+        "orgnr": None,
+        "purchase_datetime": None,
+        "gross_amount": None,
+        "net_amount": None,
+        "ai_status": None,
+        "ai_confidence": None,
+        "expense_type": None,
+        "ocr_raw": None,
+        "tags": [],
+    }
+    if db_cursor is None:
+        return data
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                (
+                    "SELECT id, merchant_name, orgnr, purchase_datetime, gross_amount, net_amount, ai_status, "
+                    "ai_confidence, expense_type, tags, ocr_raw FROM unified_files WHERE id=%s"
+                ),
+                (rid,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return data
+            (
+                _id,
+                merchant,
+                orgnr,
+                purchase_dt,
+                gross,
+                net,
+                status,
+                confidence,
+                expense_type,
+                tag_csv,
+                ocr_raw,
+            ) = row
+            data.update(
+                {
+                    "id": _id,
+                    "merchant": merchant,
+                    "orgnr": orgnr,
+                    "purchase_datetime": purchase_dt.isoformat() if hasattr(purchase_dt, "isoformat") else purchase_dt,
+                    "gross_amount": float(gross) if gross is not None else None,
+                    "net_amount": float(net) if net is not None else None,
+                    "ai_status": status,
+                    "ai_confidence": float(confidence) if confidence is not None else None,
+                    "expense_type": expense_type,
+                    "tags": [t for t in (tag_csv or "").split(",") if t],
+                    "ocr_raw": ocr_raw,
+                }
+            )
+    except Exception:
+        return data
+    return data
+
+
+def _fetch_receipt_items(rid: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if db_cursor is None:
+        return items
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                (
+                    "SELECT id, article_id, name, number, item_price_ex_vat, item_price_inc_vat, "
+                    "item_total_price_ex_vat, item_total_price_inc_vat, currency, vat, vat_percentage "
+                    "FROM receipt_items WHERE main_id=%s ORDER BY id ASC"
+                ),
+                (rid,),
+            )
+            for row in cur.fetchall() or []:
+                (
+                    item_id,
+                    article_id,
+                    name,
+                    number,
+                    price_ex_vat,
+                    price_inc_vat,
+                    total_ex_vat,
+                    total_inc_vat,
+                    currency,
+                    vat,
+                    vat_percentage,
+                ) = row
+                items.append(
+                    {
+                        "id": int(item_id) if item_id is not None else None,
+                        "article_id": article_id or "",
+                        "name": name or "",
+                        "number": int(number) if number not in (None, "") else 0,
+                        "item_price_ex_vat": float(price_ex_vat) if price_ex_vat is not None else None,
+                        "item_price_inc_vat": float(price_inc_vat) if price_inc_vat is not None else None,
+                        "item_total_price_ex_vat": float(total_ex_vat) if total_ex_vat is not None else None,
+                        "item_total_price_inc_vat": float(total_inc_vat) if total_inc_vat is not None else None,
+                        "currency": currency or "SEK",
+                        "vat": float(vat) if vat is not None else None,
+                        "vat_percentage": float(vat_percentage) if vat_percentage is not None else None,
+                    }
+                )
+    except Exception:
+        return []
+    return items
+
+
+def _normalise_decimal(value: Any) -> Decimal:
+    try:
+        if value in (None, ""):
+            return Decimal("0")
+        return Decimal(str(value))
+    except Exception:
+        return Decimal("0")
+
+
+def _normalise_receipt_items(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalised: list[dict[str, Any]] = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        name = (raw.get("name") or raw.get("description") or "").strip()
+        if not name:
+            continue
+        article_id = (raw.get("article_id") or "").strip()
+        try:
+            quantity = int(raw.get("number") or raw.get("quantity") or 0)
+        except Exception:
+            quantity = 0
+        currency = (raw.get("currency") or "SEK").strip() or "SEK"
+        normalised.append(
+            {
+                "article_id": article_id[:222],
+                "name": name[:222],
+                "number": max(quantity, 0),
+                "item_price_ex_vat": _normalise_decimal(raw.get("item_price_ex_vat")),
+                "item_price_inc_vat": _normalise_decimal(raw.get("item_price_inc_vat")),
+                "item_total_price_ex_vat": _normalise_decimal(raw.get("item_total_price_ex_vat")),
+                "item_total_price_inc_vat": _normalise_decimal(raw.get("item_total_price_inc_vat")),
+                "currency": currency[:11],
+                "vat": _normalise_decimal(raw.get("vat")),
+                "vat_percentage": _normalise_decimal(raw.get("vat_percentage")),
+            }
+        )
+    return normalised
+
+
+def _normalise_accounting_entries(entries: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalised: list[dict[str, Any]] = []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        account = (raw.get("account") or raw.get("account_code") or "").strip()
+        if not account:
+            continue
+        try:
+            debit = float(raw.get("debit") or 0)
+        except Exception:
+            debit = 0.0
+        try:
+            credit = float(raw.get("credit") or 0)
+        except Exception:
+            credit = 0.0
+        vat_rate = raw.get("vat_rate")
+        try:
+            vat_value = float(vat_rate) if vat_rate not in (None, "", []) else None
+        except Exception:
+            vat_value = None
+        notes = (raw.get("notes") or "").strip()
+        normalised.append(
+            {
+                "account": account[:32],
+                "debit": debit,
+                "credit": credit,
+                "vat_rate": vat_value,
+                "notes": notes or None,
+            }
+        )
+    return normalised
+
+
+def _normalise_receipt_update(payload: dict[str, Any]) -> dict[str, Any]:
+    editable: dict[str, Any] = {}
+    if "merchant_name" in payload and isinstance(payload["merchant_name"], str):
+        editable["merchant_name"] = payload["merchant_name"][:255]
+    if "merchant" in payload and isinstance(payload["merchant"], str):
+        editable["merchant_name"] = payload["merchant"][:255]
+    if "orgnr" in payload and isinstance(payload["orgnr"], str):
+        editable["orgnr"] = payload["orgnr"][:32]
+    for key in ("gross_amount", "net_amount"):
+        if key in payload:
+            try:
+                editable[key] = float(payload[key])
+            except Exception:
+                continue
+    if "purchase_datetime" in payload and isinstance(payload["purchase_datetime"], str):
+        editable["purchase_datetime"] = payload["purchase_datetime"]
+    if "purchase_date" in payload and isinstance(payload["purchase_date"], str):
+        editable["purchase_datetime"] = payload["purchase_date"]
+    if "ai_status" in payload and isinstance(payload["ai_status"], str):
+        editable["ai_status"] = payload["ai_status"][:32]
+    if "status" in payload and isinstance(payload["status"], str):
+        editable["ai_status"] = payload["status"][:32]
+    if "expense_type" in payload and isinstance(payload["expense_type"], str):
+        editable["expense_type"] = payload["expense_type"][:64]
+    return editable
+
+
+def _commit_receipt_update(rid: str, editable: dict[str, Any]) -> bool:
+    if db_cursor is None or not editable:
+        return False
+    fields = [f"{k}=%s" for k in editable.keys()]
+    values: list[Any] = list(editable.values())
+    values.append(rid)
+    try:
+        with db_cursor() as cur:
+            set_clause = ", ".join(fields)
+            sql = "UPDATE unified_files SET " + set_clause + ", updated_at=NOW() WHERE id=%s"
+            cur.execute(sql, tuple(values))
+            return cur.rowcount > 0
+    except Exception:
+        return False
+
+
+def _replace_receipt_items(rid: str, items: list[dict[str, Any]]) -> bool:
+    if db_cursor is None:
+        return False
+    try:
+        with db_cursor() as cur:
+            cur.execute("DELETE FROM receipt_items WHERE main_id=%s", (rid,))
+            if not items:
+                return True
+            insert_sql = (
+                "INSERT INTO receipt_items (main_id, article_id, name, number, item_price_ex_vat, item_price_inc_vat, "
+                "item_total_price_ex_vat, item_total_price_inc_vat, currency, vat, vat_percentage) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            )
+            for item in items:
+                cur.execute(
+                    insert_sql,
+                    (
+                        rid,
+                        item.get("article_id") or "",
+                        item.get("name") or "",
+                        item.get("number") or 0,
+                        item.get("item_price_ex_vat"),
+                        item.get("item_price_inc_vat"),
+                        item.get("item_total_price_ex_vat"),
+                        item.get("item_total_price_inc_vat"),
+                        item.get("currency") or "SEK",
+                        item.get("vat"),
+                        item.get("vat_percentage"),
+                    ),
+                )
+        return True
+    except Exception:
+        return False
+
+
+def _load_boxes(rid: str) -> list[dict[str, Any]]:
+    try:
+        root = _storage_dir().parent / rid
+        p = root / "boxes.json"
+        if not p.exists():
+            return []
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
 
 
 @receipts_bp.get("/receipts")
@@ -299,95 +581,22 @@ def list_receipts() -> Any:
 
 @receipts_bp.get("/receipts/<rid>")
 def get_receipt(rid: str) -> Any:
-    if db_cursor is not None:
-        try:
-            with db_cursor() as cur:
-                cur.execute(
-                    (
-                        "SELECT id, merchant_name, orgnr, purchase_datetime, gross_amount, "
-                        "net_amount, ai_status, ai_confidence, ocr_raw FROM unified_files WHERE id=%s"
-                    ),
-                    (rid,),
-                )
-                row = cur.fetchone()
-                if row:
-                    (
-                        _id,
-                        merchant,
-                        orgnr,
-                        pdt,
-                        gross,
-                        net,
-                        ai_status,
-                        ai_confidence,
-                        ocr_raw,
-                    ) = row
-                    return (
-                        jsonify(
-                            {
-                                "id": _id,
-                                "merchant": merchant,
-                                "orgnr": orgnr,
-                                "purchase_datetime": (
-                                    pdt.isoformat() if hasattr(pdt, "isoformat") else pdt
-                                ),
-                                "gross_amount": (float(gross) if gross is not None else None),
-                                "net_amount": (float(net) if net is not None else None),
-                                "ai_status": ai_status,
-                                "ai_confidence": ai_confidence,
-                                "ocr_raw": ocr_raw,
-                            }
-                        ),
-                        200,
-                    )
-        except Exception as e:
-            logger.error(f"Error in get_receipt: {e}")
-            pass
-    # Placeholder minimal response if not found/DB error
-    return jsonify({"id": rid, "status": "Placeholder"}), 200
+    details = _fetch_receipt_details(rid)
+    found = any(
+        details.get(key) not in (None, [], "")
+        for key in ("merchant", "purchase_datetime", "gross_amount", "net_amount")
+    )
+    if not found:
+        details.setdefault("status", "Placeholder")
+    details["found"] = found
+    return jsonify(details), 200
 
 
 @receipts_bp.route("/receipts/<rid>", methods=["PUT", "PATCH"])
 def update_receipt(rid: str) -> Any:
     payload = request.get_json(silent=True) or {}
-    updated = False
-    # Shallow validation/coercion
-    editable = {}
-    if "merchant_name" in payload and isinstance(payload["merchant_name"], str):
-        editable["merchant_name"] = payload["merchant_name"][:255]
-    if "orgnr" in payload and isinstance(payload["orgnr"], str):
-        editable["orgnr"] = payload["orgnr"][:32]
-    for num_key in ("gross_amount", "net_amount"):
-        if num_key in payload:
-            try:
-                editable[num_key] = float(payload[num_key])
-            except Exception:
-                # ignore invalid numeric
-                pass
-    # Allow status updates
-    if "status" in payload and isinstance(payload["status"], str):
-        editable["ai_status"] = payload["status"][:32]
-    if "ai_status" in payload and isinstance(payload["ai_status"], str):
-        editable["ai_status"] = payload["ai_status"][:32]
-    # Purchase date (iso date string) optional
-    if "purchase_date" in payload and isinstance(payload["purchase_date"], str):
-        try:
-            editable["purchase_datetime"] = payload["purchase_date"]  # store as string; DB may coerce
-        except Exception:
-            pass
-
-    if db_cursor is not None and editable:
-        fields = [f"{k}=%s" for k in editable.keys()]
-        values: list[Any] = list(editable.values())
-        values.append(rid)
-        try:
-            with db_cursor() as cur:
-                set_clause = ", ".join(fields)
-                sql = "UPDATE unified_files SET " + set_clause + ", updated_at=NOW() WHERE id=%s"
-                cur.execute(sql, tuple(values))
-                updated = cur.rowcount > 0
-        except Exception:
-            updated = False
+    editable = _normalise_receipt_update(payload)
+    updated = _commit_receipt_update(rid, editable)
     # Accept line_items in payload to persist to file store
     if "line_items" in payload and isinstance(payload["line_items"], list):
         try:
@@ -395,6 +604,75 @@ def update_receipt(rid: str) -> Any:
         except Exception:
             pass
     return jsonify({"id": rid, "updated": updated, "data": payload}), 200
+
+
+@receipts_bp.get("/receipts/<rid>/modal")
+def get_receipt_modal(rid: str) -> Any:
+    details = _fetch_receipt_details(rid)
+    items = _fetch_receipt_items(rid)
+    proposals = _fetch_saved_accounting_entries(rid)
+    boxes = _load_boxes(rid)
+    response = {
+        "id": rid,
+        "receipt": details,
+        "items": items,
+        "proposals": proposals,
+        "boxes": boxes,
+        "meta": {
+            "items_count": len(items),
+            "proposals_count": len(proposals),
+            "boxes_count": len(boxes),
+        },
+    }
+    return jsonify(response), 200
+
+
+@receipts_bp.put("/receipts/<rid>/modal")
+def put_receipt_modal(rid: str) -> Any:
+    if db_cursor is None:
+        return jsonify({"error": "db_unavailable"}), 503
+
+    payload = request.get_json(silent=True) or {}
+
+    receipt_payload = payload.get("receipt") or {}
+    items_payload = payload.get("items")
+    proposals_payload = (
+        payload.get("proposals")
+        if "proposals" in payload
+        else payload.get("accounting") or payload.get("accounting_proposals")
+    )
+
+    editable = _normalise_receipt_update(receipt_payload)
+    receipt_updated = _commit_receipt_update(rid, editable)
+
+    items_updated = False
+    if items_payload is not None:
+        normalised_items = _normalise_receipt_items(items_payload)
+        items_updated = _replace_receipt_items(rid, normalised_items)
+
+    proposals_updated = False
+    if proposals_payload is not None:
+        normalised_proposals = _normalise_accounting_entries(proposals_payload)
+        proposals_updated = _save_accounting_entries(rid, normalised_proposals)
+
+    refreshed = {
+        "receipt": _fetch_receipt_details(rid),
+        "items": _fetch_receipt_items(rid),
+        "proposals": _fetch_saved_accounting_entries(rid),
+    }
+
+    return (
+        jsonify(
+            {
+                "id": rid,
+                "receipt_updated": receipt_updated,
+                "items_updated": items_updated,
+                "proposals_updated": proposals_updated,
+                "data": refreshed,
+            }
+        ),
+        200,
+    )
 
 
 @receipts_bp.get("/receipts/monthly-summary")
@@ -539,14 +817,7 @@ def get_receipt_image(rid: str):
 @receipts_bp.get("/receipts/<rid>/ocr/boxes")
 def get_ocr_boxes(rid: str) -> Any:
     try:
-        root = _storage_dir().parent / rid
-        p = root / "boxes.json"
-        if not p.exists():
-            return jsonify([]), 200
-        data = json.loads(p.read_text(encoding="utf-8"))
-        if not isinstance(data, list):
-            data = []
-        return jsonify(data), 200
+        return jsonify(_load_boxes(rid)), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
