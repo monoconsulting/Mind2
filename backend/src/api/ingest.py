@@ -6,7 +6,7 @@ import uuid
 import hashlib
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from flask import Blueprint, jsonify, request
 from werkzeug.utils import secure_filename
 
@@ -100,6 +100,17 @@ def _hash_exists(content_hash: str) -> bool:
             return cur.fetchone() is not None
     except Exception:
         return False
+
+
+def _cleanup_paths(paths: Iterable[Path]) -> None:
+    for p in paths:
+        path = Path(p)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except Exception:
+            logger.debug("Failed to remove temporary file %s", path, exc_info=True)
 
 
 def _insert_unified_file(
@@ -362,6 +373,7 @@ def upload_files() -> Any:
 
         logger.info(f"File {idx}/{len(files)}: Processing '{file.filename}'")
 
+        cleanup_paths: set[Path] = set()
         try:
             # Read file data
             data = file.read()
@@ -413,6 +425,8 @@ def upload_files() -> Any:
                     )
                     continue
 
+                cleanup_paths = {page.path for page in pages}
+
                 if not pages:
                     error_msg = f"PDF has no pages: {safe_filename}"
                     logger.error(f"File {idx}: {error_msg}")
@@ -426,6 +440,8 @@ def upload_files() -> Any:
                         error_message="empty_pdf",
                         provider="web_upload",
                     )
+                    _cleanup_paths(cleanup_paths)
+                    cleanup_paths.clear()
                     continue
 
                 try:
@@ -460,13 +476,8 @@ def upload_files() -> Any:
                         error_message="Duplicate file detected by content hash",
                         provider="web_upload",
                     )
-                    for page in pages:
-                        try:
-                            page.path.unlink()
-                        except FileNotFoundError:
-                            pass
-                        except Exception:
-                            pass
+                    _cleanup_paths(cleanup_paths)
+                    cleanup_paths.clear()
                     continue
 
                 fs.save_original(pdf_id, safe_filename, data)
@@ -476,6 +487,7 @@ def upload_files() -> Any:
                     page_number = page.index + 1
                     page_id = str(uuid.uuid4())
                     page_hash = hashlib.sha256(page.bytes).hexdigest()
+                    original_path = page.path
                     try:
                         _insert_unified_file(
                             file_id=page_id,
@@ -501,12 +513,8 @@ def upload_files() -> Any:
                             f"File {idx}: Duplicate PDF page skipped (page={page_number}, hash={page_hash[:16]}...)"
                         )
                         skipped_count += 1
-                        try:
-                            page.path.unlink()
-                        except FileNotFoundError:
-                            pass
-                        except Exception:
-                            pass
+                        _cleanup_paths([original_path])
+                        cleanup_paths.discard(original_path)
                         _history(
                             file_id=page_id,
                             job="upload",
@@ -519,7 +527,14 @@ def upload_files() -> Any:
                         continue
 
                     stored_page_name = f"page-{page_number:04d}.png"
-                    fs.save(page_id, stored_page_name, page.bytes)
+                    try:
+                        stored_path = fs.adopt(page_id, stored_page_name, original_path)
+                    except FileNotFoundError:
+                        raise RuntimeError(
+                            f"Converted page missing before storage (page={page_number})"
+                        )
+                    cleanup_paths.discard(original_path)
+                    page.path = stored_path
                     logger.info(
                         "File %s: Stored PDF page %s as %s/%s",
                         idx,
@@ -547,7 +562,7 @@ def upload_files() -> Any:
                         "pages": page_refs,
                         "source": "web_upload",
                     },
-                )
+                    )
                 _history(
                     file_id=pdf_id,
                     job="upload",
@@ -556,6 +571,7 @@ def upload_files() -> Any:
                     log_text=f"PDF stored with {len(page_refs)} page(s)",
                     provider="web_upload",
                 )
+                cleanup_paths.clear()
                 continue
 
             if detection.kind == "audio":
@@ -705,6 +721,8 @@ def upload_files() -> Any:
             error_msg = f"File processing error for {file.filename}: {str(e)}"
             logger.error(f"File {idx}: ERROR - {error_msg}")
             errors.append(error_msg)
+            if cleanup_paths:
+                _cleanup_paths(cleanup_paths)
             # Log upload error if we have a receipt_id
             if 'receipt_id' in locals():
                 _history(

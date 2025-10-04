@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import List
+
+import shutil
 
 
 def _ensure_category(root: Path, category: str) -> Path:
@@ -33,6 +34,34 @@ class FileStorage:
         p = self._safe_path(receipt_id, filename)
         p.write_bytes(data)
         return p
+
+    def adopt(self, receipt_id: str, filename: str, source_path: Path) -> Path:
+        """Move an existing file into the managed storage tree.
+
+        The operation is idempotent: if the source is already in the correct
+        location the path is returned unchanged. Otherwise the file is moved
+        atomically (when supported by the underlying filesystem).
+        """
+
+        destination = self._safe_path(receipt_id, filename)
+        source = Path(source_path).resolve()
+
+        if not source.exists():
+            raise FileNotFoundError(source)
+
+        if source == destination:
+            return destination
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        # If a previous run already placed a file in the destination path we
+        # replace it to guarantee callers observe the final content. This keeps
+        # the method safe to call multiple times with the same logical file.
+        if destination.exists():
+            destination.unlink()
+
+        shutil.move(str(source), destination)
+        return destination
 
     def save_in_category(self, category: str, filename: str, data: bytes) -> Path:
         if not filename or "/" in filename or ".." in filename:
