@@ -628,7 +628,7 @@ function ReceiptPreviewModal({ open, receipt, previewImage, onClose, onReceiptUp
     const serialisedItems = draft.items.map((item) => ({
       article_id: item.article_id || '',
       name: item.name || '',
-      number: item.number === '' ? null : Number(item.number),
+      number: item.number === '' ? null : (isNaN(Number(item.number)) ? null : Number(item.number)),
       item_price_ex_vat: item.item_price_ex_vat,
       item_price_inc_vat: item.item_price_inc_vat,
       item_total_price_ex_vat: item.item_total_price_ex_vat,
