@@ -1771,7 +1771,7 @@ test('View invoice lines after upload', async ({ page }) => {
 
 ### 7.1 Pre-Deployment Checklist
 
--- [ ] Run database migration `0026_invoice_matching_enhancements.sql`
+- [ ] Run database migration `0026_invoice_matching_enhancements.sql`
 - [ ] Verify AI_PROCESSING_ENABLED=true in environment
 - [ ] Verify OPENAI_API_KEY is set (if using AI extraction)
 - [ ] Test PDF conversion with PyMuPDF installed
