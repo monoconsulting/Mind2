@@ -250,7 +250,7 @@ def _fetch_receipt_items(rid: str) -> list[dict[str, Any]]:
                         "id": int(item_id) if item_id is not None else None,
                         "article_id": article_id or "",
                         "name": name or "",
-                        "number": int(number) if number not in (None, "") else 0,
+                        "number": int(number) if number not in (None, "") else None,
                         "item_price_ex_vat": float(price_ex_vat) if price_ex_vat is not None else None,
                         "item_price_inc_vat": float(price_inc_vat) if price_inc_vat is not None else None,
                         "item_total_price_ex_vat": float(total_ex_vat) if total_ex_vat is not None else None,
