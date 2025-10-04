@@ -3,7 +3,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, condecimal
+
+
+Decimal18_2 = condecimal(max_digits=18, decimal_places=2)
+Decimal12_6 = condecimal(max_digits=12, decimal_places=6)
 
 
 class UnifiedFileBase(BaseModel):
@@ -16,12 +20,12 @@ class UnifiedFileBase(BaseModel):
     )
     purchase_datetime: Optional[datetime] = None
     expense_type: Optional[Literal["personal", "corporate"]] = None
-    gross_amount_original: Optional[Decimal] = Field(None, decimal_places=2)
-    net_amount_original: Optional[Decimal] = Field(None, decimal_places=2)
-    exchange_rate: Optional[Decimal] = Field(None, decimal_places=6)
+    gross_amount_original: Optional[Decimal18_2] = None
+    net_amount_original: Optional[Decimal18_2] = None
+    exchange_rate: Optional[Decimal12_6] = None
     currency: Optional[str] = Field(None, max_length=222)
-    gross_amount_sek: Optional[Decimal] = Field(None, decimal_places=2)
-    net_amount_sek: Optional[Decimal] = Field(None, decimal_places=2)
+    gross_amount_sek: Optional[Decimal18_2] = None
+    net_amount_sek: Optional[Decimal18_2] = None
     ai_status: Optional[str] = Field(None, max_length=32)
     ai_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     mime_type: Optional[str] = Field(None, max_length=222)
@@ -55,13 +59,13 @@ class ReceiptItem(BaseModel):
     article_id: str = Field(max_length=222)
     name: str = Field(max_length=222)
     number: int = Field(gt=0, description="Quantity of items")
-    item_price_ex_vat: Optional[Decimal] = Field(None, decimal_places=2)
-    item_price_inc_vat: Optional[Decimal] = Field(None, decimal_places=2)
-    item_total_price_ex_vat: Optional[Decimal] = Field(None, decimal_places=2)
-    item_total_price_inc_vat: Optional[Decimal] = Field(None, decimal_places=2)
+    item_price_ex_vat: Optional[Decimal18_2] = None
+    item_price_inc_vat: Optional[Decimal18_2] = None
+    item_total_price_ex_vat: Optional[Decimal18_2] = None
+    item_total_price_inc_vat: Optional[Decimal18_2] = None
     currency: str = Field(default="SEK", max_length=11)
-    vat: Optional[Decimal] = Field(None, decimal_places=2)
-    vat_percentage: Optional[Decimal] = Field(None, decimal_places=6)
+    vat: Optional[Decimal18_2] = None
+    vat_percentage: Optional[Decimal12_6] = None
 
 
 class Company(BaseModel):
@@ -84,7 +88,7 @@ class CreditCardInvoiceMain(BaseModel):
     invoice_number: str = Field(max_length=64)
     card_number_masked: str = Field(max_length=20)
     cardholder_name: str = Field(max_length=200)
-    total_amount_sek: Decimal = Field(decimal_places=2)
+    total_amount_sek: Decimal18_2
     payment_due_date: datetime
     invoice_period_start: datetime
     invoice_period_end: datetime
@@ -103,13 +107,13 @@ class CreditCardInvoiceItem(BaseModel):
     mcc: Optional[str] = Field(None, max_length=4, description="Merchant Category Code")
     description: Optional[str] = None
     currency_original: str = Field(max_length=3, description="ISO currency code")
-    amount_original: Decimal = Field(decimal_places=2)
-    exchange_rate: Optional[Decimal] = Field(None, decimal_places=6)
-    amount_sek: Decimal = Field(decimal_places=2)
-    vat_rate: Optional[Decimal] = Field(None, decimal_places=2)
-    vat_amount: Optional[Decimal] = Field(None, decimal_places=2)
-    net_amount: Optional[Decimal] = Field(None, decimal_places=2)
-    gross_amount: Decimal = Field(decimal_places=2)
+    amount_original: Decimal18_2
+    exchange_rate: Optional[Decimal12_6] = None
+    amount_sek: Decimal18_2
+    vat_rate: Optional[Decimal18_2] = None
+    vat_amount: Optional[Decimal18_2] = None
+    net_amount: Optional[Decimal18_2] = None
+    gross_amount: Decimal18_2
     cost_center_override: Optional[str] = Field(None, max_length=100)
     project_code: Optional[str] = Field(None, max_length=100)
 
@@ -169,9 +173,9 @@ class AccountingProposal(BaseModel):
 
     receipt_id: str
     account_code: str = Field(max_length=32, description="Account from chart_of_accounts")
-    debit: Decimal = Field(decimal_places=2, default=Decimal("0.00"))
-    credit: Decimal = Field(decimal_places=2, default=Decimal("0.00"))
-    vat_rate: Optional[Decimal] = Field(None, decimal_places=2)
+    debit: Decimal18_2 = Field(default=Decimal("0.00"))
+    credit: Decimal18_2 = Field(default=Decimal("0.00"))
+    vat_rate: Optional[Decimal18_2] = None
     notes: Optional[str] = Field(None, max_length=255)
     item_id: Optional[int] = Field(None, description="Reference to receipt_items.id")
 
