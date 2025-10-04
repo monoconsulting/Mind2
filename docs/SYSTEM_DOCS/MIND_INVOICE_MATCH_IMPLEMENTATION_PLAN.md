@@ -229,7 +229,7 @@ ADD COLUMN ocr_source_text TEXT NULL COMMENT 'Original OCR text that was parsed'
 
 ### 3.2 Migration Script
 
-**File:** `database/migrations/0016_invoice_matching_enhancements.sql`
+**File:** `database/migrations/0026_invoice_matching_enhancements.sql`
 ```sql
 -- Invoice Matching Enhancements
 -- Date: 2025-10-04
@@ -237,35 +237,55 @@ ADD COLUMN ocr_source_text TEXT NULL COMMENT 'Original OCR text that was parsed'
 -- unified_files enhancements
 ALTER TABLE unified_files
 ADD COLUMN IF NOT EXISTS invoice_match_status VARCHAR(32) NULL
-COMMENT 'Status for invoice matching: pending, matched, unmatched, reviewed';
+COMMENT 'Status for invoice matching: pending, matched, unmatched, reviewed'
+AFTER credit_card_match;
 
 ALTER TABLE unified_files
 ADD COLUMN IF NOT EXISTS matched_invoice_id VARCHAR(36) NULL
-COMMENT 'Reference to invoice_documents.id if matched to invoice line';
+COMMENT 'Reference to invoice_documents.id if matched to invoice line'
+AFTER invoice_match_status;
 
 -- invoice_documents enhancements
 ALTER TABLE invoice_documents
 ADD COLUMN IF NOT EXISTS source_file_id VARCHAR(36) NULL
-COMMENT 'Reference to unified_files.id for uploaded PDF/image';
+COMMENT 'Reference to unified_files.id for uploaded PDF/image'
+AFTER invoice_type;
 
 ALTER TABLE invoice_documents
 ADD COLUMN IF NOT EXISTS processing_status VARCHAR(32) DEFAULT 'uploaded'
-COMMENT 'uploaded, ocr_pending, ocr_done, ai_processing, ready_for_matching, matched, completed';
+COMMENT 'uploaded, ocr_pending, ocr_done, ai_processing, ready_for_matching, matched, completed'
+AFTER status;
 
 -- invoice_lines enhancements
 ALTER TABLE invoice_lines
 ADD COLUMN IF NOT EXISTS extraction_confidence FLOAT NULL
-COMMENT 'AI confidence for extracted data (0-1)';
+COMMENT 'AI confidence for extracted data (0-1)'
+AFTER match_score;
 
 ALTER TABLE invoice_lines
 ADD COLUMN IF NOT EXISTS ocr_source_text TEXT NULL
-COMMENT 'Original OCR text that was parsed';
+COMMENT 'Original OCR text that was parsed'
+AFTER extraction_confidence;
 
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_unified_invoice_match ON unified_files(invoice_match_status);
+CREATE INDEX IF NOT EXISTS idx_unified_files_matched_invoice ON unified_files(matched_invoice_id);
 CREATE INDEX IF NOT EXISTS idx_invoice_docs_processing ON invoice_documents(processing_status);
 CREATE INDEX IF NOT EXISTS idx_invoice_docs_source ON invoice_documents(source_file_id);
 ```
+
+**Rollback (manual):**
+
+1. `ALTER TABLE invoice_lines DROP COLUMN ocr_source_text;`
+2. `ALTER TABLE invoice_lines DROP COLUMN extraction_confidence;`
+3. `DROP INDEX idx_invoice_docs_source ON invoice_documents;`
+4. `DROP INDEX idx_invoice_docs_processing ON invoice_documents;`
+5. `ALTER TABLE invoice_documents DROP COLUMN processing_status;`
+6. `ALTER TABLE invoice_documents DROP COLUMN source_file_id;`
+7. `DROP INDEX idx_unified_files_matched_invoice ON unified_files;`
+8. `DROP INDEX idx_unified_invoice_match ON unified_files;`
+9. `ALTER TABLE unified_files DROP COLUMN matched_invoice_id;`
+10. `ALTER TABLE unified_files DROP COLUMN invoice_match_status;`
 
 ---
 
@@ -1751,7 +1771,7 @@ test('View invoice lines after upload', async ({ page }) => {
 
 ### 7.1 Pre-Deployment Checklist
 
-- [ ] Run database migration `0016_invoice_matching_enhancements.sql`
+-- [ ] Run database migration `0026_invoice_matching_enhancements.sql`
 - [ ] Verify AI_PROCESSING_ENABLED=true in environment
 - [ ] Verify OPENAI_API_KEY is set (if using AI extraction)
 - [ ] Test PDF conversion with PyMuPDF installed
@@ -1770,7 +1790,7 @@ git pull origin main
 
 # 3. Run database migration
 docker compose up -d mind-mysql
-docker exec -i mind-mysql mysql -uroot -pmind2025 mono_se_db_9 < database/migrations/0016_invoice_matching_enhancements.sql
+docker exec -i mind-mysql mysql -uroot -pmind2025 mono_se_db_9 < database/migrations/0026_invoice_matching_enhancements.sql
 
 # 4. Rebuild backend with new dependencies
 docker compose build ai-api celery-worker
@@ -1928,7 +1948,7 @@ main-system/app-frontend/
 
 database/
 └── migrations/
-    └── 0016_invoice_matching_enhancements.sql (new)
+    └── 0026_invoice_matching_enhancements.sql (new)
 
 docs/SYSTEM_DOCS/
 └── MIND_INVOICE_MATCH_IMPLEMENTATION_PLAN.md (this file)
@@ -1987,7 +2007,7 @@ The 2025-10-04 review identified functional and technical adjustments required b
 2. **Align status propagation.** Define how `invoice_documents.processing_status`, `invoice_lines.match_status`, and related counters advance during OCR, AI extraction, and matching so that the planned progress UI can poll accurate data.
 3. **Prevent accidental receipt processing.** Update `process_ocr` (and downstream tasks) to branch invoice files into the new Celery chain instead of the legacy receipt pipeline.
 4. **Unify matching flows.** Merge the improved matching strategy into the existing `/reconciliation/firstcard/match` route and broaden `list_statements` so invoices with `invoice_type='credit_card_invoice'` appear in the frontend.
-5. **Resolve migration numbering.** Rename the proposed migration to the next free sequence number to avoid clashing with `0016_add_content_hash_to_files.sql`.
+5. **Resolve migration numbering.** The invoice matching migration now uses the next free sequence number (`0026_invoice_matching_enhancements.sql`) to avoid clashing with `0016_add_content_hash_to_files.sql`.
 6. **Respect test governance.** Relocate new E2E tests under `web/tests`, follow `docs/TEST_RULES.md`, and archive reports per `web/TEST_AGENT_INSTRUCTIONS.md`.
 7. **Optimize PDF handling.** Avoid double-writing page images by reusing files produced by `pdf_to_png_pages` and ensure large, multi-page PDFs use efficient Celery coordination (groups/chords) for OCR.
 
