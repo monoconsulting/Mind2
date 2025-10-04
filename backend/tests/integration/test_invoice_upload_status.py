@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 import pytest
 from flask import Flask
 
+# Stubs for optional dependencies used by the Flask app
 if 'mysql' not in sys.modules:
     mysql_pkg = types.ModuleType('mysql')
     mysql_connector = types.ModuleType('mysql.connector')
@@ -20,6 +21,28 @@ if 'mysql' not in sys.modules:
     mysql_pkg.connector = mysql_connector
     sys.modules['mysql'] = mysql_pkg
     sys.modules['mysql.connector'] = mysql_connector
+
+if 'flask_limiter' not in sys.modules:
+    class _LimiterStub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def limit(self, *args, **kwargs):
+            def decorator(func):
+                return func
+
+            return decorator
+
+        def init_app(self, *_args, **_kwargs):
+            return None
+
+    sys.modules['flask_limiter'] = types.SimpleNamespace(
+        Limiter=lambda *args, **kwargs: _LimiterStub()
+    )
+    sys.modules['flask_limiter.util'] = types.SimpleNamespace(
+        get_remote_address=lambda *args, **kwargs: '127.0.0.1'
+    )
+
 
 
 class FakeDB:
@@ -261,11 +284,15 @@ def test_upload_invoice_pdf_creates_records(app: Flask, monkeypatch: pytest.Monk
 
     from api import reconciliation_firstcard as module
 
-    pages = [
-        type("Page", (), {"index": 0, "bytes": b"page-1"})(),
-        type("Page", (), {"index": 1, "bytes": b"page-2"})(),
-    ]
-    monkeypatch.setattr(module, "pdf_to_png_pages", lambda data, out, invoice_id, dpi=300: pages)
+    page_dir = tmp_path / 'converted-pages'
+    page_dir.mkdir(exist_ok=True)
+    pages = []
+    for idx, content in enumerate([b'page-1', b'page-2']):
+        page_path = page_dir / f'page-{idx+1}.png'
+        page_path.write_bytes(content)
+        page_obj = type("Page", (), {"index": idx, "bytes": content, "path": page_path})()
+        pages.append(page_obj)
+    monkeypatch.setattr(module, "pdf_to_png_pages", lambda data, out, invoice_id, dpi=300: [type("Page", (), {"index": p.index, "bytes": p.bytes, "path": p.path})() for p in pages])
 
     client = app.test_client()
     data = {
