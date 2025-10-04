@@ -75,7 +75,13 @@ class FakeDB:
             }
             self._lastrowid += 1
         elif s.startswith("insert into invoice_lines"):
-            invoice_id, tx_date, amount, merchant_name, description, match_status = p
+            if len(p) == 6:
+                invoice_id, tx_date, amount, merchant_name, description, match_status = p
+            elif len(p) == 5:
+                invoice_id, tx_date, amount, merchant_name, description = p
+                match_status = None  # or "pending" if that's the default in your app
+            else:
+                raise ValueError(f"Unexpected number of parameters for invoice_lines insert: {len(p)}")
             self._lastrowid += 1
             self.lines.append(
                 {
