@@ -44,3 +44,20 @@ def test_file_storage_protects_traversal(tmp_path: Path):
         assert False, "Expected ValueError"
     except ValueError:
         pass
+
+
+def test_file_storage_adopt_is_idempotent(tmp_path: Path):
+    store = FileStorage(tmp_path)
+    rid = "R555"
+    original = tmp_path / "temp_page.png"
+    original.write_bytes(b"page-bytes")
+
+    dest = store.adopt(rid, "page-0001.png", original)
+    assert dest.exists()
+    assert dest.read_bytes() == b"page-bytes"
+    assert not original.exists()
+
+    # Call again with the already-moved file to ensure the method is idempotent
+    dest_again = store.adopt(rid, "page-0001.png", dest)
+    assert dest_again == dest
+    assert dest_again.exists()
