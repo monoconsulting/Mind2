@@ -104,7 +104,7 @@ _______________________
 
 #### **Phase 5 - Process log in frontend**
 
-- [ ] **Task 5.1 - Rebuild menu option "Process"**
+- [x] **Task 5.1 - Rebuild menu option "Process"**
 
   **Description:** Jag vill göra om menyn "Process" och ändra denna så att resultat från alla olika workflow-faser presenteras enligt följande från vänster till höger i varsin kolumn. 
 
@@ -141,7 +141,7 @@ _______________________
 
   
 
-- [ ] **Task 5.2 - Convert PDF to png**
+- [x] **Task 5.2 - Convert PDF to png**
 
   **Description:** If a PDF is uploaded (with the correct mime-type OR the correct file ending). This should be converted to a jpg at step 0. This should create a 300dpi png-picture with dpi configurable in the settings menu option. Do a full plan on how to implement this. Step by step. Add new task in this file. DO NOT IMPLEMENT THE FUNCTION YET.
 
