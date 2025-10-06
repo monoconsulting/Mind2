@@ -161,12 +161,28 @@ def _fetch_receipt_details(rid: str) -> dict[str, Any]:
         "id": rid,
         "merchant": None,
         "orgnr": None,
+        "vat": None,
         "purchase_datetime": None,
+        "receipt_number": None,
+        "payment_type": None,
+        "expense_type": None,
+        "credit_card_number": None,
+        "credit_card_last_4": None,
+        "credit_card_brand_full": None,
+        "credit_card_brand_short": None,
+        "credit_card_token": None,
+        "currency": None,
+        "exchange_rate": None,
         "gross_amount": None,
         "net_amount": None,
+        "gross_amount_sek": None,
+        "net_amount_sek": None,
+        "total_vat_25": None,
+        "total_vat_12": None,
+        "total_vat_6": None,
         "ai_status": None,
         "ai_confidence": None,
-        "expense_type": None,
+        "other_data": None,
         "ocr_raw": None,
         "tags": [],
     }
@@ -176,8 +192,13 @@ def _fetch_receipt_details(rid: str) -> dict[str, Any]:
         with db_cursor() as cur:
             cur.execute(
                 (
-                    "SELECT id, merchant_name, orgnr, purchase_datetime, gross_amount, net_amount, ai_status, "
-                    "ai_confidence, expense_type, tags, ocr_raw FROM unified_files WHERE id=%s"
+                    "SELECT id, merchant_name, company_id, vat, purchase_datetime, receipt_number, payment_type, "
+                    "expense_type, credit_card_number, credit_card_last_4_digits, credit_card_brand_full, "
+                    "credit_card_brand_short, credit_card_token, currency, exchange_rate, "
+                    "gross_amount, net_amount, gross_amount_sek, net_amount_sek, "
+                    "total_vat_25, total_vat_12, total_vat_6, "
+                    "ai_status, ai_confidence, other_data, ocr_raw, tags "
+                    "FROM unified_files WHERE id=%s"
                 ),
                 (rid,),
             )
@@ -185,31 +206,89 @@ def _fetch_receipt_details(rid: str) -> dict[str, Any]:
             if not row:
                 return data
             (
-                _id,
-                merchant,
-                orgnr,
-                purchase_dt,
-                gross,
-                net,
-                status,
-                confidence,
-                expense_type,
-                tag_csv,
-                ocr_raw,
+                _id, merchant, company_id, vat, purchase_dt, receipt_number, payment_type,
+                expense_type, card_number, card_last_4, card_brand_full, card_brand_short,
+                card_token, currency, exchange_rate, gross, net, gross_sek, net_sek,
+                vat_25, vat_12, vat_6, status, confidence, other_data, ocr_raw, tag_csv,
             ) = row
             data.update(
                 {
                     "id": _id,
                     "merchant": merchant,
-                    "orgnr": orgnr,
+                    "company_id": int(company_id) if company_id not in (None, 0) else None,
+                    "vat": vat,
                     "purchase_datetime": purchase_dt.isoformat() if hasattr(purchase_dt, "isoformat") else purchase_dt,
+                    "receipt_number": receipt_number,
+                    "payment_type": payment_type,
+                    "expense_type": expense_type,
+                    "credit_card_number": card_number,
+                    "credit_card_last_4": str(card_last_4) if card_last_4 not in (None, 0) else None,
+                    "credit_card_brand_full": card_brand_full,
+                    "credit_card_brand_short": card_brand_short,
+                    "credit_card_token": card_token,
+                    "currency": currency,
+                    "exchange_rate": float(exchange_rate) if exchange_rate not in (None, 0) else None,
                     "gross_amount": float(gross) if gross is not None else None,
                     "net_amount": float(net) if net is not None else None,
+                    "gross_amount_sek": float(gross_sek) if gross_sek not in (None, 0) else None,
+                    "net_amount_sek": float(net_sek) if net_sek not in (None, 0) else None,
+                    "total_vat_25": float(vat_25) if vat_25 is not None else None,
+                    "total_vat_12": float(vat_12) if vat_12 is not None else None,
+                    "total_vat_6": float(vat_6) if vat_6 is not None else None,
                     "ai_status": status,
                     "ai_confidence": float(confidence) if confidence is not None else None,
-                    "expense_type": expense_type,
+                    "other_data": other_data,
                     "tags": [t for t in (tag_csv or "").split(",") if t],
                     "ocr_raw": ocr_raw,
+                }
+            )
+    except Exception:
+        return data
+    return data
+
+
+def _fetch_company_by_id(company_id: int | None) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "id": None,
+        "name": None,
+        "orgnr": None,
+        "address": None,
+        "address2": None,
+        "zip": None,
+        "city": None,
+        "country": None,
+        "phone": None,
+        "www": None,
+        "email": None,
+    }
+    if db_cursor is None or company_id is None or company_id == 0:
+        return data
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                (
+                    "SELECT id, name, orgnr, address, address2, zip, city, country, phone, www, email "
+                    "FROM companies WHERE id=%s"
+                ),
+                (company_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return data
+            (cid, name, orgnr, address, address2, zip_code, city, country, phone, www, email) = row
+            data.update(
+                {
+                    "id": int(cid) if cid is not None else None,
+                    "name": name,
+                    "orgnr": orgnr,
+                    "address": address,
+                    "address2": address2,
+                    "zip": zip_code,
+                    "city": city,
+                    "country": country,
+                    "phone": phone,
+                    "www": www,
+                    "email": email,
                 }
             )
     except Exception:
@@ -609,12 +688,15 @@ def update_receipt(rid: str) -> Any:
 @receipts_bp.get("/receipts/<rid>/modal")
 def get_receipt_modal(rid: str) -> Any:
     details = _fetch_receipt_details(rid)
+    company_id = details.get("company_id")
+    company = _fetch_company_by_id(company_id)
     items = _fetch_receipt_items(rid)
     proposals = _fetch_saved_accounting_entries(rid)
     boxes = _load_boxes(rid)
     response = {
         "id": rid,
         "receipt": details,
+        "company": company,
         "items": items,
         "proposals": proposals,
         "boxes": boxes,
