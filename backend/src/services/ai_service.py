@@ -86,7 +86,7 @@ class OpenAIProvider(BaseLLMProvider):
         }
 
         try:
-            response = requests.post(url, json=request_payload, headers=headers, timeout=180)
+            response = requests.post(url, json=request_payload, headers=headers, timeout=300)
             response.raise_for_status()
 
             result = response.json()
@@ -872,6 +872,33 @@ class AIService:
                         # Ensure number has a default
                         if not item_dict.get("number"):
                             item_dict["number"] = 1
+
+                        # Fix AI3 validation errors: convert number to integer
+                        if "number" in item_dict:
+                            try:
+                                # Convert float to int (e.g., 25.35 -> 25)
+                                item_dict["number"] = int(round(float(item_dict["number"])))
+                            except (TypeError, ValueError):
+                                logger.warning(
+                                    "AI3 receipt_items[%d] has invalid number field, defaulting to 1",
+                                    idx
+                                )
+                                item_dict["number"] = 1
+
+                        # Fix AI3 validation errors: round decimal fields to 2 decimal places
+                        decimal_fields = [
+                            "item_price_ex_vat", "item_price_inc_vat",
+                            "item_total_price_ex_vat", "item_total_price_inc_vat",
+                            "vat", "vat_percentage"
+                        ]
+                        for field in decimal_fields:
+                            if field in item_dict and item_dict[field] is not None:
+                                try:
+                                    # Round to 2 decimal places (e.g., 12.392 -> 12.39)
+                                    item_dict[field] = round(float(item_dict[field]), 2)
+                                except (TypeError, ValueError):
+                                    # If conversion fails, leave as None
+                                    item_dict[field] = None
 
                         parsed_item = ReceiptItem(**item_dict)
                         receipt_items.append(parsed_item)

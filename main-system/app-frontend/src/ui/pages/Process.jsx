@@ -1487,7 +1487,7 @@ export default function Receipts() {
                 <th className="text-right">Exkl. moms</th>
                 <th className="text-right">Inkl. moms</th>
                 <th className="text-center">Status</th>
-                <th>Filtyp</th>
+                <th>Dokumenttyp</th>
                 <th className="text-center">Åtgärder</th>
               </tr>
             </thead>

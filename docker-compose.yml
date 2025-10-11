@@ -42,7 +42,7 @@ services:
       context: .
       dockerfile: ./backend/Dockerfile
     image: mind2-ai-api:dev # Use the same image as the api
-    command: ["celery", "-A", "services.tasks.celery_app", "worker", "--loglevel=INFO", "--concurrency=4", "--soft-time-limit=240", "--time-limit=300"]
+    command: ["celery", "-A", "services.tasks.celery_app", "worker", "--loglevel=INFO", "--concurrency=4", "--soft-time-limit=480", "--time-limit=600"]
     entrypoint: []
     volumes:
       - ./storage:/data/storage

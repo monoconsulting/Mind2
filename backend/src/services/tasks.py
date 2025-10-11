@@ -611,6 +611,17 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             provider=ai1_provider,
             model_name=ai1_model,
         )
+
+        # Update file_type column with classified document_type
+        if db_cursor is not None and result.document_type:
+            try:
+                with db_cursor() as cur:
+                    cur.execute(
+                        "UPDATE unified_files SET file_type=%s, updated_at=NOW() WHERE id=%s",
+                        (result.document_type, file_id),
+                    )
+            except Exception:
+                pass  # Best-effort update, don't fail the pipeline
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
         error_msg = f"{type(exc).__name__}: {str(exc)}"
