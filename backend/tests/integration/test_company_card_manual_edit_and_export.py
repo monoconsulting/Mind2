@@ -25,6 +25,7 @@ def app(monkeypatch) -> Flask:
 def _seed_statement(tmp_path) -> tuple[str, int, str]:
     statement_id = str(uuid.uuid4())
     receipt_id = str(uuid.uuid4())
+    company_id = f"test-company-{receipt_id[:8]}"
     line_amount = 150.25
     purchase_dt = datetime(2025, 9, 5, 10, 30, 0)
 
@@ -37,17 +38,25 @@ def _seed_statement(tmp_path) -> tuple[str, int, str]:
         cur.execute("DELETE FROM invoice_documents WHERE id=%s", (statement_id,))
         cur.execute("DELETE FROM ai_accounting_proposals WHERE receipt_id=%s", (receipt_id,))
         cur.execute("DELETE FROM unified_files WHERE id=%s", (receipt_id,))
+        cur.execute("DELETE FROM companies WHERE id=%s", (company_id,))
 
+        # Create company first
+        cur.execute(
+            "INSERT INTO companies (id, name, orgnr) VALUES (%s, %s, %s)",
+            (company_id, 'Bundle Coffee', '666666-6666'),
+        )
+
+        # Create receipt with company_id reference
         cur.execute(
             (
-                "INSERT INTO unified_files (id, file_type, created_at, updated_at, merchant_name, purchase_datetime, "
+                "INSERT INTO unified_files (id, file_type, created_at, updated_at, company_id, purchase_datetime, "
                 "gross_amount, net_amount, ai_status, ai_confidence, submitted_by) "
                 "VALUES (%s, %s, NOW(), NOW(), %s, %s, %s, %s, %s, %s, %s)"
             ),
             (
                 receipt_id,
                 'receipt',
-                'Bundle Coffee',
+                company_id,
                 purchase_dt,
                 line_amount,
                 line_amount,
@@ -127,3 +136,5 @@ def test_manual_match_and_company_card_export(app: Flask, tmp_path, monkeypatch)
         cur.execute("DELETE FROM invoice_documents WHERE id=%s", (statement_id,))
         cur.execute("DELETE FROM ai_accounting_proposals WHERE receipt_id=%s", (receipt_id,))
         cur.execute("DELETE FROM unified_files WHERE id=%s", (receipt_id,))
+        # Cleanup company if created
+        cur.execute("DELETE FROM companies WHERE id LIKE %s", (f"test-company-{receipt_id[:8]}",))

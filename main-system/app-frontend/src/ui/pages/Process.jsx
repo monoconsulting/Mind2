@@ -22,6 +22,7 @@ import {
   FiCpu
 } from 'react-icons/fi'
 import { api } from '../api'
+import ReceiptPreviewModal from '../components/ReceiptPreviewModal'
 
 const statusOptions = [
   { value: '', label: 'Alla statusar' },
@@ -65,11 +66,7 @@ const statusClassMap = {
 
 const initialPreviewState = {
   receipt: null,
-  imageUrl: null,
-  loading: false,
-  error: null,
-  revokeOnClose: false,
-  cachedImageUrl: null
+  previewImage: null
 }
 
 function formatCurrency(value) {
@@ -1034,166 +1031,6 @@ function WorkflowBadges({ receipt, onStageClick }) {
 }
 
 
-function PreviewModal({ previewState, onClose, onDownload }) {
-  const [ocrBoxes, setOcrBoxes] = React.useState([]);
-  const [imageLoaded, setImageLoaded] = React.useState(false);
-
-  // Reset image loaded state when receipt changes
-  React.useEffect(() => {
-    setImageLoaded(false);
-  }, [previewState.receipt?.id]);
-
-  // Fetch OCR box data when modal opens and image is ready
-  React.useEffect(() => {
-    if (!previewState.receipt || !previewState.imageUrl) {
-      setOcrBoxes([]);
-      return;
-    }
-
-    let cancelled = false;
-
-    const fetchOcrBoxes = async () => {
-      try {
-        const res = await api.fetch(`/ai/api/receipts/${previewState.receipt.id}/ocr/boxes`);
-        if (!res.ok) {
-          console.warn(`Could not fetch OCR boxes: HTTP ${res.status}`);
-          return;
-        }
-        const data = await res.json();
-        if (!cancelled) {
-          if (Array.isArray(data)) {
-            setOcrBoxes(data);
-          } else {
-            console.warn('OCR boxes response is not an array:', data);
-            setOcrBoxes([]);
-          }
-        }
-      } catch (error) {
-        console.error('Failed to fetch OCR boxes:', error);
-        setOcrBoxes([]);
-      }
-    };
-
-    fetchOcrBoxes();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [previewState.receipt?.id, previewState.imageUrl]);
-
-  if (!previewState.receipt) {
-    return null;
-  }
-
-  const handleBackdrop = () => {
-    if (!previewState.loading) {
-      onClose();
-    }
-  };
-
-  return (
-    <div className="modal-backdrop" role="dialog" aria-label={`Förhandsgranska kvitto ${previewState.receipt.id}`} onClick={handleBackdrop}>
-      <div className="modal modal-lg" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <h3>Förhandsgranskning</h3>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Stäng förhandsgranskning">
-            <FiX />
-          </button>
-        </div>
-        <div className="modal-body preview-body">
-          {previewState.loading ? (
-            <div className="loading-inline">
-              <div className="loading-spinner" />
-              <span>Laddar bild...</span>
-            </div>
-          ) : previewState.imageUrl ? (
-            <div className="preview-image-wrapper">
-                <div
-                  className="preview-image-container"
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    backgroundImage: `url(${previewState.imageUrl})`,
-                    backgroundSize: 'contain',
-                    backgroundRepeat: 'no-repeat',
-                    backgroundPosition: 'center'
-                  }}
-                  onLoad={() => {
-                    setImageLoaded(true);
-                  }}
-                >
-                  <img
-                    src={previewState.imageUrl}
-                    alt={'Förhandsgranskning av kvitto ' + previewState.receipt.id}
-                    style={{ display: 'none' }}
-                    onLoad={() => {
-                      setImageLoaded(true);
-                    }}
-                  />
-                </div>
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    pointerEvents: 'none'
-                  }}
-                >
-                  {imageLoaded && ocrBoxes && ocrBoxes.length > 0 && (
-                    <>
-                      {ocrBoxes.map((box, index) => {
-                        if (!box || typeof box.x !== 'number' || typeof box.y !== 'number' ||
-                            typeof box.w !== 'number' || typeof box.h !== 'number') {
-                          console.warn('Invalid OCR box data at index', index, ':', box);
-                          return null;
-                        }
-                        return (
-                          <div
-                            key={index}
-                            style={{
-                              position: 'absolute',
-                              left: (box.x * 100) + '%',
-                              top: (box.y * 100) + '%',
-                              width: (box.w * 100) + '%',
-                              height: (box.h * 100) + '%',
-                              backgroundColor: 'rgba(0, 123, 255, 0.2)',
-                              border: '2px solid rgba(0, 123, 255, 0.8)',
-                              borderRadius: '2px',
-                              boxShadow: '0 0 4px rgba(0, 123, 255, 0.5)',
-                              zIndex: 10
-                            }}
-                            title={box.field || ''}
-                          />
-                        );
-                      })}
-                    </>
-                  )}
-                </div>
-            </div>
-          ) : (
-            <div className="preview-missing">{previewState.error || 'Ingen bild tillgänglig'}</div>
-          )}
-        </div>
-        <div className="modal-footer">
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={() => onDownload(previewState.receipt)}
-            disabled={previewState.loading}
-          >
-            <FiDownload className="mr-2" />
-            Ladda ned original
-          </button>
-          <button type="button" className="btn btn-primary" onClick={onClose}>
-            Stäng
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function Pagination({ page, totalPages, onPrev, onNext }) {
   if (totalPages <= 1) {
@@ -1411,19 +1248,9 @@ export default function Receipts() {
       return;
     }
     const cachedSrc = previewData?.src || previewCache.current.get(receipt.id) || null;
-    const hadError = Boolean(previewData?.error);
-    setPreviewState((prev) => {
-      if (prev.imageUrl && prev.revokeOnClose) {
-        URL.revokeObjectURL(prev.imageUrl);
-      }
-      return {
-        receipt,
-        imageUrl: null, // Start with null to ensure loading effect triggers
-        loading: !cachedSrc, // Only load if we don't have a cached image
-        error: hadError ? 'Kunde inte ladda förhandsgranskning' : null,
-        revokeOnClose: false,
-        cachedImageUrl: cachedSrc // Store cached image separately
-      };
+    setPreviewState({
+      receipt,
+      previewImage: cachedSrc
     });
   };
 
@@ -1456,18 +1283,9 @@ export default function Receipts() {
   };
 
   const closePreview = () => {
-    setPreviewState((prev) => {
-      if (prev.imageUrl && prev.revokeOnClose) {
-        URL.revokeObjectURL(prev.imageUrl);
-      }
-      return {
-        receipt: null,
-        imageUrl: null,
-        loading: false,
-        error: null,
-        revokeOnClose: false,
-        cachedImageUrl: null
-      };
+    setPreviewState({
+      receipt: null,
+      previewImage: null
     });
   };
 
@@ -1571,82 +1389,6 @@ export default function Receipts() {
     }, 2000);
   };
 
-  React.useEffect(() => {
-    if (!previewState.receipt) {
-      return;
-    }
-
-    if (previewState.cachedImageUrl) {
-      setPreviewState((prev) => ({
-        ...prev,
-        imageUrl: prev.cachedImageUrl,
-        loading: false,
-        error: null,
-        revokeOnClose: false
-      }));
-      return;
-    }
-
-    if (!previewState.loading) {
-      return;
-    }
-
-    let cancelled = false;
-    let objectUrl = null;
-    const { receipt } = previewState;
-    const cacheBuster = Date.now();
-    const base = '/ai/api/receipts/' + receipt.id + '/image';
-    const endpoints = [
-      base + '?cb=' + cacheBuster,
-      base + '?size=raw&cb=' + cacheBuster
-    ];
-
-    const loadImage = async () => {
-      for (const endpoint of endpoints) {
-        try {
-          const res = await api.fetch(endpoint);
-          if (!res.ok) {
-            continue;
-          }
-          const blob = await res.blob();
-          objectUrl = URL.createObjectURL(blob);
-          if (cancelled) {
-            URL.revokeObjectURL(objectUrl);
-            return;
-          }
-          setPreviewState((prev) => ({
-            ...prev,
-            imageUrl: objectUrl,
-            loading: false,
-            error: null,
-            revokeOnClose: true
-          }));
-          return;
-        } catch (error) {
-          if (cancelled) {
-            return;
-          }
-        }
-      }
-      if (!cancelled) {
-        setPreviewState((prev) => ({
-          ...prev,
-          loading: false,
-          error: 'Kunde inte ladda bild',
-          revokeOnClose: false
-        }));
-      }
-    };
-
-    loadImage();
-
-    return () => {
-      cancelled = true;
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
-    };
-  }, [previewState.receipt, previewState.loading, previewState.cachedImageUrl]);
 
   const dismissBanner = () => setBanner(null)
 
@@ -1875,7 +1617,16 @@ export default function Receipts() {
       <ExportModal open={isExportOpen} filters={filters} onClose={() => setExportOpen(false)} />
       <MapModal open={isMapOpen} receipt={selectedReceiptForMap} onClose={closeMap} />
       <AIStageModal open={isAIStageOpen} stageData={selectedAIStage} onClose={closeAIStage} />
-      <PreviewModal previewState={previewState} onClose={closePreview} onDownload={handleDownload} />
+      <ReceiptPreviewModal
+        open={Boolean(previewState.receipt)}
+        receipt={previewState.receipt}
+        previewImage={previewState.previewImage}
+        onClose={closePreview}
+        onReceiptUpdate={(updatedReceipt) => {
+          loadReceipts(true);
+          closePreview();
+        }}
+      />
     </div>
   )
 }

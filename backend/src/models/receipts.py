@@ -73,7 +73,8 @@ class ValidationReport:
 class AccountingEntry:
     id: Optional[str]
     receipt_id: str
-    account_code: str
+    item_id: Optional[int] = None  # FK to receipt_items.id
+    account_code: str = ""
     debit: Decimal = Decimal("0")
     credit: Decimal = Decimal("0")
     vat_rate: Optional[Decimal] = None
