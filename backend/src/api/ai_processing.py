@@ -195,9 +195,29 @@ def _ensure_company(cursor, company: Company) -> Optional[int]:
         raise
 
 
-def _replace_receipt_items(cursor, file_id: str, items: Iterable[ReceiptItem]) -> None:
+def _replace_receipt_items(cursor, file_id: str, items: Iterable[ReceiptItem]) -> List[int]:
+    """Replace receipt items and return the list of generated IDs."""
+    items_list = list(items)  # Convert to list to count and iterate
+    logger.info(
+        "AI3 _replace_receipt_items: Deleting old items and inserting %d new items for file_id=%s",
+        len(items_list), file_id
+    )
+
     cursor.execute("DELETE FROM receipt_items WHERE main_id = %s", (file_id,))
-    for item in items:
+    deleted_count = cursor.rowcount
+    if deleted_count > 0:
+        logger.debug("AI3 deleted %d old receipt_items for file_id=%s", deleted_count, file_id)
+
+    inserted_ids: List[int] = []
+    for idx, item in enumerate(items_list, 1):
+        # Validate main_id before insert
+        if item.main_id != file_id:
+            logger.error(
+                "AI3 receipt_items[%d] has main_id='%s' but expected file_id='%s' - this is a critical data integrity error!",
+                idx, item.main_id, file_id
+            )
+            raise ValueError(f"Receipt item main_id mismatch: {item.main_id} != {file_id}")
+
         cursor.execute(
             """
             INSERT INTO receipt_items (
@@ -221,6 +241,20 @@ def _replace_receipt_items(cursor, file_id: str, items: Iterable[ReceiptItem]) -
                 item.vat_percentage,
             ),
         )
+        # Get the auto-generated ID from the last insert
+        item_id = int(cursor.lastrowid)
+        inserted_ids.append(item_id)
+        logger.debug(
+            "AI3 inserted receipt_items[%d] with id=%d: name='%s', qty=%d, article_id='%s', total_inc_vat=%s %s",
+            idx, item_id, item.name, item.number, item.article_id or 'N/A',
+            item.item_total_price_inc_vat, item.currency
+        )
+
+    logger.info(
+        "AI3 _replace_receipt_items: Successfully inserted %d items for file_id=%s with IDs: %s",
+        len(inserted_ids), file_id, inserted_ids
+    )
+    return inserted_ids
 
 
 def _persist_extraction_result(
@@ -270,7 +304,16 @@ def _persist_extraction_result(
             "UPDATE unified_files SET " + ", ".join(set_parts) + " WHERE id = %s",
             tuple(params),
         )
-        _replace_receipt_items(cursor, file_id, result.receipt_items)
+        inserted_ids = _replace_receipt_items(cursor, file_id, result.receipt_items)
+        # Update the receipt_items in the result with their database IDs
+        for item, item_id in zip(result.receipt_items, inserted_ids):
+            item.id = item_id
+        logger.info(
+            "AI3 created %d receipt_items for %s with IDs: %s",
+            len(inserted_ids),
+            file_id,
+            inserted_ids
+        )
         _set_ai_stage(cursor, file_id, "AI3", result.confidence)
         if owns_connection:
             conn.commit()
@@ -680,7 +723,45 @@ def process_batch() -> Any:
                                 (file_id,),
                             )
                             amounts = cursor.fetchone()
+                            # Fetch receipt_items from database with their IDs
+                            cursor.execute(
+                                """
+                                SELECT id, main_id, article_id, name, number,
+                                       item_price_ex_vat, item_price_inc_vat,
+                                       item_total_price_ex_vat, item_total_price_inc_vat,
+                                       currency, vat, vat_percentage
+                                  FROM receipt_items
+                                 WHERE main_id = %s
+                                 ORDER BY id
+                                """,
+                                (file_id,),
+                            )
+                            items_rows = cursor.fetchall()
+
+                        receipt_items_for_ai4: List[ReceiptItem] = []
+                        for row in items_rows:
+                            receipt_items_for_ai4.append(ReceiptItem(
+                                id=row[0],
+                                main_id=row[1],
+                                article_id=row[2] or "",
+                                name=row[3],
+                                number=row[4],
+                                item_price_ex_vat=row[5],
+                                item_price_inc_vat=row[6],
+                                item_total_price_ex_vat=row[7],
+                                item_total_price_inc_vat=row[8],
+                                currency=row[9],
+                                vat=row[10],
+                                vat_percentage=row[11],
+                            ))
+
                         if amounts:
+                            logger.info(
+                                "AI4 processing %s with %d receipt_items (IDs: %s)",
+                                file_id,
+                                len(receipt_items_for_ai4),
+                                [item.id for item in receipt_items_for_ai4]
+                            )
                             classify_accounting_internal(
                                 AccountingClassificationRequest(
                                     file_id=file_id,
@@ -690,7 +771,7 @@ def process_batch() -> Any:
                                     net_amount=Decimal(str(amounts[1] or 0)),
                                     vat_amount=Decimal(str(amounts[2] or 0)),
                                     vendor_name=amounts[3] or "",
-                                    receipt_items=[],
+                                    receipt_items=receipt_items_for_ai4,
                                 )
                             )
                             file_result["steps_completed"].append("AI4")

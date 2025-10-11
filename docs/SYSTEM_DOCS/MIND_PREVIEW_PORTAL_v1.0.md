@@ -1,37 +1,23 @@
 # Receipt Preview Modal 
 
-Actions: 
+## Actions: 
 
-Paymenttype=swish
+- [ ] RP1. The unified_files.payment_type must also support "swish". This is a personal expense_type. To recognize this make AI3 recognize the picture @test_files_for_import/swish_test.pdf.
 
-Make all fields editable
 
-Make it possible to scroll all 3 columns indiviually
+- [ ] RP2. Make all fields editable
 
-Previous column: unified_files.orgnr CHANGED TO unified_files.vat
 
-Added columns in unified_files - **ADD THESE TO SCHEMA**
+- [ ] RP3. Make it possible to scroll all 3 columns indiviually
 
-|      | 10   | credit_card_number          | varchar(44)  | utf8mb4_0900_ai_ci |      | Nej  | *Inget* |                                     |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_number&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
-| ---- | ---- | --------------------------- | ------------ | ------------------ | ---- | ---- | ------- | ----------------------------------- | ---- | ------------------------------------------------------------ | ------------------------------------------------------------ | ---- |
-|      | 11   | credit_card_last_4_digits   | int          |                    |      | Nej  | *Inget* | Example: 4668                       |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_last_4_digits&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
-|      | 12   | credit_card_type            | varchar(44)  | utf8mb4_0900_ai_ci |      | Nej  | *Inget* | Example: mccommercialcredit         |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_type&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
-|      | 13   | credit_card_brand_full      | varchar(22)  | utf8mb4_0900_ai_ci |      | Nej  | *Inget* | Example: MASTERCARD, VISA           |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_brand_full&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
-|      | 14   | credit_card_brand_short     | varchar(22)  | utf8mb4_0900_ai_ci |      | Nej  | *Inget* | Example: mc, visa                   |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_brand_short&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
-|      | 15   | credit_card_payment_variant | varchar(222) | utf8mb4_0900_ai_ci |      | Nej  | *Inget* | Example: mccommercialcredit         |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_payment_variant&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
-|      | 16   | credit_card_token           | varchar(222) | utf8mb4_0900_ai_ci |      | Nej  | *Inget* | Example: mc_applepay, visa_applepay |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_token&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
-|      | 17   | credit_card_entering_mode   | varchar(222) | utf8mb4_0900_ai_ci |      | Nej  | *Inget* | Example: Kontaktlöst chip           |      |                                                              |                                                              |      |
+- [ ] RP4. Previous column: unified_files.orgnr CHANGED TO unified_files.vat - make sure the schema is updated
 
-|      | 20   | total_vat_25 | decimal(12,2) |      |      | Ja   | *NULL*  | total vat amount 25% |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=total_vat_25&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
-| ---- | ---- | ------------ | ------------- | ---- | ---- | ---- | ------- | -------------------- | ---- | ------------------------------------------------------------ | ------------------------------------------------------------ | ---- |
-|      | 21   | total_vat_12 | decimal(12,2) |      |      | Nej  | *Inget* | total vat amount 12% |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=total_vat_12&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
-|      | 22   | total_vat_6  | decimal(12,2) |      |      | Nej  | *Inget* | total vat amount 6%  |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=total_vat_6&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
 
 
 
 ## Left side (2 columns)
 
-#### Grunddata (box 1)
+#### RP5. Grunddata (box 1)
 
 | Företag - companies.name       | Organisationsnummer - companies.orgnr |
 | ------------------------------ | ------------------------------------- |
@@ -42,7 +28,7 @@ Added columns in unified_files - **ADD THESE TO SCHEMA**
 
 
 
-#### Betalningstyp (box 2)
+#### RP6. Betalningstyp (box 2)
 
 | Inköpsdatum - unified_files.purchase_datetime   | Kvittonnummer - unified_files.receipt_number          |
 | ----------------------------------------------- | ----------------------------------------------------- |
@@ -51,7 +37,7 @@ Added columns in unified_files - **ADD THESE TO SCHEMA**
 | Korttyp - unified_files.credit_card_brand_full  | Korttyp kort - unified_files.credit_card_brand_short  |
 | Korttyp token - unified_files.credit_card_token |                                                       |
 
-#### Belopp (box 3)
+#### RP7. Belopp (box 3)
 
 | Valuta - unified_files.currency                              | Växlingskurs - unified_files. exchange_rate                  |
 | ------------------------------------------------------------ | ------------------------------------------------------------ |
@@ -60,20 +46,21 @@ Added columns in unified_files - **ADD THESE TO SCHEMA**
 | Moms 25% - unified_files.total_vat_25                        | Moms 12% - unified_files.total_vat_12                        |
 | Moms 6% - unified_files.total_vat_6                          |                                                              |
 
-#### Övrigt (box 4 - 1 kolumn längst ner lika bred som de andra två tillsammans)
+#### RP8. Övrigt (box 4 - 1 kolumn längst ner lika bred som de andra två tillsammans)
 
 | Övrig data - unified_files.other_data |
 | ------------------------------------- |
 
 
 
-## Right side
+## RP9. Implement right side (4 columns)
 
-This table should consist of two tables in one. 
+- This table should consist of two tables in one. 
 
-The first one should only tell the row number. The second one should contain all the data for the specific item including accounting.
+- The first one should only tell the row number. The second one should contain all the data for the specific item including accounting.
 
-One row for each accounting is the standard so this means that this has to be filled in correct from the db. Today it looks like this 
+- One row for each accounting is the standard so this means that this has to be filled in correct from the db. Today db looks like this 
+
 
 ### ai_accounting_proposals
 
@@ -114,6 +101,23 @@ Here is the complete template
 
 
 
+
+Added columns in unified_files - **ADD THESE TO SCHEMA**
+
+|      | 10   | credit_card_number          | varchar(44)  | utf8mb4_0900_ai_ci |      | Nej  | *Inget* |                                     |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_number&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
+| ---- | ---- | --------------------------- | ------------ | ------------------ | ---- | ---- | ------- | ----------------------------------- | ---- | ------------------------------------------------------------ | ------------------------------------------------------------ | ---- |
+|      | 11   | credit_card_last_4_digits   | int          |                    |      | Nej  | *Inget* | Example: 4668                       |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_last_4_digits&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
+|      | 12   | credit_card_type            | varchar(44)  | utf8mb4_0900_ai_ci |      | Nej  | *Inget* | Example: mccommercialcredit         |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_type&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
+|      | 13   | credit_card_brand_full      | varchar(22)  | utf8mb4_0900_ai_ci |      | Nej  | *Inget* | Example: MASTERCARD, VISA           |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_brand_full&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
+|      | 14   | credit_card_brand_short     | varchar(22)  | utf8mb4_0900_ai_ci |      | Nej  | *Inget* | Example: mc, visa                   |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_brand_short&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
+|      | 15   | credit_card_payment_variant | varchar(222) | utf8mb4_0900_ai_ci |      | Nej  | *Inget* | Example: mccommercialcredit         |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_payment_variant&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
+|      | 16   | credit_card_token           | varchar(222) | utf8mb4_0900_ai_ci |      | Nej  | *Inget* | Example: mc_applepay, visa_applepay |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=credit_card_token&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
+|      | 17   | credit_card_entering_mode   | varchar(222) | utf8mb4_0900_ai_ci |      | Nej  | *Inget* | Example: Kontaktlöst chip           |      |                                                              |                                                              |      |
+
+|      | 20   | total_vat_25 | decimal(12,2) |      |      | Ja   | *NULL*  | total vat amount 25% |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=total_vat_25&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
+| ---- | ---- | ------------ | ------------- | ---- | ---- | ---- | ------- | -------------------- | ---- | ------------------------------------------------------------ | ------------------------------------------------------------ | ---- |
+|      | 21   | total_vat_12 | decimal(12,2) |      |      | Nej  | *Inget* | total vat amount 12% |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=total_vat_12&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
+|      | 22   | total_vat_6  | decimal(12,2) |      |      | Nej  | *Inget* | total vat amount 6%  |      | [![Ändra](http://localhost:8087/themes/dot.gif) Ändra](http://localhost:8087/index.php?route=/table/structure/change&db=mono_se_db_9&table=unified_files&field=total_vat_6&change_column=1) | [![Radera](http://localhost:8087/themes/dot.gif) Radera](http://localhost:8087/index.php?route=/sql) |      |
 
 
 
@@ -254,14 +258,14 @@ Here is the complete template
             "vat": null,
             "vat_percentage": null
       }
-            
+  
   ```
   
   ```
 
   
 
-      
+  
     ],
     "confidence": null
   }

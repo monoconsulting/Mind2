@@ -56,9 +56,9 @@ class ReceiptItem(BaseModel):
     """Model for individual receipt items."""
     id: Optional[int] = Field(None, description="Database ID (auto-generated)")
     main_id: str = Field(description="Reference to unified_files.id")
-    article_id: str = Field(max_length=222)
-    name: str = Field(max_length=222)
-    number: int = Field(gt=0, description="Quantity of items")
+    article_id: str = Field(default="", max_length=222, description="Article/SKU ID (optional)")
+    name: str = Field(description="Item name/description")
+    number: int = Field(default=1, gt=0, description="Quantity of items")
     item_price_ex_vat: Optional[Decimal18_2] = None
     item_price_inc_vat: Optional[Decimal18_2] = None
     item_total_price_ex_vat: Optional[Decimal18_2] = None

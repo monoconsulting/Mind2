@@ -54,13 +54,14 @@ def _fetch_proposals(period_from: Optional[date], period_to: Optional[date]) -> 
         SELECT
             uf.id,
             COALESCE(uf.purchase_datetime, uf.created_at) AS dt,
-            COALESCE(uf.merchant_name, '') AS merchant,
+            COALESCE(c.name, '') AS merchant,
             ap.account_code,
             ap.debit,
             ap.credit,
             ap.notes
         FROM ai_accounting_proposals ap
         JOIN unified_files uf ON uf.id = ap.receipt_id
+        LEFT JOIN companies c ON c.id = uf.company_id
         WHERE {where_sql}
         ORDER BY dt ASC, uf.id ASC, ap.id ASC
     """
@@ -215,8 +216,10 @@ def _collect_company_card_data(statement_id: str) -> Tuple[Optional[dict], List[
     if receipt_ids:
         placeholders = ",".join(["%s"] * len(receipt_ids))
         receipt_sql = (
-            "SELECT id, merchant_name, purchase_datetime, gross_amount, net_amount, ai_status, submitted_by "
-            f"FROM unified_files WHERE id IN ({placeholders})"
+            "SELECT u.id, c.name, u.purchase_datetime, u.gross_amount, u.net_amount, u.ai_status, u.submitted_by "
+            f"FROM unified_files u "
+            f"LEFT JOIN companies c ON c.id = u.company_id "
+            f"WHERE u.id IN ({placeholders})"
         )
         try:
             with db_cursor() as cur:
