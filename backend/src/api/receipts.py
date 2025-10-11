@@ -366,7 +366,7 @@ def _fetch_receipt_details(rid: str) -> dict[str, Any]:
                     "FROM unified_files u "
                     "LEFT JOIN companies c ON c.id = u.company_id "
                     "LEFT JOIN file_tags t ON t.file_id = u.id "
-                    "WHERE u.id=%s "
+                    "WHERE u.id=%s AND u.deleted_at IS NULL "
                     "GROUP BY u.id, c.name, u.company_id, u.vat, u.purchase_datetime, u.receipt_number, u.payment_type, "
                     "u.expense_type, u.credit_card_number, u.credit_card_last_4_digits, u.credit_card_type, "
                     "u.credit_card_brand_full, u.credit_card_brand_short, u.credit_card_payment_variant, "
@@ -738,7 +738,7 @@ def list_receipts() -> Any:
 
     if db_cursor is not None:
         try:
-            where: list[str] = []
+            where: list[str] = ["u.deleted_at IS NULL"]
             params: list[Any] = []
             if q_status:
                 where.append("ai_status = %s")
@@ -1302,6 +1302,24 @@ def approve_receipt(rid: str) -> Any:
         except Exception:
             ok = False
     return jsonify({"id": rid, "approved": ok}), 200
+
+
+@receipts_bp.route("/receipts/<rid>", methods=["DELETE"])
+def soft_delete_receipt(rid: str) -> Any:
+    """Soft delete a receipt by setting deleted_at timestamp."""
+    ok = False
+    if db_cursor is not None:
+        try:
+            with db_cursor() as cur:
+                cur.execute(
+                    "UPDATE unified_files SET deleted_at=NOW(), updated_at=NOW() WHERE id=%s AND deleted_at IS NULL",
+                    (rid,),
+                )
+                ok = cur.rowcount > 0
+        except Exception:
+            logger.error(f"Error soft deleting receipt {rid}", exc_info=True)
+            ok = False
+    return jsonify({"id": rid, "deleted": ok}), 200
 
 
 @receipts_bp.get("/receipts/<rid>/ai-history")
