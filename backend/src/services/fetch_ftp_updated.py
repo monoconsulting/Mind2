@@ -84,6 +84,73 @@ def _load_metadata(file_path: Path) -> Dict[str, Any]:
     return {}
 
 
+def _find_or_create_company(merchant_name: Optional[str], orgnr: Optional[str]) -> Optional[int]:
+    """
+    Find or create a company in the companies table.
+    Returns company_id if found/created, None if not possible.
+
+    Strategy:
+    1. If orgnr provided: lookup by orgnr, create if not found
+    2. If only name provided: lookup by name, create if not found
+    3. If neither provided: return None
+    """
+    if db_cursor is None:
+        return None
+
+    # Need at least one identifier
+    if not merchant_name and not orgnr:
+        return None
+
+    try:
+        with db_cursor() as cur:
+            # Try to find existing company
+            if orgnr:
+                # Lookup by orgnr (most reliable)
+                cur.execute(
+                    "SELECT id FROM companies WHERE orgnr = %s LIMIT 1",
+                    (orgnr,)
+                )
+                result = cur.fetchone()
+                if result:
+                    logger.info(f"Found existing company by orgnr: {orgnr} -> id={result[0]}")
+                    return result[0]
+
+            if merchant_name:
+                # Lookup by name (less reliable, but better than nothing)
+                cur.execute(
+                    "SELECT id FROM companies WHERE name = %s LIMIT 1",
+                    (merchant_name,)
+                )
+                result = cur.fetchone()
+                if result:
+                    logger.info(f"Found existing company by name: {merchant_name} -> id={result[0]}")
+                    return result[0]
+
+            # Company not found, create new one
+            company_name = merchant_name or f"Unknown ({orgnr})" if orgnr else "Unknown"
+            cur.execute(
+                """
+                INSERT INTO companies (name, orgnr, created_at)
+                VALUES (%s, %s, NOW())
+                """,
+                (company_name, orgnr)
+            )
+
+            # Get the newly created company ID
+            cur.execute("SELECT LAST_INSERT_ID()")
+            result = cur.fetchone()
+            if result:
+                new_company_id = result[0]
+                logger.info(f"Created new company: {company_name} (orgnr={orgnr}) -> id={new_company_id}")
+                return new_company_id
+
+            return None
+
+    except Exception as e:
+        logger.error(f"Error finding/creating company (name={merchant_name}, orgnr={orgnr}): {e}")
+        return None
+
+
 def _insert_unified_file(
     file_id: str,
     filename: str,
@@ -127,13 +194,21 @@ def _insert_unified_file(
             except:
                 file_creation_timestamp = None
 
+        # Find or create company if merchant info provided
+        # This replaces direct merchant_name storage which doesn't exist in schema
+        company_id = None
+        if merchant_name or orgnr:
+            company_id = _find_or_create_company(merchant_name, orgnr)
+            if company_id:
+                logger.info(f"Linked file {file_id} to company_id={company_id}")
+
         with db_cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO unified_files (
                     id, file_type, created_at,
                     file_category, file_suffix,
-                    merchant_name, orgnr, purchase_datetime,
+                    company_id, vat, purchase_datetime,
                     gross_amount, net_amount, original_filename,
                     original_file_id, original_file_name, file_creation_timestamp,
                     original_file_size, mime_type
@@ -149,13 +224,13 @@ def _insert_unified_file(
                 (
                     file_id, "receipt",
                     file_category, file_suffix,
-                    merchant_name, orgnr, purchase_datetime,
+                    company_id, orgnr, purchase_datetime,
                     gross_amount, net_amount, filename,
                     original_file_id, original_file_name, file_creation_timestamp,
                     original_file_size, mime_type
                 )
             )
-            logger.info(f"Inserted unified_file {file_id} with metadata")
+            logger.info(f"Inserted unified_file {file_id} with metadata (company_id={company_id})")
     except Exception as e:
         logger.error(f"Error inserting unified file: {e}")
 
