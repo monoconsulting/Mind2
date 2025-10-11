@@ -339,13 +339,13 @@ def run_ocr(receipt_id: str, storage_dir: str | Path | None = None) -> Dict[str,
 
     if not ocr_result.get("text"):
         return {
-            "merchant_name": "Demo Shop",
+            "merchant_name": None,
             "purchase_datetime": None,
-            "gross_amount": 123.45,
-            "net_amount": 98.76,
-            "confidence": 0.5,
+            "gross_amount": None,
+            "net_amount": None,
+            "confidence": 0.0,
             "boxes_saved": True,
-            "vat_breakdown": {25: 24.69},
+            "vat_breakdown": {},
             "line_items": [],
         }
 

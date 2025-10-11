@@ -57,7 +57,7 @@ if %errorlevel% equ 0 (
 
 echo.
 echo [5/5] Cleaning database...
-docker-compose exec -T mysql mysql -u root -proot mono_se_db_9 -e "SET FOREIGN_KEY_CHECKS = 0; TRUNCATE TABLE file_tags; TRUNCATE TABLE file_locations; TRUNCATE TABLE ai_processing_history; TRUNCATE TABLE ai_processing_queue; TRUNCATE TABLE ai_accounting_proposals; TRUNCATE TABLE invoice_line_history; TRUNCATE TABLE invoice_lines; TRUNCATE TABLE invoice_documents; TRUNCATE TABLE unified_files; SET FOREIGN_KEY_CHECKS = 1;" 2>nul
+docker-compose exec -T mysql mysql -u root -proot mono_se_db_9 -e "SET FOREIGN_KEY_CHECKS = 0; TRUNCATE TABLE file_tags; TRUNCATE TABLE file_locations; TRUNCATE TABLE ai_processing_history; TRUNCATE TABLE ai_processing_queue; TRUNCATE TABLE ai_accounting_proposals; TRUNCATE TABLE receipt_items; TRUNCATE TABLE invoice_line_history; TRUNCATE TABLE invoice_lines; TRUNCATE TABLE invoice_documents; TRUNCATE TABLE unified_files; SET FOREIGN_KEY_CHECKS = 1;" 2>nul
 if %errorlevel% equ 0 (
     echo      Database tables cleaned!
 ) else (

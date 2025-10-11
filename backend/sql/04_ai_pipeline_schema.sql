@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS receipt_items (
 CREATE TABLE IF NOT EXISTS ai_accounting_proposals (
     id INT AUTO_INCREMENT PRIMARY KEY,
     receipt_id VARCHAR(36) NOT NULL,
+    item_id INT NULL,
     account_code VARCHAR(32) NOT NULL,
     debit DECIMAL(12,2) NOT NULL DEFAULT 0.00,
     credit DECIMAL(12,2) NOT NULL DEFAULT 0.00,
@@ -60,7 +61,9 @@ CREATE TABLE IF NOT EXISTS ai_accounting_proposals (
     notes VARCHAR(255) NULL,
     created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_ai_proposals_receipt (receipt_id)
+    INDEX idx_ai_proposals_receipt (receipt_id),
+    INDEX idx_ai_proposals_item (item_id),
+    FOREIGN KEY (item_id) REFERENCES receipt_items(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS creditcard_invoice_items (

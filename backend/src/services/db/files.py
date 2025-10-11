@@ -31,8 +31,10 @@ def get_receipt(file_id: str) -> Optional[dict[str, Any]]:
     with db_cursor() as cur:
         cur.execute(
             (
-                "SELECT id, merchant_name, orgnr, purchase_datetime, gross_amount, net_amount, ai_status, ai_confidence "
-                "FROM unified_files WHERE id=%s"
+                "SELECT u.id, c.name, c.orgnr, u.purchase_datetime, u.gross_amount, u.net_amount, u.ai_status, u.ai_confidence "
+                "FROM unified_files u "
+                "LEFT JOIN companies c ON c.id = u.company_id "
+                "WHERE u.id=%s"
             ),
             (file_id,),
         )

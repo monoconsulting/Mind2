@@ -567,8 +567,6 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
 
     steps: List[str] = []
     ai_service = AIService()
-    provider = ai_service.provider_name
-    model = ai_service.model_name
 
     context = _load_ai_context(file_id)
     if context is None:
@@ -586,6 +584,8 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
 
     # AI1 - Document Classification
     start_time = time.time()
+    ai1_provider = ai_service.prompt_provider_names.get("document_analysis", "unknown")
+    ai1_model = ai_service.prompt_model_names.get("document_analysis", "unknown")
     try:
         result = classify_document_internal(
             DocumentClassificationRequest(file_id=file_id, ocr_text=ocr_text or "")
@@ -608,8 +608,8 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             log_text="; ".join(log_parts),
             confidence=result.confidence,
             processing_time_ms=elapsed,
-            provider=provider,
-            model_name=model,
+            provider=ai1_provider,
+            model_name=ai1_model,
         )
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
@@ -622,8 +622,8 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             log_text=f"Failed to classify document type from OCR text ({len(ocr_text or '')} chars)",
             error_message=error_msg,
             processing_time_ms=elapsed,
-            provider=provider,
-            model_name=model,
+            provider=ai1_provider,
+            model_name=ai1_model,
         )
         raise
 
@@ -633,6 +633,8 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
 
     # AI2 - Expense Classification
     start_time = time.time()
+    ai2_provider = ai_service.prompt_provider_names.get("expense_classification", "unknown")
+    ai2_model = ai_service.prompt_model_names.get("expense_classification", "unknown")
     try:
         result = classify_expense_internal(
             ExpenseClassificationRequest(
@@ -661,8 +663,8 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             log_text="; ".join(log_parts),
             confidence=result.confidence,
             processing_time_ms=elapsed,
-            provider=provider,
-            model_name=model,
+            provider=ai2_provider,
+            model_name=ai2_model,
         )
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
@@ -675,8 +677,8 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             log_text=f"Failed to classify expense type for document_type='{document_type}'",
             error_message=error_msg,
             processing_time_ms=elapsed,
-            provider=provider,
-            model_name=model,
+            provider=ai2_provider,
+            model_name=ai2_model,
         )
         raise
 
@@ -686,6 +688,8 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
 
     # AI3 - Data Extraction
     start_time = time.time()
+    ai3_provider = ai_service.prompt_provider_names.get("data_extraction", "unknown")
+    ai3_model = ai_service.prompt_model_names.get("data_extraction", "unknown")
     try:
         result = extract_data_internal(
             DataExtractionRequest(
@@ -760,9 +764,14 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             log_parts.append(f"Company: {'; '.join(company_details)}")
         else:
             log_parts.append("Company: NO COMPANY DATA EXTRACTED")
-        log_parts.append(f"Items: {item_count} total")
-        if items_summary:
-            log_parts.append(f"Sample items: [{', '.join(items_summary)}]")
+
+        # Critical: Warn if no receipt_items were extracted
+        if item_count == 0:
+            log_parts.append("WARNING: 0 receipt_items extracted from LLM - check prompt and LLM response!")
+        else:
+            log_parts.append(f"Items: {item_count} total")
+            if items_summary:
+                log_parts.append(f"Sample items: [{', '.join(items_summary)}]")
 
         _history(
             file_id,
@@ -772,8 +781,8 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             log_text="; ".join(log_parts),
             confidence=result.confidence,
             processing_time_ms=elapsed,
-            provider=provider,
-            model_name=model,
+            provider=ai3_provider,
+            model_name=ai3_model,
         )
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
@@ -786,8 +795,8 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             log_text=f"Failed to extract structured data from document_type='{document_type}', expense_type='{expense_type}'",
             error_message=error_msg,
             processing_time_ms=elapsed,
-            provider=provider,
-            model_name=model,
+            provider=ai3_provider,
+            model_name=ai3_model,
         )
         raise
 
@@ -797,6 +806,8 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
         gross, net, vat_amount, vendor_name = accounting_inputs
         receipt_items = _load_receipt_items(file_id)
         start_time = time.time()
+        ai4_provider = ai_service.prompt_provider_names.get("accounting_classification", "unknown")
+        ai4_model = ai_service.prompt_model_names.get("accounting_classification", "unknown")
         try:
             result = classify_accounting_internal(
                 AccountingClassificationRequest(
@@ -843,8 +854,8 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
                 log_text="; ".join(log_parts),
                 confidence=result.confidence,
                 processing_time_ms=elapsed,
-                provider=provider,
-                model_name=model,
+                provider=ai4_provider,
+                model_name=ai4_model,
             )
         except Exception as exc:
             elapsed = int((time.time() - start_time) * 1000)
@@ -857,8 +868,8 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
                 log_text=f"Failed to classify accounting for vendor='{vendor_name}', gross={gross}, net={net}, vat={vat_amount}",
                 error_message=error_msg,
                 processing_time_ms=elapsed,
-                provider=provider,
-                model_name=model,
+                provider=ai4_provider,
+                model_name=ai4_model,
             )
             raise
     else:
@@ -954,11 +965,12 @@ def _save_accounting_entries(file_id: str, entries: List[AccountingEntry]) -> bo
                 cur.execute(
                     (
                         "INSERT INTO ai_accounting_proposals "
-                        "(receipt_id, account_code, debit, credit, vat_rate, notes) "
-                        "VALUES (%s, %s, %s, %s, %s, %s)"
+                        "(receipt_id, item_id, account_code, debit, credit, vat_rate, notes) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s)"
                     ),
                     (
                         file_id,
+                        entry.item_id if hasattr(entry, 'item_id') and entry.item_id else None,
                         entry.account_code,
                         float(entry.debit or 0),
                         float(entry.credit or 0),

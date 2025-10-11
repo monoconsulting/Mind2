@@ -218,6 +218,16 @@ def _quantize_two_decimals(value: Decimal) -> Decimal:
     return value.quantize(TWO_DECIMAL_PLACES, rounding=ROUND_HALF_UP)
 
 
+def _deep_clean_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively clean dictionary, converting empty strings to None."""
+    for key, value in d.items():
+        if isinstance(value, dict):
+            _deep_clean_dict(value)
+        elif isinstance(value, str) and not value.strip():
+            d[key] = None
+    return d
+
+
 def _ensure_decimal(
     raw_value: Any,
     field: str,
@@ -501,22 +511,9 @@ class AIService:
     def __init__(self) -> None:
         self.prompts: Dict[str, str] = {}
         self.prompt_providers: Dict[str, Optional[BaseLLMProvider]] = {}
+        self.prompt_provider_names: Dict[str, str] = {}
+        self.prompt_model_names: Dict[str, str] = {}
         self._load_prompts_and_providers()
-
-        # Fallback provider for legacy code
-        provider_from_db, model_from_db, api_key_from_db, endpoint_from_db = self._load_active_model()
-        self.provider_adapter = self._init_provider(provider_from_db, model_from_db, api_key_from_db, endpoint_from_db)
-        self.provider_name = (
-            (self.provider_adapter.provider_name if self.provider_adapter else None)
-            or provider_from_db
-            or "rule-based"
-        )
-        self.model_name = (
-            os.getenv("AI_MODEL_NAME")
-            or (self.provider_adapter.model_name if self.provider_adapter else None)
-            or model_from_db
-            or "regex"
-        )
 
     # ------------------------------------------------------------------
     # Configuration helpers
@@ -542,11 +539,19 @@ class AIService:
                         try:
                             provider_adapter = self._init_provider(provider_name, model_name, api_key, endpoint_url)
                             self.prompt_providers[key] = provider_adapter
+                            self.prompt_provider_names[key] = provider_name
+                            self.prompt_model_names[key] = model_name
+                            logger.info(f"Loaded model for {key}: {provider_name}/{model_name}")
                         except Exception as exc:
                             logger.warning(f"Failed to init provider for {key}: {exc}")
                             self.prompt_providers[key] = None
+                            self.prompt_provider_names[key] = "error"
+                            self.prompt_model_names[key] = "error"
                     else:
                         self.prompt_providers[key] = None
+                        self.prompt_provider_names[key] = "none"
+                        self.prompt_model_names[key] = "none"
+                        logger.warning(f"No model selected for {key}")
 
         except Exception as exc:  # pragma: no cover
             logger.warning("Could not load AI system prompts: %s", exc)
@@ -565,25 +570,6 @@ class AIService:
             logger.warning("Could not load AI system prompts: %s", exc)
         return prompts
 
-    def _load_active_model(self) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-        try:
-            with db_cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT l.provider_name, m.model_name, l.api_key, l.endpoint_url
-                    FROM ai_llm_model AS m
-                    JOIN ai_llm AS l ON m.llm_id = l.id
-                    WHERE m.is_active = 1 AND l.enabled = 1
-                    ORDER BY m.id
-                    LIMIT 1
-                    """
-                )
-                row = cursor.fetchone()
-                if row:
-                    return row[0], row[1], row[2], row[3]
-        except Exception as exc:  # pragma: no cover
-            logger.warning("Could not load active AI model: %s", exc)
-        return None, None, None, None
 
     def _init_provider(
         self, provider_from_db: Optional[str], model_from_db: Optional[str],
@@ -613,27 +599,36 @@ class AIService:
     def _provider_generate(
         self, stage_key: str, payload: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
-        # Use stage-specific provider if available, otherwise fallback to global provider
-        provider = self.prompt_providers.get(stage_key) or self.provider_adapter
+        # ONLY use the prompt-specific provider - NO fallback
+        provider = self.prompt_providers.get(stage_key)
+        provider_name = self.prompt_provider_names.get(stage_key, "unknown")
+        model_name = self.prompt_model_names.get(stage_key, "unknown")
 
         if not provider:
-            logger.warning(f"No provider configured for {stage_key}")
+            logger.error(
+                f"No provider configured for {stage_key}. "
+                f"Provider: {provider_name}, Model: {model_name}. "
+                f"Please select a model for this prompt in the database."
+            )
             return None
 
         prompt = self.prompts.get(stage_key, "")
         try:
+            logger.debug(f"Calling {stage_key} with provider={provider_name}, model={model_name}")
             response = provider.generate(prompt=prompt, payload=payload)
 
             # Log raw response for AI4 debugging
             if stage_key == "accounting_classification":
                 logger.info(
-                    "AI4 raw LLM response - parsed: %s, raw: %s",
+                    "AI4 raw LLM response - provider=%s, model=%s, parsed: %s, raw: %s",
+                    provider_name,
+                    model_name,
                     json.dumps(response.parsed, ensure_ascii=False)[:300] if response.parsed else "None",
                     response.raw[:300] if response.raw else "None"
                 )
 
             if not response.raw and response.parsed is None:
-                logger.warning(f"Provider returned empty response for {stage_key}")
+                logger.warning(f"Provider {provider_name}/{model_name} returned empty response for {stage_key}")
                 return None
             if response.parsed is not None:
                 return response.parsed
@@ -648,10 +643,10 @@ class AIService:
                 elif stage_key == "expense_classification":
                     return {"expense_type": raw_text, "confidence": 0.8}
                 else:
-                    logger.warning(f"Provider returned raw text for {stage_key}, expected JSON: {raw_text[:100]}")
+                    logger.warning(f"Provider {provider_name}/{model_name} returned raw text for {stage_key}, expected JSON: {raw_text[:100]}")
                     return None
         except Exception as exc:  # pragma: no cover - network/parse errors
-            logger.error("Provider call for %s failed: %s", stage_key, exc, exc_info=True)
+            logger.error("Provider call for %s failed (provider=%s, model=%s): %s", stage_key, provider_name, model_name, exc, exc_info=True)
             return None
 
     # ------------------------------------------------------------------
@@ -789,6 +784,9 @@ class AIService:
             logger.error(f"AI3 data extraction failed: {error_details}")
             raise ValueError(f"LLM data extraction failed - {error_details}")
 
+        # Deep clean the dictionary from LLM
+        llm_result = _deep_clean_dict(llm_result)
+
         # Extract data from LLM response
         confidence = 0.5
         if "confidence" in llm_result:
@@ -838,12 +836,66 @@ class AIService:
 
         # Extract receipt items from LLM
         receipt_items: List[ReceiptItem] = []
-        if llm_result.get("receipt_items"):
+        llm_items_raw = llm_result.get("receipt_items")
+
+        if llm_items_raw:
+            logger.info(
+                "AI3 LLM returned %d raw receipt_items for file_id=%s",
+                len(llm_items_raw) if isinstance(llm_items_raw, list) else 0,
+                request.file_id
+            )
             try:
-                receipt_items = [ReceiptItem(**item) for item in llm_result["receipt_items"]]
+                for idx, item_dict in enumerate(llm_items_raw, 1):
+                    try:
+                        # Validate and fix main_id
+                        item_main_id = item_dict.get("main_id")
+                        if not item_main_id or item_main_id != request.file_id:
+                            if item_main_id:
+                                logger.warning(
+                                    "AI3 receipt_items[%d] has main_id='%s' but file_id='%s' - correcting",
+                                    idx, item_main_id, request.file_id
+                                )
+                            item_dict["main_id"] = request.file_id
+
+                        # Convert None to empty string for article_id
+                        if item_dict.get("article_id") is None:
+                            item_dict["article_id"] = ""
+
+                        # Validate name is not None - SKIP items without name (no mock data allowed!)
+                        if not item_dict.get("name"):
+                            logger.error(
+                                "AI3 receipt_items[%d] has empty/null name - SKIPPING this item (no mock data allowed)",
+                                idx
+                            )
+                            continue
+
+                        # Ensure number has a default
+                        if not item_dict.get("number"):
+                            item_dict["number"] = 1
+
+                        parsed_item = ReceiptItem(**item_dict)
+                        receipt_items.append(parsed_item)
+                        logger.debug(
+                            "AI3 parsed receipt_items[%d]: name='%s', qty=%d, article_id='%s', total_inc_vat=%s",
+                            idx, parsed_item.name, parsed_item.number,
+                            parsed_item.article_id or 'N/A', parsed_item.item_total_price_inc_vat
+                        )
+                    except Exception as item_exc:
+                        logger.error(
+                            "AI3 failed to parse receipt_items[%d] for file_id=%s: %s. Raw data: %s",
+                            idx, request.file_id, item_exc, item_dict
+                        )
             except Exception as exc:
-                logger.error("Failed to parse LLM receipt items: %s", exc)
+                logger.error(
+                    "AI3 failed to parse LLM receipt_items for file_id=%s: %s. Full raw data: %s",
+                    request.file_id, exc, llm_items_raw
+                )
                 # Continue with empty items rather than failing completely
+        else:
+            logger.warning(
+                "AI3 LLM returned NO receipt_items for file_id=%s (this may be legitimate for some documents)",
+                request.file_id
+            )
 
         logger.info(
             "LLM extracted: company='%s', orgnr='%s', gross=%s, items=%d, confidence=%.2f",

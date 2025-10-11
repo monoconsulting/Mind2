@@ -8,8 +8,8 @@ function normaliseFieldId(value) {
     return '';
   }
   const lower = value.toLowerCase().trim();
-  const withoutPrefix = lower.replace(/^(receipt|unified_files|receipt_items|accounting_proposals|items|line_items|proposals)\./i, '');
-  const withoutBrackets = withoutPrefix.replace(/\[\d+\]/g, '');
+  const withoutPrefix = lower.replace(/^(receipt|unified_files|receipt_items|accounting_proposals|items|line_items|proposals)./i, '');
+  const withoutBrackets = withoutPrefix.replace(/[\d+]/g, '');
   return withoutBrackets;
 }
 
@@ -22,20 +22,240 @@ function resolveBoxField(boxes, candidates) {
   return match?.field || candidates[0];
 }
 
+function firstNonEmptyArray(source, keys) {
+  if (!source || typeof source !== 'object') {
+    return [];
+  }
+  for (const key of keys) {
+    const value = source[key];
+    if (Array.isArray(value) && value.length > 0) {
+      return value;
+    }
+  }
+  const fallbackKey = keys.find((key) => Array.isArray(source[key]));
+  if (fallbackKey) {
+    return source[fallbackKey];
+  }
+  return [];
+}
+
+async function attachLineItemsFallback(payload, receiptId) {
+  if (!receiptId || !payload || typeof payload !== 'object') {
+    return payload;
+  }
+  const existing = firstNonEmptyArray(payload, ['items', 'receipt_items', 'line_items', 'unified_file_items']);
+  if (Array.isArray(existing) && existing.length > 0) {
+    return payload;
+  }
+  try {
+    const res = await api.fetch(`/ai/api/receipts/${receiptId}/line-items`);
+    if (!res.ok) {
+      return payload;
+    }
+    const data = await res.json();
+    const fallback = Array.isArray(data?.line_items)
+      ? data.line_items
+      : Array.isArray(data)
+        ? data
+        : [];
+    if (!fallback.length) {
+      return payload;
+    }
+    console.debug('[ReceiptPreviewModal] Fetched fallback line items', fallback.length);
+    const meta = {
+      ...(payload.meta || {}),
+      items_source: payload.meta?.items_source || 'file_store',
+      items_count: fallback.length,
+    };
+    return {
+      ...payload,
+      line_items: fallback,
+      meta,
+    };
+  } catch (err) {
+    console.error('Failed to load fallback line items', err);
+    return payload;
+  }
+}
+
+function toNullableNumber(value) {
+  if (value === '' || value === null || value === undefined) {
+    return null;
+  }
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function toOptionalString(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value);
+}
+
+function normaliseItems(payload) {
+  const receiptCurrency = payload?.receipt?.currency || 'SEK';
+  const rawItems = firstNonEmptyArray(payload, ['items', 'receipt_items', 'line_items', 'unified_file_items']);
+  return rawItems.map((item) => {
+    const quantity = toNullableNumber(item.number ?? item.quantity ?? item.qty) ?? 1;
+    const unitNet =
+      toNullableNumber(
+        item.item_price_ex_vat ??
+          item.unit_price_ex_vat ??
+          item.price_ex_vat ??
+          item.unit_amount_ex_vat ??
+          item.net_price ??
+          item.unit_net
+      ) ?? null;
+    const unitGross =
+      toNullableNumber(
+        item.item_price_inc_vat ??
+          item.unit_price_inc_vat ??
+          item.price_inc_vat ??
+          item.unit_amount_inc_vat ??
+          item.gross_price ??
+          item.unit_gross
+      ) ?? null;
+    const totalNet =
+      toNullableNumber(
+        item.item_total_price_ex_vat ??
+          item.total_price_ex_vat ??
+          item.total_net ??
+          item.net_amount ??
+          item.amount_ex_vat ??
+          item.total_ex_vat
+      ) ?? (unitNet != null ? unitNet * quantity : null);
+    const totalGross =
+      toNullableNumber(
+        item.item_total_price_inc_vat ??
+          item.total_price_inc_vat ??
+          item.total_gross ??
+          item.gross_amount ??
+          item.total_amount ??
+          item.total_inc_vat
+      ) ?? (unitGross != null ? unitGross * quantity : null);
+    const vatAmount =
+      toNullableNumber(item.vat ?? item.item_vat ?? item.vat_amount ?? item.item_vat_total ?? item.total_vat) ??
+      (totalGross != null && totalNet != null ? totalGross - totalNet : null);
+    const vatRate =
+      toNullableNumber(item.vat_percentage ?? item.vat_rate ?? item.vat_percent ?? item.vat) ??
+      (vatAmount != null && totalNet ? (vatAmount / totalNet) * 100 : null);
+    const idCandidate = item.id ?? item.item_id ?? item.receipt_item_id ?? item.main_id ?? item.uuid ?? null;
+
+    return {
+      id: idCandidate,
+      item_id: item.item_id ?? item.receipt_item_id ?? null,
+      article_id: toOptionalString(
+        item.article_id ?? item.articleNumber ?? item.item_code ?? item.sku ?? item.product_code ?? ''
+      ),
+      name: toOptionalString(item.name ?? item.description ?? item.item_name ?? ''),
+      number: quantity != null ? quantity : '',
+      item_price_ex_vat: unitNet,
+      item_price_inc_vat: unitGross,
+      item_total_price_ex_vat: totalNet,
+      item_total_price_inc_vat: totalGross,
+      vat: vatAmount,
+      vat_percentage: vatRate,
+      currency: toOptionalString(item.currency ?? receiptCurrency ?? 'SEK'),
+    };
+  });
+}
+
+function normaliseProposals(payload, items) {
+  const rawProposals = firstNonEmptyArray(payload, [
+    'proposals',
+    'accounting',
+    'accounting_entries',
+    'accounting_proposals',
+    'ai_accounting_proposals',
+  ]);
+  if (!rawProposals.length) {
+    return [];
+  }
+
+  const itemIndexById = new Map();
+  items.forEach((item, index) => {
+    const candidates = [
+      item.id,
+      item.item_id,
+      item.receipt_item_id,
+      item.article_id,
+      item.sku,
+      item.articleNumber,
+    ]
+      .filter((key) => key !== null && key !== undefined)
+      .map((key) => String(key));
+    candidates.forEach((candidate) => {
+      if (!itemIndexById.has(candidate)) {
+        itemIndexById.set(candidate, index);
+      }
+    });
+  });
+
+  return rawProposals.map((entry, index) => {
+    const debit = toNullableNumber(entry.debit ?? entry.debet ?? entry.amount_debet ?? entry.amount_debit);
+    const credit = toNullableNumber(entry.credit ?? entry.kredit ?? entry.amount_credit);
+    const vatRate = toNullableNumber(entry.vat_rate ?? entry.vat ?? entry.vat_percentage);
+    let itemIndex =
+      typeof entry.item_index === 'number' && Number.isInteger(entry.item_index)
+        ? entry.item_index
+        : null;
+    const candidateKeys = [
+      entry.item_id,
+      entry.receipt_item_id,
+      entry.item,
+      entry.item_key,
+      entry.article_id,
+    ]
+      .filter((key) => key !== null && key !== undefined)
+      .map((key) => String(key));
+    if ((itemIndex === null || itemIndex < 0 || itemIndex >= items.length) && candidateKeys.length) {
+      for (const candidate of candidateKeys) {
+        if (itemIndexById.has(candidate)) {
+          itemIndex = itemIndexById.get(candidate);
+          break;
+        }
+      }
+    }
+    if (itemIndex === null || itemIndex < 0 || itemIndex >= items.length) {
+      itemIndex = items.length > 0 ? Math.min(index, items.length - 1) : 0;
+    }
+
+    return {
+      id: entry.id ?? entry.proposal_id ?? null,
+      item_index: itemIndex,
+      account: toOptionalString(entry.account ?? entry.account_code ?? entry.konto ?? ''),
+      debit,
+      credit,
+      vat_rate: vatRate,
+      notes: toOptionalString(entry.notes ?? entry.description ?? entry.memo ?? ''),
+    };
+  });
+}
+
 function decorateModalPayload(payload) {
   if (!payload) {
     return payload;
   }
-  const items = Array.isArray(payload.items) ? payload.items : [];
-  const proposals = Array.isArray(payload.proposals) ? payload.proposals : [];
   const company = payload.company || {};
-  const itemCount = items.length || 1;
-  const decoratedProposals = proposals.map((entry, index) => {
-    const itemIndex = typeof entry.item_index === 'number' ? entry.item_index : Math.min(index, Math.max(itemCount - 1, 0));
-    return { ...entry, item_index: itemIndex };
-  });
-  return { ...payload, company, items, proposals: decoratedProposals };
+  const items = normaliseItems(payload);
+  const proposals = normaliseProposals(payload, items);
+  return { ...payload, company, items, proposals };
 }
+
+const ITEM_DETAIL_FIELDS = [
+  { key: 'article_id', label: 'Artikelnummer' },
+  { key: 'name', label: 'Artikel' },
+  { key: 'number', label: 'Antal' },
+  { key: 'currency', label: 'Valuta' },
+  { key: 'item_price_ex_vat', label: 'Belopp ex. moms' },
+  { key: 'item_price_inc_vat', label: 'Belopp ink. moms' },
+  { key: 'vat', label: 'Belopp moms' },
+  { key: 'vat_percentage', label: 'Moms %' },
+  { key: 'item_total_price_ex_vat', label: 'Belopp totalt ex. moms' },
+  { key: 'item_total_price_inc_vat', label: 'Belopp totalt ink. moms' },
+  { key: 'item_vat_total', label: 'Belopp moms totalt', computed: true },
+];
 
 function prepareDraft(payload) {
   if (!payload) {
@@ -45,8 +265,9 @@ function prepareDraft(payload) {
   const company = payload.company || {};
   const items = (payload.items || []).map((item) => ({
     id: item.id ?? null,
-    article_id: item.article_id || '',
-    name: item.name || item.description || '',
+    item_id: item.item_id ?? null,
+    article_id: toOptionalString(item.article_id || item.articleNumber || ''),
+    name: toOptionalString(item.name || item.description || ''),
     number: item.number != null ? String(item.number) : '',
     item_price_ex_vat: item.item_price_ex_vat != null ? String(item.item_price_ex_vat) : '',
     item_price_inc_vat: item.item_price_inc_vat != null ? String(item.item_price_inc_vat) : '',
@@ -54,17 +275,20 @@ function prepareDraft(payload) {
     item_total_price_inc_vat: item.item_total_price_inc_vat != null ? String(item.item_total_price_inc_vat) : '',
     vat: item.vat != null ? String(item.vat) : '',
     vat_percentage: item.vat_percentage != null ? String(item.vat_percentage) : '',
-    currency: item.currency || 'SEK',
+    currency: toOptionalString(item.currency || payload?.receipt?.currency || 'SEK'),
   }));
   const itemCount = Math.max(items.length, 1);
   const proposals = (payload.proposals || []).map((entry, index) => ({
     id: entry.id ?? null,
-    account: entry.account || entry.account_code || '',
+    account: toOptionalString(entry.account || entry.account_code || ''),
     debit: entry.debit != null ? String(entry.debit) : '',
     credit: entry.credit != null ? String(entry.credit) : '',
     vat_rate: entry.vat_rate != null ? String(entry.vat_rate) : '',
-    notes: entry.notes || '',
-    item_index: typeof entry.item_index === 'number' ? entry.item_index : Math.min(index, itemCount - 1),
+    notes: toOptionalString(entry.notes || ''),
+    item_index:
+      typeof entry.item_index === 'number' && entry.item_index >= 0
+        ? entry.item_index
+        : Math.min(index, itemCount - 1),
   }));
   return {
     receipt: {
@@ -75,10 +299,13 @@ function prepareDraft(payload) {
       payment_type: receipt.payment_type || '',
       expense_type: receipt.expense_type || '',
       credit_card_number: receipt.credit_card_number || '',
-      credit_card_last_4: receipt.credit_card_last_4 || '',
+      credit_card_last_4_digits: receipt.credit_card_last_4_digits || '',
+      credit_card_type: receipt.credit_card_type || '',
       credit_card_brand_full: receipt.credit_card_brand_full || '',
       credit_card_brand_short: receipt.credit_card_brand_short || '',
+      credit_card_payment_variant: receipt.credit_card_payment_variant || '',
       credit_card_token: receipt.credit_card_token || '',
+      credit_card_entering_mode: receipt.credit_card_entering_mode || '',
       currency: receipt.currency || 'SEK',
       exchange_rate: receipt.exchange_rate != null ? String(receipt.exchange_rate) : '',
       gross_amount: receipt.gross_amount != null ? String(receipt.gross_amount) : '',
@@ -168,12 +395,18 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
-        const json = decorateModalPayload(await res.json());
+        let rawPayload = await res.json();
+        rawPayload = await attachLineItemsFallback(rawPayload, receipt.id);
         if (cancelled) {
           return;
         }
-        setPayload(json);
-        setDraft(prepareDraft(json));
+        const decorated = decorateModalPayload(rawPayload);
+        const mergedPayload = { ...rawPayload, ...decorated };
+        if (cancelled) {
+          return;
+        }
+        setPayload(mergedPayload);
+        setDraft(prepareDraft(mergedPayload));
         setLoading(false);
       } catch (err) {
         if (!cancelled) {
@@ -195,63 +428,23 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
   }
 
   const boxes = payload?.boxes || [];
-  const resolveCandidates = React.useCallback(
-    (candidates) => resolveBoxField(boxes, (candidates || []).filter(Boolean)),
-    [boxes]
-  );
 
-  const matchHighlight = React.useCallback(
-    (key) => {
-      if (!hoverField || !key) {
-        return '';
-      }
-      return normaliseFieldId(hoverField) === normaliseFieldId(key) ? 'highlighted' : 'muted';
-    },
-    [hoverField]
-  );
-
-  const highlightReceiptField = React.useCallback(
-    (field, extras = []) => resolveCandidates([field, `receipt.${field}`, `unified_files.${field}`, ...extras]),
-    [resolveCandidates]
-  );
-
-  const highlightItemField = React.useCallback(
-    (index, field, extras = []) =>
-      resolveCandidates([
-        `items[${index}].${field}`,
-        `line_items[${index}].${field}`,
-        `receipt_items[${index}].${field}`,
-        ...extras,
-      ]),
-    [resolveCandidates]
-  );
-
-  const highlightProposalField = React.useCallback(
-    (index, field, extras = []) =>
-      resolveCandidates([
-        `accounting_proposals[${index}].${field}`,
-        `proposals[${index}].${field}`,
-        ...extras,
-      ]),
-    [resolveCandidates]
-  );
+  const matchHighlight = (key) => {
+    if (!hoverField || !key) {
+      return '';
+    }
+    return normaliseFieldId(hoverField) === normaliseFieldId(key) ? 'highlighted' : 'muted';
+  };
 
   const receiptData = payload?.receipt || {};
   const receiptDraft = draft?.receipt || {};
   const companyData = payload?.company || {};
   const companyDraft = draft?.company || {};
 
-  const itemsSource = React.useMemo(
-    () => (editing && draft ? draft.items : payload?.items || []),
-    [editing, draft, payload]
-  );
+  const itemsSource = editing && draft ? draft.items : payload?.items || [];
+  const proposalsSource = editing && draft ? draft.proposals : payload?.proposals || [];
 
-  const proposalsSource = React.useMemo(
-    () => (editing && draft ? draft.proposals : payload?.proposals || []),
-    [editing, draft, payload]
-  );
-
-  const proposalsByItem = React.useMemo(() => {
+  const proposalsByItem = (() => {
     if (!itemsSource.length) {
       return [];
     }
@@ -264,7 +457,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
       groups[targetIndex].push({ ...entry, _globalIndex: index });
     });
     return groups;
-  }, [itemsSource, proposalsSource]);
+  })();
 
   const updateReceiptDraft = (field, value) => {
     setDraft((prev) => {
@@ -329,20 +522,23 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
         throw new Error(`HTTP ${res.status}`);
       }
       const json = await res.json();
-      const refreshed = decorateModalPayload(json.data || {});
+      let refreshedPayload = json.data || {};
+      refreshedPayload = await attachLineItemsFallback(refreshedPayload, receipt.id);
+      const decorated = decorateModalPayload(refreshedPayload);
       const nextPayload = {
         ...(payload || {}),
-        receipt: refreshed.receipt || payload?.receipt || {},
-        company: refreshed.company || payload?.company || {},
-        items: refreshed.items || [],
-        proposals: refreshed.proposals || [],
+        ...refreshedPayload,
+        receipt: decorated.receipt || payload?.receipt || {},
+        company: decorated.company || payload?.company || {},
+        items: decorated.items || [],
+        proposals: decorated.proposals || [],
       };
       setPayload(nextPayload);
       setDraft(prepareDraft(nextPayload));
       setEditing(false);
       setHoverField(null);
-      if (refreshed.receipt && typeof onReceiptUpdate === 'function') {
-        onReceiptUpdate(refreshed.receipt);
+      if (decorated.receipt && typeof onReceiptUpdate === 'function') {
+        onReceiptUpdate(decorated.receipt);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -360,8 +556,8 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
   const baseImageSrc = previewImage || `/ai/api/receipts/${receipt.id}/image?size=preview&rotate=portrait`;
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-label={`Förhandsgranskning kvitto ${receipt.id}`} onClick={handleBackdrop}>
-      <div className="modal modal-xxl receipt-preview-modal" onClick={(event) => event.stopPropagation()}>
+    <div className="modal-backdrop receipt-preview-modal" role="dialog" aria-label={`Förhandsgranskning kvitto ${receipt.id}`} onClick={handleBackdrop}>
+      <div className="modal modal-xxl" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>
             <h3>Förhandsgranska kvitto</h3>
@@ -388,13 +584,13 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
           ) : !payload ? (
             <div className="receipt-modal-loading">Ingen data tillgänglig</div>
           ) : (
-            <div className="receipt-modal-content" style={{ display: 'flex', gap: '1rem', height: 'calc(100vh - 250px)' }}>
+            <div className="receipt-modal-content">
               {/* Left Column - Company & Receipt Data */}
-              <div className="receipt-modal-column receipt-modal-left" style={{ flex: '1', overflowY: 'auto', paddingRight: '0.5rem' }}>
+              <div className="receipt-modal-column receipt-modal-left">
                 {/* RP5: Grunddata (Box 1) - Company Information */}
                 <div className="receipt-modal-section">
                   <h4>Grunddata (Företagsinformation)</h4>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                  <div className="receipt-modal-grid">
                     {[
                       { key: 'name', label: 'Företag', source: 'company' },
                       { key: 'orgnr', label: 'Organisationsnummer', source: 'company' },
@@ -431,17 +627,20 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                 {/* RP6: Betalningstyp (Box 2) - Payment Information */}
                 <div className="receipt-modal-section">
                   <h4>Betalningstyp</h4>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                  <div className="receipt-modal-grid">
                     {[
                       { key: 'purchase_datetime', label: 'Inköpsdatum' },
                       { key: 'receipt_number', label: 'Kvittonnummer' },
                       { key: 'payment_type', label: 'Betalningstyp' },
                       { key: 'expense_type', label: 'Utgiftstyp' },
                       { key: 'credit_card_number', label: 'Kortnummer' },
-                      { key: 'credit_card_last_4', label: 'Kortnummer 4 sista' },
-                      { key: 'credit_card_brand_full', label: 'Korttyp' },
+                      { key: 'credit_card_last_4_digits', label: 'Kortnummer 4 sista' },
+                      { key: 'credit_card_type', label: 'Korttyp' },
+                      { key: 'credit_card_brand_full', label: 'Korttyp full' },
                       { key: 'credit_card_brand_short', label: 'Korttyp kort' },
+                      { key: 'credit_card_payment_variant', label: 'Betalningsvariant' },
                       { key: 'credit_card_token', label: 'Korttyp token' },
+                      { key: 'credit_card_entering_mode', label: 'Inmatningsläge' },
                     ].map((field) => (
                       <div key={field.key} className="receipt-modal-field">
                         <label className="field-label">{field.label}</label>
@@ -465,7 +664,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                 {/* RP7: Belopp (Box 3) - Amounts and VAT */}
                 <div className="receipt-modal-section">
                   <h4>Belopp</h4>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                  <div className="receipt-modal-grid">
                     {[
                       { key: 'currency', label: 'Valuta' },
                       { key: 'exchange_rate', label: 'Växlingskurs' },
@@ -517,19 +716,21 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                 </div>
 
                 {/* OCR Text Section */}
+                {editing && (
                 <div className="receipt-modal-section ocr-section">
                   <h4>OCR-text</h4>
                   <div className="ocr-content" style={{ whiteSpace: 'pre-wrap', maxHeight: '200px', overflowY: 'auto' }}>
                     {receiptDraft.ocr_raw || 'Ingen OCR-data tillgänglig'}
                   </div>
                 </div>
+                )}
               </div>
 
               {/* Center Column - Image */}
-              <div className="receipt-modal-center" style={{ flex: '1', overflowY: 'auto', paddingRight: '0.5rem' }}>
-                <div className="receipt-modal-image-wrapper" style={{ position: 'relative' }}>
+              <div className="receipt-modal-center">
+                <div className="receipt-modal-image-wrapper">
                   {baseImageSrc ? (
-                    <img src={baseImageSrc} alt={`Kvitto ${receipt.id}`} className="receipt-modal-image" style={{ width: '100%', height: 'auto' }} />
+                    <img src={baseImageSrc} alt={`Kvitto ${receipt.id}`} className="receipt-modal-image" />
                   ) : (
                     <div className="receipt-modal-image-fallback">Ingen bild</div>
                   )}
@@ -565,144 +766,158 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
               </div>
 
               {/* RP9: Items Table with Accounting (Right Column) */}
-              <div className="receipt-modal-column receipt-modal-right" style={{ flex: '1.5', overflowY: 'auto' }}>
+              <div className="receipt-modal-column receipt-modal-right">
                 <div className="receipt-modal-section">
-                  <h4>Varor och kontering</h4>
+                  <div className="receipt-item-header-main">Varor och kontering</div>
                   {itemsSource.length === 0 ? (
                     <div className="field-value muted">Inga varor registrerade</div>
                   ) : (
                     itemsSource.map((item, itemIndex) => {
                       const itemProposals = proposalsByItem[itemIndex] || [];
+                      const itemDraft = editing && draft ? draft.items[itemIndex] : null;
+                      const getItemValue = (key) => {
+                        if (editing && itemDraft && Object.prototype.hasOwnProperty.call(itemDraft, key)) {
+                          return itemDraft[key];
+                        }
+                        return item[key];
+                      };
                       return (
-                        <div key={`item-${itemIndex}`} className="receipt-item-card" style={{ marginBottom: '1.5rem', border: '1px solid #374151', borderRadius: '8px', padding: '1rem' }}>
-                          {/* Row Number Header */}
-                          <div style={{ background: '#1f2937', padding: '0.5rem', marginBottom: '1rem', borderRadius: '4px', fontWeight: 'bold' }}>
-                            RAD {itemIndex + 1}
-                          </div>
-
-                          {/* Item Details Grid (4 columns) */}
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem', marginBottom: '1rem' }}>
-                            {[
-                              { key: 'article_id', label: 'Artikelnummer' },
-                              { key: 'name', label: 'Artikel' },
-                              { key: 'number', label: 'Antal' },
-                              { key: '', label: '' },
-                              { key: 'item_price_ex_vat', label: 'Belopp ex. moms' },
-                              { key: 'item_price_inc_vat', label: 'Belopp ink. moms' },
-                              { key: 'vat', label: 'Belopp moms' },
-                              { key: 'vat_percentage', label: 'Moms %' },
-                              { key: 'item_total_price_ex_vat', label: 'Belopp totalt ex. moms' },
-                              { key: 'item_total_price_inc_vat', label: 'Belopp totalt ink. moms' },
-                              { key: 'item_vat_total', label: 'Belopp moms totalt', computed: true },
-                              { key: 'vat_percentage', label: 'Moms %' },
-                            ].map((field, idx) => {
-                              if (!field.key && !field.label) {
-                                return <div key={idx}></div>;
-                              }
-                              const value = editing && draft ? draft.items[itemIndex][field.key] : item[field.key];
-                              const displayValue = field.computed && field.key === 'item_vat_total'
-                                ? (Number(item.vat || 0) * Number(item.number || 1)).toFixed(2)
-                                : value;
+                        <div key={`item-${itemIndex}`} className="receipt-item-card-new">
+                          <div className="receipt-item-header-new">RAD {itemIndex + 1}</div>
+                          <div className="receipt-item-grid-new">
+                            {ITEM_DETAIL_FIELDS.map((field) => {
+                              const computedValue =
+                                field.computed && field.key === 'item_vat_total'
+                                  ? (() => {
+                                      const grossTotal = Number(
+                                        getItemValue('item_total_price_inc_vat') ?? getItemValue('item_price_inc_vat') ?? 0
+                                      );
+                                      const netTotal = Number(
+                                        getItemValue('item_total_price_ex_vat') ?? getItemValue('item_price_ex_vat') ?? 0
+                                      );
+                                      const diff = grossTotal - netTotal;
+                                      if (Number.isFinite(diff) && Math.abs(diff) > 0) {
+                                        return diff.toFixed(2);
+                                      }
+                                      const fallback = Number(getItemValue('vat') || 0) * Number(getItemValue('number') || 1);
+                                      return Number.isFinite(fallback) && Math.abs(fallback) > 0 ? fallback.toFixed(2) : '';
+                                    })()
+                                  : null;
+                              const readOnlyValue = field.computed ? computedValue : getItemValue(field.key);
+                              const draftValue = itemDraft ? itemDraft[field.key] ?? '' : '';
                               return (
-                                <div key={`${field.key}-${idx}`} style={{ fontSize: '0.875rem' }}>
-                                  <div style={{ color: '#9ca3af', marginBottom: '0.25rem' }}>{field.label}</div>
+                                <div key={`${field.key}-${itemIndex}`} className="receipt-item-cell-new">
+                                  <span className="cell-label-new">{field.label}</span>
                                   {editing && !field.computed ? (
                                     <input
-                                      className="dm-input"
-                                      style={{ fontSize: '0.875rem', padding: '0.25rem' }}
-                                      value={displayValue ?? ''}
+                                      className="dm-input-new"
+                                      value={draftValue}
                                       onChange={(event) => updateItemDraft(itemIndex, field.key, event.target.value)}
                                       disabled={saving}
                                     />
                                   ) : (
-                                    <div style={{ color: '#e5e7eb', fontWeight: '500' }}>{displayValue || '-'}</div>
+                                    <div className="cell-value-new">{readOnlyValue !== null && readOnlyValue !== undefined && readOnlyValue !== '' ? readOnlyValue : '-'}</div>
                                   )}
                                 </div>
                               );
                             })}
                           </div>
 
-                          {/* Accounting Proposals */}
-                          <div style={{ borderTop: '1px solid #374151', paddingTop: '1rem' }}>
-                            <div style={{ fontWeight: 'bold', marginBottom: '0.75rem', color: '#9ca3af' }}>Kontering:</div>
+                          <div className="proposal-group-new">
+                            <div className="proposal-group-header-new">Kontering</div>
                             {itemProposals.length === 0 ? (
-                              <div className="field-value muted">Inga konteringsförslag</div>
+                              <div className="proposal-empty-new">Inga konteringsförslag</div>
                             ) : (
                               itemProposals.map((proposal) => {
                                 const globalIndex = proposal._globalIndex;
-                                const debitValue = editing && draft ? draft.proposals[globalIndex].debit : proposal.debit;
-                                const creditValue = editing && draft ? draft.proposals[globalIndex].credit : proposal.credit;
-                                const accountValue = editing && draft ? draft.proposals[globalIndex].account : proposal.account;
-                                const vatRateValue = editing && draft ? draft.proposals[globalIndex].vat_rate : proposal.vat_rate;
-                                const notesValue = editing && draft ? draft.proposals[globalIndex].notes : proposal.notes;
+                                const proposalDraft = editing && draft ? draft.proposals[globalIndex] : null;
+                                const debitValue = proposalDraft ? proposalDraft.debit : proposal.debit;
+                                const creditValue = proposalDraft ? proposalDraft.credit : proposal.credit;
+                                const accountValue = proposalDraft ? proposalDraft.account : proposal.account;
+                                const vatRateValue = proposalDraft ? proposalDraft.vat_rate : proposal.vat_rate;
+                                const notesValue = proposalDraft ? proposalDraft.notes : proposal.notes;
 
                                 const isDebit = Number(debitValue || 0) > 0;
                                 const amount = isDebit ? debitValue : creditValue;
-                                const prefix = isDebit ? 'Debet:' : 'Kredit:';
+                                const amountDisplay = editing
+                                  ? amount ?? ''
+                                  : amount != null && amount !== ''
+                                  ? formatCurrency(Number(amount))
+                                  : '-';
+                                const vatRateDisplay = editing
+                                  ? vatRateValue ?? ''
+                                  : vatRateValue != null && vatRateValue !== ''
+                                  ? `${Number(vatRateValue).toLocaleString('sv-SE', { maximumFractionDigits: 2 })}%`
+                                  : '-';
 
                                 return (
-                                  <div key={`proposal-${globalIndex}`} style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem', marginBottom: '0.5rem', padding: '0.5rem', background: '#111827', borderRadius: '4px' }}>
-                                    <div style={{ fontSize: '0.875rem' }}>
-                                      <div style={{ color: '#9ca3af' }}>{prefix} {accountValue || '-'}</div>
-                                      {editing && (
-                                        <input
-                                          className="dm-input"
-                                          style={{ fontSize: '0.875rem', padding: '0.25rem', marginTop: '0.25rem' }}
-                                          value={accountValue ?? ''}
-                                          onChange={(event) => updateProposalDraft(globalIndex, 'account', event.target.value)}
-                                          disabled={saving}
-                                          placeholder="Konto"
-                                        />
-                                      )}
-                                    </div>
-                                    <div style={{ fontSize: '0.875rem' }}>
-                                      <div style={{ color: '#9ca3af' }}>Belopp: {amount || '0.00'}</div>
-                                      {editing && (
-                                        <div style={{ display: 'flex', gap: '0.25rem', marginTop: '0.25rem' }}>
+                                  <div key={`proposal-${globalIndex}`} className="proposal-card-new">
+                                    <div className="proposal-line-new">
+                                      <div className="proposal-cell-new">
+                                        <span className="cell-label-new">{isDebit ? 'Debetkonto' : 'Kreditkonto'}</span>
+                                        {editing ? (
                                           <input
-                                            className="dm-input"
-                                            style={{ fontSize: '0.875rem', padding: '0.25rem', flex: 1 }}
-                                            value={debitValue ?? ''}
-                                            onChange={(event) => updateProposalDraft(globalIndex, 'debit', event.target.value)}
+                                            className="dm-input-new"
+                                            value={accountValue ?? ''}
+                                            onChange={(event) => updateProposalDraft(globalIndex, 'account', event.target.value)}
                                             disabled={saving}
-                                            placeholder="Debet"
+                                            placeholder="Konto"
                                           />
+                                        ) : (
+                                          <div className="cell-value-new">{accountValue || '-'}</div>
+                                        )}
+                                      </div>
+                                      <div className="proposal-cell-new">
+                                        <span className="cell-label-new">Belopp {isDebit ? 'Debet' : 'Kredit'}</span>
+                                        {editing ? (
+                                          <div className="proposal-amount-inputs-new">
+                                            <input
+                                              className="dm-input-new"
+                                              value={debitValue ?? ''}
+                                              onChange={(event) => updateProposalDraft(globalIndex, 'debit', event.target.value)}
+                                              disabled={saving}
+                                              placeholder="Debet"
+                                            />
+                                            <input
+                                              className="dm-input-new"
+                                              value={creditValue ?? ''}
+                                              onChange={(event) => updateProposalDraft(globalIndex, 'credit', event.target.value)}
+                                              disabled={saving}
+                                              placeholder="Kredit"
+                                            />
+                                          </div>
+                                        ) : (
+                                          <div className="cell-value-new">{amountDisplay}</div>
+                                        )}
+                                      </div>
+                                      <div className="proposal-cell-new">
+                                        <span className="cell-label-new">Momssats</span>
+                                        {editing ? (
                                           <input
-                                            className="dm-input"
-                                            style={{ fontSize: '0.875rem', padding: '0.25rem', flex: 1 }}
-                                            value={creditValue ?? ''}
-                                            onChange={(event) => updateProposalDraft(globalIndex, 'credit', event.target.value)}
+                                            className="dm-input-new"
+                                            value={vatRateValue ?? ''}
+                                            onChange={(event) => updateProposalDraft(globalIndex, 'vat_rate', event.target.value)}
                                             disabled={saving}
-                                            placeholder="Kredit"
+                                            placeholder="Moms %"
                                           />
-                                        </div>
-                                      )}
-                                    </div>
-                                    <div style={{ fontSize: '0.875rem' }}>
-                                      <div style={{ color: '#9ca3af' }}>Momssats: {vatRateValue || '0'}%</div>
-                                      {editing && (
-                                        <input
-                                          className="dm-input"
-                                          style={{ fontSize: '0.875rem', padding: '0.25rem', marginTop: '0.25rem' }}
-                                          value={vatRateValue ?? ''}
-                                          onChange={(event) => updateProposalDraft(globalIndex, 'vat_rate', event.target.value)}
-                                          disabled={saving}
-                                          placeholder="Moms %"
-                                        />
-                                      )}
-                                    </div>
-                                    <div style={{ fontSize: '0.875rem' }}>
-                                      <div style={{ color: '#9ca3af' }}>{notesValue || 'Ingen notering'}</div>
-                                      {editing && (
-                                        <input
-                                          className="dm-input"
-                                          style={{ fontSize: '0.875rem', padding: '0.25rem', marginTop: '0.25rem' }}
-                                          value={notesValue ?? ''}
-                                          onChange={(event) => updateProposalDraft(globalIndex, 'notes', event.target.value)}
-                                          disabled={saving}
-                                          placeholder="Notering"
-                                        />
-                                      )}
+                                        ) : (
+                                          <div className="cell-value-new">{vatRateDisplay}</div>
+                                        )}
+                                      </div>
+                                      <div className="proposal-cell-new">
+                                        <span className="cell-label-new">Notering</span>
+                                        {editing ? (
+                                          <input
+                                            className="dm-input-new"
+                                            value={notesValue ?? ''}
+                                            onChange={(event) => updateProposalDraft(globalIndex, 'notes', event.target.value)}
+                                            disabled={saving}
+                                            placeholder="Notering"
+                                          />
+                                        ) : (
+                                          <div className="cell-value-new">{notesValue || 'Ingen notering'}</div>
+                                        )}
+                                      </div>
                                     </div>
                                   </div>
                                 );

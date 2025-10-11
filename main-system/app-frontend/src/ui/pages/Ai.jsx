@@ -31,7 +31,7 @@ function PromptModal({ isOpen, onClose, prompt, onSave }) {
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
       <div className="bg-gray-800 rounded-lg max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between p-4 border-b border-gray-700">
-          <h3 className="text-xl font-semibold text-white">{prompt.title}</h3>
+          <h3 className="text-xl font-semibold text-white">{prompt?.title || ''}</h3>
           <button
             onClick={onClose}
             className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
@@ -46,7 +46,7 @@ function PromptModal({ isOpen, onClose, prompt, onSave }) {
                 Beskrivning
               </label>
               <textarea
-                value={editedPrompt.description || ''}
+                value={editedPrompt?.description || ''}
                 onChange={(e) => setEditedPrompt({ ...editedPrompt, description: e.target.value })}
                 className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 h-20 resize-none"
                 placeholder="Kort beskrivning av vad prompten används till..."
@@ -57,7 +57,7 @@ function PromptModal({ isOpen, onClose, prompt, onSave }) {
                 Systemprompt
               </label>
               <textarea
-                value={editedPrompt.prompt_content || ''}
+                value={editedPrompt?.prompt_content || ''}
                 onChange={(e) => setEditedPrompt({ ...editedPrompt, prompt_content: e.target.value })}
                 className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 h-96 font-mono text-sm resize-none"
                 placeholder="Ange systemprompt här..."
