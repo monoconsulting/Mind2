@@ -784,7 +784,7 @@ def list_receipts() -> Any:
             with db_cursor() as cur:
                 cur.execute(
                     (
-                        "SELECT u.id, u.original_filename, c.name as merchant_name, u.purchase_datetime, u.net_amount_sek, u.gross_amount_sek, u.ai_status, u.file_type, u.submitted_by, "
+                        "SELECT u.id, u.original_filename, c.name as company_name, u.purchase_datetime, u.net_amount_sek, u.gross_amount_sek, u.ai_status, u.file_type, u.submitted_by, "
                         "u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, "
                         "COALESCE(GROUP_CONCAT(t.tag), '') as tags "
                         "FROM unified_files u "
@@ -1388,6 +1388,8 @@ def get_workflow_status(rid: str) -> Any:
         "match": {"status": "pending", "data": None},
     }
 
+    pdf_convert_status = "N/A"
+
     if db_cursor is not None:
         try:
             # Get file metadata
@@ -1396,7 +1398,7 @@ def get_workflow_status(rid: str) -> Any:
                     """
                     SELECT
                         u.id, u.original_filename, u.file_creation_timestamp,
-                        u.submitted_by, c.name as company_name, u.created_at, u.ocr_raw
+                        u.submitted_by, c.name as company_name, u.created_at, u.ocr_raw, u.other_data
                     FROM unified_files u
                     LEFT JOIN companies c ON c.id = u.company_id
                     WHERE u.id = %s
@@ -1405,7 +1407,7 @@ def get_workflow_status(rid: str) -> Any:
                 )
                 file_row = cur.fetchone()
                 if file_row:
-                    file_id, original_filename, file_creation_ts, submitted_by, company_name, created_at, ocr_raw = file_row
+                    file_id, original_filename, file_creation_ts, submitted_by, company_name, created_at, ocr_raw, other_data = file_row
 
                     # Set title: company name if exists, otherwise file ID
                     workflow_status["title"] = company_name if company_name else f"ID: {file_id}"
@@ -1423,6 +1425,21 @@ def get_workflow_status(rid: str) -> Any:
 
                     # Store OCR raw text for modal display
                     workflow_status["ocr_raw"] = ocr_raw
+
+                    # Check if this is a PDF page (converted from PDF)
+                    try:
+                        other_data_dict = json.loads(other_data) if other_data else {}
+                        detected_kind = other_data_dict.get("detected_kind")
+                        source_pdf = other_data_dict.get("source_pdf")
+
+                        if detected_kind == "pdf_page" or source_pdf:
+                            # This is a PDF page - PDF conversion was successful
+                            pdf_convert_status = "success"
+                        elif detected_kind == "pdf":
+                            # This is a PDF parent file - check if pages were generated
+                            pdf_convert_status = "success" if other_data_dict.get("page_count", 0) > 0 else "pending"
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
             # Get AI processing history
             with db_cursor() as cur:
@@ -1485,5 +1502,8 @@ def get_workflow_status(rid: str) -> Any:
             logger.error(f"Error fetching workflow status for {rid}: {e}")
             import traceback
             logger.error(traceback.format_exc())
+
+    # Set pdf_convert status
+    workflow_status["pdf_convert"] = pdf_convert_status
 
     return jsonify(workflow_status), 200
