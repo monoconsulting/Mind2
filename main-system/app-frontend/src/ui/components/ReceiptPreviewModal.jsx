@@ -1,5 +1,5 @@
 import React from 'react';
-import { FiX, FiSave, FiEdit2 } from 'react-icons/fi';
+import { FiX, FiSave, FiEdit2, FiTrash2 } from 'react-icons/fi';
 import { api } from '../api';
 
 // Helper functions
@@ -553,6 +553,26 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
     }
   };
 
+  const handleDelete = async () => {
+    if (!receipt?.id) {
+      return;
+    }
+    try {
+      const res = await api.fetch(`/ai/api/receipts/${receipt.id}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      if (typeof onReceiptUpdate === 'function') {
+        onReceiptUpdate({ id: receipt.id, deleted: true });
+      }
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const baseImageSrc = previewImage || `/ai/api/receipts/${receipt.id}/image?size=preview&rotate=portrait`;
 
   return (
@@ -947,10 +967,16 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                 </button>
               </>
             ) : (
-              <button type="button" className="btn btn-secondary" onClick={handleToggleEdit} disabled={saving || loading || !payload}>
-                <FiEdit2 />
-                Redigera
-              </button>
+              <>
+                <button type="button" className="btn btn-secondary" onClick={handleToggleEdit} disabled={saving || loading || !payload}>
+                  <FiEdit2 />
+                  Redigera
+                </button>
+                <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={saving || loading} title="Radera kvitto">
+                  <FiTrash2 />
+                  Radera
+                </button>
+              </>
             )}
             <button type="button" className="btn btn-text" onClick={onClose} disabled={saving}>
               Stäng
