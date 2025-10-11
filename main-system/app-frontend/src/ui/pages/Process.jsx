@@ -19,7 +19,8 @@ import {
   FiUpload,
   FiClock,
   FiFile,
-  FiCpu
+  FiCpu,
+  FiTrash2
 } from 'react-icons/fi'
 import { api } from '../api'
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal'
@@ -1389,6 +1390,24 @@ export default function Receipts() {
     }, 2000);
   };
 
+  const handleDelete = async (receipt) => {
+    try {
+      const res = await api.fetch(`/ai/api/receipts/${receipt.id}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      setItems((prev) => prev.filter((item) => item.id !== receipt.id));
+      setMeta((prev) => ({ ...prev, total: Math.max(0, prev.total - 1) }));
+    } catch (error) {
+      console.error('Delete failed', error);
+      setBanner({
+        type: 'error',
+        message: `Kunde inte radera kvitto: ${error instanceof Error ? error.message : error}`
+      });
+    }
+  };
 
   const dismissBanner = () => setBanner(null)
 
@@ -1561,6 +1580,13 @@ export default function Receipts() {
                           title="Återuppta bearbetning från där den stannade">
                           <FiRefreshCw style={{ fontSize: '0.875rem' }} />
                           Återuppta
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-sm"
+                          onClick={() => handleDelete(receipt)}
+                          title="Radera kvitto">
+                          <FiTrash2 />
                         </button>
                       </div>
                     </td>
