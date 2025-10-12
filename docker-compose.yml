@@ -7,6 +7,7 @@ services:
     volumes:
       - ./storage:/data/storage
       - ./inbox:/data/inbox
+      - G:\Dropbox\MINDUPLOAD:/data/upload
     environment:
       - PYTHONPATH=/app
       - DB_HOST=mysql
@@ -32,6 +33,7 @@ services:
       - FTP_PASSIVE=${FTP_PASSIVE}
       - FTP_ALLOWED_EXT=${FTP_ALLOWED_EXT}
       - FTP_DELETE_AFTER=${FTP_DELETE_AFTER}
+      - DB_AUTO_MIGRATE=0
     networks: [main]
     profiles: [main]
 
@@ -40,10 +42,11 @@ services:
       context: .
       dockerfile: ./backend/Dockerfile
     image: mind2-ai-api:dev # Use the same image as the api
-    command: ["celery", "-A", "services.tasks.celery_app", "worker", "--loglevel=INFO", "--concurrency=4", "--soft-time-limit=240", "--time-limit=300"]
+    command: ["celery", "-A", "services.tasks.celery_app", "worker", "--loglevel=INFO", "--concurrency=4", "--soft-time-limit=480", "--time-limit=600"]
     entrypoint: []
     volumes:
       - ./storage:/data/storage
+      - G:\Dropbox\MINDUPLOAD:/data/upload
     environment:
       - PYTHONPATH=/app
       - DB_HOST=mysql
@@ -109,7 +112,32 @@ services:
     build:
       context: ./main-system/app-frontend
       dockerfile: Dockerfile
+      args:
+        - VITE_REFRESH_INTERVAL_SECONDS=${VITE_REFRESH_INTERVAL_SECONDS}
     image: mind2-admin-frontend:dev
+    depends_on: [ai-api]
+    networks: [main]
+    profiles: [main]
+
+  mind-web-main-frontend-dev:
+    build:
+      context: ./main-system/app-frontend
+      dockerfile: Dockerfile.dev
+    image: mind2-admin-frontend:dev-hotreload
+    volumes:
+      # Mount source code for hot-reload
+      - ./main-system/app-frontend/src:/app/src:ro
+      - ./main-system/app-frontend/index.html:/app/index.html:ro
+      - ./main-system/app-frontend/vite.config.js:/app/vite.config.js:ro
+      # Use named volume for node_modules to avoid platform conflicts
+      - mind-frontend-node-modules:/app/node_modules
+    environment:
+      # Proxy API requests directly to backend service (not through nginx)
+      - VITE_API_PROXY_TARGET=http://ai-api:5000
+      - VITE_REFRESH_INTERVAL_SECONDS=${VITE_REFRESH_INTERVAL_SECONDS}
+    ports:
+      # Expose Vite dev server on host port 5169
+      - "5169:5169"
     depends_on: [ai-api]
     networks: [main]
     profiles: [main]
@@ -136,3 +164,6 @@ services:
 networks:
   main: {}
   monitoring: {}
+
+volumes:
+  mind-frontend-node-modules:

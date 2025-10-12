@@ -16,6 +16,9 @@ htmlcov/
 
 # Local config
 .env
+*.env
+.env*
+*.sql
 .DS_Store
 .idea/
 .vscode/
@@ -35,3 +38,4 @@ yarn.lock
 old/
 nul
 **/test-results/
+storage/

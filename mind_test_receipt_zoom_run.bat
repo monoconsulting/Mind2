@@ -1,1 +1,1 @@
-npx playwright test web/tests/receipt_image_modal_zoom_orientation.spec.ts --ui --ui-port=9335 --project=chromium-ultrawide
+npx playwright test web/tests/receipt_image_modal_zoom_orientation.spec.ts --project=chromium-ultrawide

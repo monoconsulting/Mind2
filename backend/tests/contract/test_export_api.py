@@ -17,21 +17,30 @@ def app() -> Flask:
 
 def _seed_completed_receipt(account_total: float = 25.50) -> str:
     receipt_id = str(uuid.uuid4())
+    company_id = f"test-company-{receipt_id[:8]}"
     purchase_dt = datetime(2025, 8, 15, 12, 0, 0)
     with db_cursor() as cur:
         cur.execute("DELETE FROM ai_accounting_proposals WHERE receipt_id=%s", (receipt_id,))
         cur.execute("DELETE FROM unified_files WHERE id=%s", (receipt_id,))
+        cur.execute("DELETE FROM companies WHERE id=%s", (company_id,))
+
+        # Create company first
+        cur.execute(
+            "INSERT INTO companies (id, name, orgnr) VALUES (%s, %s, %s)",
+            (company_id, 'Contract Test Merchant', '555555-5555'),
+        )
+
+        # Create receipt with company_id reference
         cur.execute(
             (
-                "INSERT INTO unified_files (id, file_type, created_at, updated_at, merchant_name, orgnr, "
+                "INSERT INTO unified_files (id, file_type, created_at, updated_at, company_id, "
                 "purchase_datetime, gross_amount, net_amount, ai_status, ai_confidence, submitted_by) "
-                "VALUES (%s, %s, NOW(), NOW(), %s, %s, %s, %s, %s, %s, %s, %s)"
+                "VALUES (%s, %s, NOW(), NOW(), %s, %s, %s, %s, %s, %s, %s)"
             ),
             (
                 receipt_id,
                 'receipt',
-                'Contract Test Merchant',
-                None,
+                company_id,
                 purchase_dt,
                 account_total,
                 account_total,
@@ -78,3 +87,5 @@ def test_export_sie_returns_valid_sie(app: Flask):
     with db_cursor() as cur:
         cur.execute("DELETE FROM ai_accounting_proposals WHERE receipt_id=%s", (receipt_id,))
         cur.execute("DELETE FROM unified_files WHERE id=%s", (receipt_id,))
+        # Cleanup company if created
+        cur.execute("DELETE FROM companies WHERE id LIKE %s", (f"test-company-{receipt_id[:8]}",))

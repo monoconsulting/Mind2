@@ -2,59 +2,29 @@ import React from 'react'
 import {
   FiSearch,
   FiFilter,
-  FiDownload,
   FiRefreshCw,
   FiEye,
   FiX,
+  FiEdit2,
+  FiSave,
   FiCheckCircle,
-  FiDollarSign,
-  FiFileText,
-  FiInfo,
-  FiAlertCircle,
+  FiXCircle,
+  FiMapPin,
+  FiShoppingCart,
   FiCalendar,
   FiTag,
   FiChevronLeft,
   FiChevronRight,
-  FiMapPin
+  FiTrash2
 } from 'react-icons/fi'
 import { api } from '../api'
-
-const statusOptions = [
-  { value: '', label: 'Alla statusar' },
-  { value: 'processing', label: 'Bearbetas' },
-  { value: 'queued', label: 'I kö' },
-  { value: 'failed', label: 'Fel' },
-  { value: 'passed', label: 'Godkänd' },
-  { value: 'completed', label: 'Klar' },
-  { value: 'manual_review', label: 'Manuell kontroll' },
-  { value: 'needs_review', label: 'Behöver kontroll' }
-]
+import ReceiptPreviewModal from '../components/ReceiptPreviewModal'
 
 const initialFilters = {
-  status: '',
   from: '',
   to: '',
   orgnr: '',
   tag: ''
-}
-
-const statusClassMap = {
-  processing: 'status-processing',
-  queued: 'status-queued',
-  failed: 'status-failed',
-  passed: 'status-passed',
-  completed: 'status-passed',
-  manual_review: 'status-manual_review',
-  needs_review: 'status-manual_review'
-}
-
-const initialPreviewState = {
-  receipt: null,
-  imageUrl: null,
-  loading: false,
-  error: null,
-  revokeOnClose: false,
-  cachedImageUrl: null
 }
 
 function formatCurrency(value) {
@@ -88,38 +58,14 @@ function formatDate(value) {
   }
 }
 
-function translateStatus(status) {
-  if (!status) {
-    return ''
-  }
-  const normalized = String(status).toLowerCase()
-  const map = {
-    processing: 'Bearbetas',
-    queued: 'I kö',
-    failed: 'Fel',
-    passed: 'Godkänd',
-    completed: 'Klar',
-    manual_review: 'Manuell kontroll',
-    needs_review: 'Behöver kontroll'
-  }
-  return map[normalized] || status
-}
-
-function StatusBadge({ status }) {
-  const normalized = String(status || '').toLowerCase()
-  const translated = translateStatus(status)
-  const badgeClass = statusClassMap[normalized] || 'status-pending'
-  return <span className={`status-badge ${badgeClass}`}>{translated || 'Okänd'}</span>
-}
-
 function Banner({ banner, onDismiss }) {
   if (!banner) {
     return null
   }
   const iconMap = {
-    info: <FiInfo className="text-xl" />,
+    info: <FiCheckCircle className="text-xl" />,
     success: <FiCheckCircle className="text-xl" />,
-    error: <FiAlertCircle className="text-xl" />
+    error: <FiXCircle className="text-xl" />
   }
   const tone = banner.type || 'info'
   return (
@@ -233,19 +179,6 @@ function FilterPanel({ open, filters, onApply, onReset, onClose, disabled }) {
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="filter-grid">
           <label className="filter-field">
-            <span>Status</span>
-            <select
-              value={draft.status}
-              onChange={(event) => update('status', event.target.value)}
-              className="dm-input"
-              disabled={disabled}
-            >
-              {statusOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-          <label className="filter-field">
             <span>Organisationsnummer</span>
             <input
               className="dm-input"
@@ -312,8 +245,7 @@ function FilterPanel({ open, filters, onApply, onReset, onClose, disabled }) {
   )
 }
 
-
-function usePreviewImage({ previewUrl, receiptId }) {
+function usePreviewImage({ receiptId }) {
   const [state, setState] = React.useState({ src: null, loading: false, error: null });
 
   React.useEffect(() => {
@@ -367,13 +299,12 @@ function usePreviewImage({ previewUrl, receiptId }) {
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [previewUrl, receiptId]);
+  }, [receiptId]);
 
   return state;
 }
 
 function ReceiptPreview({ receipt, onPreview, onCache }) {
-  // Only use original image, no preview_url
   const { src, loading, error } = usePreviewImage({ receiptId: receipt.id });
 
   React.useEffect(() => {
@@ -417,111 +348,6 @@ function ReceiptPreview({ receipt, onPreview, onCache }) {
   );
 }
 
-function ExportModal({ open, filters, onClose }) {
-  const [fromDate, setFromDate] = React.useState(filters.from || '')
-  const [toDate, setToDate] = React.useState(filters.to || '')
-  const [loading, setLoading] = React.useState(false)
-  const [error, setError] = React.useState('')
-
-  React.useEffect(() => {
-    if (open) {
-      setFromDate(filters.from || '')
-      setToDate(filters.to || '')
-      setError('')
-    }
-  }, [filters, open])
-
-  if (!open) {
-    return null
-  }
-
-  const handleSubmit = async (event) => {
-    event.preventDefault()
-    setLoading(true)
-    setError('')
-    const params = new URLSearchParams()
-    if (fromDate) params.set('from', fromDate)
-    if (toDate) params.set('to', toDate)
-    try {
-      const res = await api.fetch(`/ai/api/export/sie?${params.toString()}`)
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`)
-      }
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const filename = `mind_export_${fromDate || 'start'}_${toDate || 'slut'}.sie`
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = filename
-      document.body.appendChild(anchor)
-      anchor.click()
-      anchor.remove()
-      URL.revokeObjectURL(url)
-      onClose()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <div className="modal-backdrop" role="dialog" aria-label="Exportera SIE">
-      <div className="modal" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <h3>Exportera SIE</h3>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Stäng">
-            <FiX />
-          </button>
-        </div>
-        <form onSubmit={handleSubmit} className="modal-body space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <label className="filter-field">
-              <span>Från datum</span>
-              <input
-                type="date"
-                className="dm-input"
-                value={fromDate}
-                onChange={(event) => setFromDate(event.target.value)}
-                disabled={loading}
-              />
-            </label>
-            <label className="filter-field">
-              <span>Till datum</span>
-              <input
-                type="date"
-                className="dm-input"
-                value={toDate}
-                onChange={(event) => setToDate(event.target.value)}
-                disabled={loading}
-              />
-            </label>
-          </div>
-          {error && <div className="alert alert-error">{error}</div>}
-          <div className="modal-footer">
-            <button type="button" className="btn btn-text" onClick={onClose}>
-              Avbryt
-            </button>
-            <button type="submit" className="btn btn-primary" disabled={loading}>
-              {loading ? (
-                <>
-                  <div className="loading-spinner mr-2" />
-                  Genererar...
-                </>
-              ) : (
-                <>
-                  <FiDownload className="mr-2" />
-                  Generera SIE-fil
-                </>
-              )}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  )
-}
-
 function MapModal({ open, receipt, onClose }) {
   if (!open || !receipt) {
     return null;
@@ -539,11 +365,6 @@ function MapModal({ open, receipt, onClose }) {
   const accuracy = location?.accuracy;
   const hasCoordinates = lat != null && lon != null && lat !== 0 && lon !== 0;
 
-  // Google Maps URL for embedding
-  const mapUrl = hasCoordinates
-    ? `https://www.google.com/maps/embed/v1/place?key=YOUR_API_KEY&q=${lat},${lon}&zoom=15`
-    : null;
-
   return (
     <div className="modal-backdrop" role="dialog" aria-label={`Karta för kvitto ${receipt.id}`} onClick={handleBackdrop}>
       <div className="modal modal-lg" onClick={(event) => event.stopPropagation()}>
@@ -556,7 +377,6 @@ function MapModal({ open, receipt, onClose }) {
         <div className="modal-body" style={{ height: '500px', padding: 0 }}>
           {hasCoordinates ? (
             <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-              {/* OpenStreetMap iframe */}
               <iframe
                 width="100%"
                 height="100%"
@@ -564,7 +384,6 @@ function MapModal({ open, receipt, onClose }) {
                 src={`https://www.openstreetmap.org/export/embed.html?bbox=${lon-0.01},${lat-0.01},${lon+0.01},${lat+0.01}&layer=mapnik&marker=${lat},${lon}`}
                 title={`Karta för kvitto ${receipt.id}`}
               />
-              {/* Coordinate overlay */}
               <div style={{
                 position: 'absolute',
                 top: '10px',
@@ -580,7 +399,6 @@ function MapModal({ open, receipt, onClose }) {
                 <div>Lng: {lon.toFixed(6)}</div>
                 {accuracy && <div>Noggrannhet: ±{accuracy}m</div>}
               </div>
-              {/* External link button */}
               <div style={{
                 position: 'absolute',
                 bottom: '10px',
@@ -625,159 +443,109 @@ function MapModal({ open, receipt, onClose }) {
   );
 }
 
+function ItemsModal({ open, receipt, onClose }) {
+  const [items, setItems] = React.useState([]);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState(null);
 
-function PreviewModal({ previewState, onClose, onDownload }) {
-  const [ocrBoxes, setOcrBoxes] = React.useState([]);
-  const [imageLoaded, setImageLoaded] = React.useState(false);
-
-  // Reset image loaded state when receipt changes
   React.useEffect(() => {
-    setImageLoaded(false);
-  }, [previewState.receipt?.id]);
-
-  // Fetch OCR box data when modal opens and image is ready
-  React.useEffect(() => {
-    if (!previewState.receipt || !previewState.imageUrl) {
-      setOcrBoxes([]);
+    if (!open || !receipt) {
       return;
     }
 
     let cancelled = false;
+    setLoading(true);
+    setError(null);
 
-    const fetchOcrBoxes = async () => {
+    const fetchItems = async () => {
       try {
-        const res = await api.fetch(`/ai/api/receipts/${previewState.receipt.id}/ocr/boxes`);
+        const res = await api.fetch(`/ai/api/receipts/${receipt.id}/line-items`);
         if (!res.ok) {
-          console.warn(`Could not fetch OCR boxes: HTTP ${res.status}`);
-          return;
+          throw new Error(`HTTP ${res.status}`);
         }
         const data = await res.json();
         if (!cancelled) {
-          if (Array.isArray(data)) {
-            setOcrBoxes(data);
-          } else {
-            console.warn('OCR boxes response is not an array:', data);
-            setOcrBoxes([]);
-          }
+          const itemsList = Array.isArray(data) ? data : (data.line_items || data.items || []);
+          setItems(itemsList);
+          setLoading(false);
         }
-      } catch (error) {
-        console.error('Failed to fetch OCR boxes:', error);
-        setOcrBoxes([]);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err.message);
+          setLoading(false);
+        }
       }
     };
 
-    fetchOcrBoxes();
+    fetchItems();
 
     return () => {
       cancelled = true;
     };
-  }, [previewState.receipt?.id, previewState.imageUrl]);
+  }, [open, receipt]);
 
-  if (!previewState.receipt) {
+  if (!open || !receipt) {
     return null;
   }
 
-  const handleBackdrop = () => {
-    if (!previewState.loading) {
+  const handleBackdrop = (event) => {
+    if (event.target === event.currentTarget) {
       onClose();
     }
   };
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-label={`Förhandsgranska kvitto ${previewState.receipt.id}`} onClick={handleBackdrop}>
+    <div className="modal-backdrop" role="dialog" aria-label={`Varor för kvitto ${receipt.id}`} onClick={handleBackdrop}>
       <div className="modal modal-lg" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
-          <h3>Förhandsgranskning</h3>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Stäng förhandsgranskning">
+          <h3>Varor - {receipt.merchant || 'Okänt företag'}</h3>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Stäng varor">
             <FiX />
           </button>
         </div>
-        <div className="modal-body preview-body">
-          {previewState.loading ? (
+        <div className="modal-body">
+          {loading ? (
             <div className="loading-inline">
               <div className="loading-spinner" />
-              <span>Laddar bild...</span>
+              <span>Laddar varor...</span>
             </div>
-          ) : previewState.imageUrl ? (
-            <div className="preview-image-wrapper">
-                <div
-                  className="preview-image-container"
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    backgroundImage: `url(${previewState.imageUrl})`,
-                    backgroundSize: 'contain',
-                    backgroundRepeat: 'no-repeat',
-                    backgroundPosition: 'center'
-                  }}
-                  onLoad={() => {
-                    setImageLoaded(true);
-                  }}
-                >
-                  <img
-                    src={previewState.imageUrl}
-                    alt={'Förhandsgranskning av kvitto ' + previewState.receipt.id}
-                    style={{ display: 'none' }}
-                    onLoad={() => {
-                      setImageLoaded(true);
-                    }}
-                  />
-                </div>
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    pointerEvents: 'none'
-                  }}
-                >
-                  {imageLoaded && ocrBoxes && ocrBoxes.length > 0 && (
-                    <>
-                      {ocrBoxes.map((box, index) => {
-                        if (!box || typeof box.x !== 'number' || typeof box.y !== 'number' ||
-                            typeof box.w !== 'number' || typeof box.h !== 'number') {
-                          console.warn('Invalid OCR box data at index', index, ':', box);
-                          return null;
-                        }
-                        return (
-                          <div
-                            key={index}
-                            style={{
-                              position: 'absolute',
-                              left: (box.x * 100) + '%',
-                              top: (box.y * 100) + '%',
-                              width: (box.w * 100) + '%',
-                              height: (box.h * 100) + '%',
-                              backgroundColor: 'rgba(0, 123, 255, 0.2)',
-                              border: '2px solid rgba(0, 123, 255, 0.8)',
-                              borderRadius: '2px',
-                              boxShadow: '0 0 4px rgba(0, 123, 255, 0.5)',
-                              zIndex: 10
-                            }}
-                            title={box.field || ''}
-                          />
-                        );
-                      })}
-                    </>
-                  )}
-                </div>
+          ) : error ? (
+            <div className="alert alert-error">
+              <FiXCircle />
+              <span>{error}</span>
+            </div>
+          ) : items.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px', color: '#999' }}>
+              Inga varor registrerade för detta kvitto
             </div>
           ) : (
-            <div className="preview-missing">{previewState.error || 'Ingen bild tillgänglig'}</div>
+            <div className="table-wrapper">
+              <table className="table-dark">
+                <thead>
+                  <tr>
+                    <th>Beskrivning</th>
+                    <th className="text-right">Antal</th>
+                    <th className="text-right">Pris</th>
+                    <th className="text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((item, index) => (
+                    <tr key={index}>
+                      <td>{item.description || item.item_name || '-'}</td>
+                      <td className="text-right">{item.quantity || 1}</td>
+                      <td className="text-right">{formatCurrency(item.unit_price || item.price || 0)}</td>
+                      <td className="text-right font-semibold">
+                        {formatCurrency((item.quantity || 1) * (item.unit_price || item.price || 0))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
         <div className="modal-footer">
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={() => onDownload(previewState.receipt)}
-            disabled={previewState.loading}
-          >
-            <FiDownload className="mr-2" />
-            Ladda ned original
-          </button>
           <button type="button" className="btn btn-primary" onClick={onClose}>
             Stäng
           </button>
@@ -808,32 +576,41 @@ function Pagination({ page, totalPages, onPrev, onNext }) {
   )
 }
 
-export default function Receipts() {
+export default function ReceiptsList() {
   const [items, setItems] = React.useState([])
   const [meta, setMeta] = React.useState({ page: 1, page_size: 25, total: 0 })
   const [page, setPage] = React.useState(1)
   const [pageSize, setPageSize] = React.useState(25)
   const [loading, setLoading] = React.useState(false)
-  const [ftpLoading, setFtpLoading] = React.useState(false)
   const [banner, setBanner] = React.useState(null)
   const [searchTerm, setSearchTerm] = React.useState('')
   const [filters, setFilters] = React.useState(initialFilters)
   const [isFilterOpen, setFilterOpen] = React.useState(false)
-  const [isExportOpen, setExportOpen] = React.useState(false)
+  const [isPreviewOpen, setPreviewOpen] = React.useState(false)
+  const [previewImage, setPreviewImage] = React.useState(null)
   const [isMapOpen, setMapOpen] = React.useState(false)
-  const [selectedReceiptForMap, setSelectedReceiptForMap] = React.useState(null)
-  const [previewState, setPreviewState] = React.useState(initialPreviewState)
+  const [isItemsOpen, setItemsOpen] = React.useState(false)
+  const [selectedReceipt, setSelectedReceipt] = React.useState(null)
   const previewCache = React.useRef(new Map())
 
-  const loadReceipts = React.useCallback(async () => {
-    setLoading(true)
+  const updateReceiptInList = React.useCallback((updated) => {
+    if (!updated || !updated.id) {
+      return
+    }
+    setItems((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
+    setSelectedReceipt((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev))
+  }, [])
+
+  const loadReceipts = React.useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true)
+    }
     const params = new URLSearchParams()
     params.set('page', String(page))
     params.set('page_size', String(pageSize))
     if (searchTerm) {
       params.set('merchant', searchTerm)
     }
-    if (filters.status) params.set('status', filters.status)
     if (filters.orgnr) params.set('orgnr', filters.orgnr)
     if (filters.from) params.set('from', filters.from)
     if (filters.to) params.set('to', filters.to)
@@ -853,25 +630,42 @@ export default function Receipts() {
         page_size: fetchedMeta.page_size ?? pageSize,
         total: fetchedMeta.total ?? list.length
       })
-      setBanner({
-        type: 'info',
-        message: `Visar ${list.length} av ${fetchedMeta.total ?? list.length} kvitton`
-      })
+      if (!silent) {
+        setBanner({
+          type: 'info',
+          message: `Visar ${list.length} av ${fetchedMeta.total ?? list.length} kvitton`
+        })
+      }
     } catch (error) {
       console.error('Receipts fetch failed', error)
-      setItems([])
-      setMeta((prev) => ({ ...prev, total: 0 }))
-      setBanner({
-        type: 'error',
-        message: `Kunde inte hämta kvitton: ${error instanceof Error ? error.message : error}`
-      })
+      if (!silent) {
+        setItems([])
+        setMeta((prev) => ({ ...prev, total: 0 }))
+        setBanner({
+          type: 'error',
+          message: `Kunde inte hämta kvitton: ${error instanceof Error ? error.message : error}`
+        })
+      }
     } finally {
-      setLoading(false)
+      if (!silent) {
+        setLoading(false)
+      }
     }
   }, [page, pageSize, searchTerm, filters])
 
   React.useEffect(() => {
     loadReceipts()
+  }, [loadReceipts])
+
+  // Polling för automatisk uppdatering av status (konfigurerbart intervall från .env)
+  React.useEffect(() => {
+    const refreshInterval = (import.meta.env.VITE_REFRESH_INTERVAL_SECONDS || 10) * 1000
+    const intervalId = setInterval(() => {
+      // Ladda om data tyst utan att visa loading-spinner eller uppdatera banner
+      loadReceipts(true)
+    }, refreshInterval)
+
+    return () => clearInterval(intervalId)
   }, [loadReceipts])
 
   const displayedItems = React.useMemo(() => {
@@ -891,15 +685,6 @@ export default function Receipts() {
       return merchantMatch || fileMatch || idMatch || amountMatch
     })
   }, [items, searchTerm])
-
-  const totals = React.useMemo(() => {
-    const gross = displayedItems.reduce((sum, receipt) => sum + (receipt.gross_amount || 0), 0)
-    const completed = displayedItems.filter((receipt) => ['passed', 'completed'].includes(String(receipt.status).toLowerCase())).length
-    return {
-      totalGross: gross,
-      completed
-    }
-  }, [displayedItems])
 
   const totalPages = React.useMemo(() => {
     const perPage = meta.page_size || pageSize || 1
@@ -944,189 +729,59 @@ export default function Receipts() {
     setPage((prev) => Math.min(totalPages, prev + 1))
   }
 
-  const handleFetchFtp = React.useCallback(async () => {
-    setFtpLoading(true)
-    setBanner({ type: 'info', message: 'Hämtar filer från FTP...' })
-    try {
-      const res = await api.fetch('/ai/api/ingest/fetch-ftp', { method: 'POST' })
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`)
-      }
-      let message = 'FTP-hämtning klar'
-      try {
-        const payload = await res.json()
-        if (payload?.message) {
-          message = payload.message
-        } else if (typeof payload?.downloaded === 'number') {
-          message = `FTP-hämtning klar – ${payload.downloaded} filer hämtade`
-        }
-      } catch (jsonError) {
-        // Ignore JSON parse errors and use default message
-      }
-      setBanner({ type: 'success', message })
-      await loadReceipts()
-    } catch (error) {
-      console.error('FTP fetch failed', error)
-      setBanner({
-        type: 'error',
-        message: `FTP-fel: ${error instanceof Error ? error.message : error}`
-      })
-    } finally {
-      setFtpLoading(false)
-    }
-  }, [loadReceipts])
-
   const handlePreview = (receipt, previewData = null) => {
     if (!receipt) {
-      return;
+      return
     }
-    const cachedSrc = previewData?.src || previewCache.current.get(receipt.id) || null;
-    const hadError = Boolean(previewData?.error);
-    setPreviewState((prev) => {
-      if (prev.imageUrl && prev.revokeOnClose) {
-        URL.revokeObjectURL(prev.imageUrl);
-      }
-      return {
-        receipt,
-        imageUrl: null, // Start with null to ensure loading effect triggers
-        loading: !cachedSrc, // Only load if we don't have a cached image
-        error: hadError ? 'Kunde inte ladda förhandsgranskning' : null,
-        revokeOnClose: false,
-        cachedImageUrl: cachedSrc // Store cached image separately
-      };
-    });
-  };
-
-  const handleDownload = async (receipt) => {
-    if (!receipt) {
-      return;
-    }
-    try {
-      const res = await api.fetch('/ai/api/receipts/' + receipt.id + '/image');
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const filename = receipt.original_filename || `${receipt.id}.jpg`;
-      const anchor = document.createElement('a');
-      anchor.href = objectUrl;
-      anchor.download = filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(objectUrl);
-      setBanner({ type: 'success', message: `Kvitto ${filename} nedladdat` });
-    } catch (error) {
-      setBanner({
-        type: 'error',
-        message: `Kunde inte ladda ned kvitto: ${error instanceof Error ? error.message : error}`
-      });
-    }
-  };
-
-  const closePreview = () => {
-    setPreviewState((prev) => {
-      if (prev.imageUrl && prev.revokeOnClose) {
-        URL.revokeObjectURL(prev.imageUrl);
-      }
-      return {
-        receipt: null,
-        imageUrl: null,
-        loading: false,
-        error: null,
-        revokeOnClose: false,
-        cachedImageUrl: null
-      };
-    });
+    const cachedSrc = previewData?.src || previewCache.current.get(receipt.id) || null
+    setSelectedReceipt(receipt)
+    setPreviewImage(cachedSrc)
+    setPreviewOpen(true)
   };
 
   const handleShowMap = (receipt) => {
-    setSelectedReceiptForMap(receipt);
+    setSelectedReceipt(receipt);
     setMapOpen(true);
+  };
+
+  const handleShowItems = (receipt) => {
+    setSelectedReceipt(receipt);
+    setItemsOpen(true);
+  };
+
+  const closePreview = () => {
+    setPreviewOpen(false);
+    setPreviewImage(null);
   };
 
   const closeMap = () => {
     setMapOpen(false);
-    setSelectedReceiptForMap(null);
+    setSelectedReceipt(null);
   };
 
-  React.useEffect(() => {
-    if (!previewState.receipt) {
-      return;
-    }
+  const closeItems = () => {
+    setItemsOpen(false);
+    setSelectedReceipt(null);
+  };
 
-    if (previewState.cachedImageUrl) {
-      setPreviewState((prev) => ({
-        ...prev,
-        imageUrl: prev.cachedImageUrl,
-        loading: false,
-        error: null,
-        revokeOnClose: false
-      }));
-      return;
-    }
-
-    if (!previewState.loading) {
-      return;
-    }
-
-    let cancelled = false;
-    let objectUrl = null;
-    const { receipt } = previewState;
-    const cacheBuster = Date.now();
-    const base = '/ai/api/receipts/' + receipt.id + '/image';
-    const endpoints = [
-      base + '?cb=' + cacheBuster,
-      base + '?size=raw&cb=' + cacheBuster
-    ];
-
-    const loadImage = async () => {
-      for (const endpoint of endpoints) {
-        try {
-          const res = await api.fetch(endpoint);
-          if (!res.ok) {
-            continue;
-          }
-          const blob = await res.blob();
-          objectUrl = URL.createObjectURL(blob);
-          if (cancelled) {
-            URL.revokeObjectURL(objectUrl);
-            return;
-          }
-          setPreviewState((prev) => ({
-            ...prev,
-            imageUrl: objectUrl,
-            loading: false,
-            error: null,
-            revokeOnClose: true
-          }));
-          return;
-        } catch (error) {
-          if (cancelled) {
-            return;
-          }
-        }
+  const handleDelete = async (receipt) => {
+    try {
+      const res = await api.fetch(`/ai/api/receipts/${receipt.id}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
-      if (!cancelled) {
-        setPreviewState((prev) => ({
-          ...prev,
-          loading: false,
-          error: 'Kunde inte ladda bild',
-          revokeOnClose: false
-        }));
-      }
-    };
-
-    loadImage();
-
-    return () => {
-      cancelled = true;
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
-    };
-  }, [previewState.receipt, previewState.loading, previewState.cachedImageUrl]);
+      setItems((prev) => prev.filter((item) => item.id !== receipt.id));
+      setMeta((prev) => ({ ...prev, total: Math.max(0, prev.total - 1) }));
+    } catch (error) {
+      console.error('Delete failed', error);
+      setBanner({
+        type: 'error',
+        message: `Kunde inte radera kvitto: ${error instanceof Error ? error.message : error}`
+      });
+    }
+  };
 
   const dismissBanner = () => setBanner(null)
 
@@ -1136,24 +791,16 @@ export default function Receipts() {
         <div className="flex items-center justify-between flex-col lg:flex-row gap-4">
           <div>
             <h1 className="text-2xl font-bold mb-2">Kvitton</h1>
-            <p className="text-sm text-gray-300">Hantera, filtrera och exportera kvitton från kvittolistan</p>
+            <p className="text-sm text-gray-300">Hantera och filtrera kvitton (endast kvitton från unified_files)</p>
           </div>
           <div className="flex gap-2">
-            <button
-              className={`btn btn-primary ${ftpLoading ? 'opacity-70' : ''}`}
-              onClick={handleFetchFtp}
-              disabled={ftpLoading}
-            >
-              <FiRefreshCw className={ftpLoading ? 'animate-spin' : ''} />
-              {ftpLoading ? 'Hämtar…' : 'Hämta från FTP'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => setExportOpen(true)}>
-              <FiDownload />
-              Exportera
-            </button>
             <button className="btn btn-secondary" onClick={() => setFilterOpen((prev) => !prev)}>
               <FiFilter />
               Filter
+            </button>
+            <button className="btn btn-primary" onClick={loadReceipts} disabled={loading}>
+              <FiRefreshCw className={loading ? 'animate-spin' : ''} />
+              Uppdatera
             </button>
           </div>
         </div>
@@ -1191,20 +838,23 @@ export default function Receipts() {
           <table className="table-dark">
             <thead>
               <tr>
-                <th>Förhandsgranskning</th>
-                <th>Datum</th>
+                <th>Preview</th>
                 <th>Företag</th>
-                <th className="text-right">Exkl. moms</th>
-                <th className="text-right">Inkl. moms</th>
-                <th className="text-center">Status</th>
-                <th>Filnamn</th>
+                <th>Köpdatum</th>
+                <th className="text-right">Belopp ex moms</th>
+                <th className="text-right">Belopp ink moms</th>
+                <th className="text-center">Match First Card</th>
+                <th>Utgiftstyp</th>
+                <th>Kort sista 4</th>
+                <th>Korttyp</th>
+                <th>Betalningssätt</th>
                 <th className="text-center">Åtgärder</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="table-loading">
+                  <td colSpan={11} className="table-loading">
                     <div className="loading-inline">
                       <div className="loading-spinner" />
                       <span>Laddar kvitton...</span>
@@ -1213,10 +863,10 @@ export default function Receipts() {
                 </tr>
               ) : displayedItems.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="table-empty">
+                  <td colSpan={11} className="table-empty">
                     <div className="space-y-2">
                       <div>Inga kvitton hittades</div>
-                      <div className="text-sm text-gray-400">Justera filter eller hämta nya filer från FTP</div>
+                      <div className="text-sm text-gray-400">Justera filter eller sök</div>
                     </div>
                   </td>
                 </tr>
@@ -1237,42 +887,49 @@ export default function Receipts() {
                       />
                     </td>
                     <td>
-                      <div className="font-medium">{formatDate(receipt.file_creation_timestamp)}</div>
-                      {receipt.file_creation_timestamp && (
-                        <div className="text-xs text-gray-400">{receipt.file_creation_timestamp}</div>
-                      )}
+                      <div className="font-medium">{receipt.merchant || 'Okänt bolag'}</div>
                     </td>
                     <td>
-                      <div className="font-medium">{receipt.merchant || 'Okänt bolag'}</div>
-                      {receipt.line_item_count ? (
-                        <div className="text-xs text-gray-400">{receipt.line_item_count} artiklar</div>
-                      ) : null}
+                      <div className="font-medium">{formatDate(receipt.purchase_date || receipt.purchase_datetime)}</div>
                     </td>
                     <td className="text-right">{formatCurrency(receipt.net_amount)}</td>
                     <td className="text-right text-lg font-semibold">{formatCurrency(receipt.gross_amount)}</td>
                     <td className="text-center">
-                      <StatusBadge status={receipt.status || receipt.ai_status} />
+                      {receipt.match_first_card ? (
+                        <FiCheckCircle className="text-green-500 inline-block text-xl" />
+                      ) : (
+                        <FiXCircle className="text-red-500 inline-block text-xl" />
+                      )}
                     </td>
-                    <td>
-                      <div className="font-mono text-sm truncate" title={receipt.original_filename || ''}>
-                        {receipt.original_filename || '-'}
-                      </div>
-                      {receipt.tags?.length ? (
-                        <div className="text-xs text-gray-400 truncate">Taggar: {receipt.tags.join(', ')}</div>
-                      ) : null}
-                    </td>
+                    <td>{receipt.expense_type || '-'}</td>
+                    <td className="font-mono">{receipt.card_last_four || '-'}</td>
+                    <td>{receipt.card_type || '-'}</td>
+                    <td>{receipt.payment_method || '-'}</td>
                     <td className="text-center">
                       <div className="flex gap-2 justify-center">
                         <button
                           type="button"
                           className="btn btn-secondary btn-sm"
-                          onClick={() => handleShowMap(receipt)}>
+                          onClick={() => handleShowMap(receipt)}
+                          title="Visa på karta"
+                        >
                           <FiMapPin />
-                          Plats
                         </button>
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleDownload(receipt)}>
-                          <FiDownload />
-                          Ladda ned
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => handleShowItems(receipt)}
+                          title="Visa varor"
+                        >
+                          <FiShoppingCart />
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-sm"
+                          onClick={() => handleDelete(receipt)}
+                          title="Radera kvitto"
+                        >
+                          <FiTrash2 />
                         </button>
                       </div>
                     </td>
@@ -1286,41 +943,15 @@ export default function Receipts() {
 
       <Pagination page={page} totalPages={totalPages} onPrev={handlePrevPage} onNext={handleNextPage} />
 
-      {displayedItems.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="stat-card red">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="stat-number">{meta.total}</div>
-                <div className="stat-label">Totalt antal kvitton</div>
-              </div>
-              <FiFileText className="text-2xl opacity-80" />
-            </div>
-          </div>
-          <div className="stat-card green">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="stat-number">{totals.completed}</div>
-                <div className="stat-label">Godkända kvitton</div>
-              </div>
-              <FiCheckCircle className="text-2xl opacity-80" />
-            </div>
-          </div>
-          <div className="stat-card blue">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="stat-number">{formatCurrency(totals.totalGross)}</div>
-                <div className="stat-label">Total summa</div>
-              </div>
-              <FiDollarSign className="text-2xl opacity-80" />
-            </div>
-          </div>
-        </div>
-      )}
-
-      <ExportModal open={isExportOpen} filters={filters} onClose={() => setExportOpen(false)} />
-      <MapModal open={isMapOpen} receipt={selectedReceiptForMap} onClose={closeMap} />
-      <PreviewModal previewState={previewState} onClose={closePreview} onDownload={handleDownload} />
+      <ReceiptPreviewModal
+        open={isPreviewOpen}
+        receipt={selectedReceipt}
+        previewImage={previewImage}
+        onClose={closePreview}
+        onReceiptUpdate={updateReceiptInList}
+      />
+      <MapModal open={isMapOpen} receipt={selectedReceipt} onClose={closeMap} />
+      <ItemsModal open={isItemsOpen} receipt={selectedReceipt} onClose={closeItems} />
     </div>
   )
 }

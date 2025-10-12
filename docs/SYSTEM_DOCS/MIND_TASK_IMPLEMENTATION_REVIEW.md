@@ -98,5 +98,153 @@ Command used (PowerShell snippet writing and running a temp Python script):
 - Point tests: `set MIND_API_BASE=http://127.0.0.1:5000` (Windows PowerShell: `$env:MIND_API_BASE='http://127.0.0.1:5000'`)
 - Run subset: `pytest backend/tests/contract -q`
 
+## Frontend Testing & Hot-Reload Development
+
+Date Added: 2025-10-12
+
+### Current Frontend Architecture
+- **Framework:** React 18 with Vite 5.4
+- **Location:** `main-system/app-frontend/`
+- **Production Build:** Multi-stage Docker build → Nginx container
+- **Serving:** Nginx proxy on port 8008 (proxies frontend from `mind-web-main-frontend` container)
+- **Testing:** Playwright configured in `playwright.config.ts`
+
+### Testing Modes
+
+#### Production Mode (Current Default)
+- Frontend built into Docker image via `main-system/app-frontend/Dockerfile`
+- Served through nginx on `http://localhost:8008`
+- Playwright tests target `baseURL: http://localhost:8008`
+- **Workflow:**
+  1. Build: `mind_docker_build_nocache.bat` or `mind_docker_compose_build_ai-api_celery-worker.bat`
+  2. Start: `mind_docker_compose_up.bat`
+  3. Test: `npx playwright test [file] --headed`
+- **Limitation:** Every code change requires Docker rebuild (slow iteration)
+
+#### Development Mode with Hot-Reload
+
+There are TWO ways to run the dev server with hot-reload:
+
+**Option A: Docker Dev Mode (Recommended for consistency)**
+- Frontend runs in Docker container with Vite dev server
+- Automatically starts with `mind_docker_compose_up.bat`
+- Accessible on `http://localhost:5169`
+- Source code mounted as volume for instant hot-reload
+- **Benefits:**
+  - Consistent environment (same as production services)
+  - Starts automatically with other services
+  - No manual process management
+  - Works identically across all machines
+- **Service:** `mind-web-main-frontend-dev` in `docker-compose.yml`
+  - Uses `Dockerfile.dev`
+  - Mounts `src/`, `index.html`, `vite.config.js` as read-only volumes
+  - Proxies API to `http://ai-api:5000` directly
+  - Exposed on host port 5169
+- **Workflow:**
+  1. Start all services: `mind_docker_compose_up.bat`
+  2. Access dev frontend: `http://localhost:5169`
+  3. Edit code → instant hot-reload
+  4. Test: `npx playwright test --config=playwright.dev.config.ts --headed`
+
+**Option B: Local Dev Mode (For development without Docker)**
+- Frontend runs directly on host machine via npm
+- Requires manual start of dev server
+- **Benefits:**
+  - Faster startup (no container overhead)
+  - Direct debugging with IDE
+  - More control over node environment
+- **Vite Config:** `main-system/app-frontend/vite.config.js`
+  - Dev server port: 5169
+  - Host: `0.0.0.0` (accepts external connections)
+  - Proxy: `/ai/api/*` → `http://localhost:8008` (via nginx to backend)
+- **Workflow:**
+  1. Start backend: `mind_docker_compose_up.bat`
+  2. Start frontend dev: `mind_frontend_dev.bat`
+  3. Test: `mind_test_dev.bat` or `npx playwright test [file] --config=playwright.dev.config.ts --headed`
+- **Files:**
+  - `mind_frontend_dev.bat` - Launches Vite dev server locally
+  - `playwright.dev.config.ts` - Playwright config pointing to dev server
+  - `mind_test_dev.bat` - Test runner using dev config
+
+### Playwright Configuration
+- **Main config:** `playwright.config.ts`
+  - Test directory: `./web/tests`
+  - Output directory: `web/test-results/_artifacts`
+  - Viewport: 3440x1440 (ultrawide)
+  - Features: video recording, trace collection, screenshots
+  - Reporter: HTML + list
+- **Dev config:** `playwright.dev.config.ts`
+  - Extends main config
+  - Overrides baseURL to `http://localhost:5169`
+
+### API Communication
+- Frontend uses relative paths: `/ai/api/*`
+- In production: Nginx routes `/ai/api/*` → Flask backend
+- In dev mode: Vite proxy routes `/ai/api/*` → `http://localhost:8008/ai/api/*`
+- Backend runs in Docker on port 8008 (via nginx) in both modes
+
+### Key Files
+```
+main-system/app-frontend/
+├── vite.config.js           # Vite dev server + proxy config (supports env var)
+├── package.json             # Scripts: dev, build, preview
+├── Dockerfile               # Production build (multi-stage)
+├── Dockerfile.dev           # Development mode (Vite dev server)
+└── src/
+    └── ui/api.js            # API client (uses relative paths)
+
+docker-compose.yml           # Services definition
+├── mind-web-main-frontend       # Production frontend (nginx)
+└── mind-web-main-frontend-dev   # Dev frontend (hot-reload)
+
+playwright.config.ts         # Production test config
+playwright.dev.config.ts     # Dev mode test config
+
+mind_frontend_dev.bat        # Start Vite dev server locally (Option B)
+mind_test_dev.bat            # Run tests in dev mode
+mind_rebuild_frontend.bat    # Rebuild production frontend
+mind_docker_compose_up.bat   # Start all services (includes dev frontend)
+```
+
+### Recommended Development Workflows
+
+#### Quick Start (Docker Dev Mode - Recommended)
+1. **Start all services:** `mind_docker_compose_up.bat`
+   - Backend services (ai-api, celery-worker, mysql, redis)
+   - Production frontend on port 8008
+   - **Dev frontend on port 5169** (with hot-reload)
+2. **Develop:**
+   - Open browser to `http://localhost:5169`
+   - Edit files in `main-system/app-frontend/src/`
+   - Changes appear instantly (hot-reload)
+3. **Test:** `npx playwright test --config=playwright.dev.config.ts --headed`
+4. **Pre-commit:** Test production build
+   - Rebuild: `mind_docker_build_nocache.bat`
+   - Test: `npx playwright test --headed`
+
+#### Alternative (Local Dev Mode)
+1. **Start backend:** `mind_docker_compose_up.bat`
+2. **Start dev server locally:** `mind_frontend_dev.bat`
+3. **Develop:** Edit React components - changes appear instantly
+4. **Test:** `mind_test_dev.bat`
+5. **Pre-commit:** Test against production build
+
+### Notes
+- **Docker dev mode** now starts automatically with `mind_docker_compose_up.bat`
+- Both production (port 8008) and dev (port 5169) frontends run simultaneously
+- Docker dev mode proxies API directly to `ai-api:5000` (bypasses nginx)
+- Local dev mode proxies API to `localhost:8008` (through nginx)
+- Source code changes are reflected instantly in both dev modes (hot-reload)
+- Tests can target either dev server (5169) or production (8008) by switching configs
+- Production Docker build workflow unchanged - dev mode is purely additive
+
+### Port Summary
+- `8008` - Production frontend + API (via nginx)
+- `5169` - Dev frontend with hot-reload (direct from Vite)
+- `5000` - Backend API (internal, not exposed)
+- `3310` - MySQL (exposed for external tools)
+- `6380` - Redis (exposed for external tools)
+- `8087` - phpMyAdmin
+
 ---
 This review confirms T001–T011 are implemented and minimally functioning per scope, with placeholders where later tasks (T012+) will deliver full behavior.

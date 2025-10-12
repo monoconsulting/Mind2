@@ -5,57 +5,555 @@ This is the current workflow for file processing
 ## Step 1 – Import
 
 - Import file from FTP.
+- Change status to "ftp_fetched" if fetched from ftp, if uploaded from Lägg till filer button change to "uploaded"
 
 ## Step 2 – OCR
 
-- Configure OCR settings under the menu **“Settings/OCR”**.
-- Raw, unprocessed text must be inserted into `unified_files.ocr_raw` **without positional information**.
-- JSON-files should be created in the storage area
+Configure OCR settings under the menu **“Settings/OCR”**
+
+JSON-files should be created in the storage area
+
+Change status to `ocr-done`
+
+**Database:** Insert all data except positional information into `unified_files.ocr_raw`
 
 ## Step 3 – AI Analysis
 
-### AI1 – Document Type Classification
+### **AI1: Document Analysis – Classification (receipt/invoice/other)**
 
-- Configure this under the menu **“AI”**.
-- Create a system prompt named **“Document Analysis”**.
-- Allow model selection depending on available models defined in `.env`.
-- Task: analyze the OCR text/image and determine the **document type**:
-  - **receipt**, **invoice**, or **other**.
-- Insert result into `unified_files.file_type`.
-- If text exists but cannot be classified as a receipt, set the value to **“Manual Review”**.
-  - This means the process stops and waits for user input.
+**Information:**
 
-### AI2 – Expense Type Classification
+- **Title:** Document Classifier (Receipt/Invoice/Other)
+- **Description:** The AI analyzes OCR-extracted text from a document and determines whether it is a *receipt*, an *invoice*, or *other*. Context is Swedish accounting practices.
 
-- Task: determine whether the document is an **employee personal expense** or a **corporate card expense**.
-- Store result in `unified_files.expense_type`:
-  - **personal** → employee paid the expense themselves.
-  - **corporate** → expense belongs to a corporate card (e.g., First Card, MasterCard).
+**System prompt: **
 
-### AI3 – Data Extraction to Database
+```
+ You are an AI model receiving the text from a scanned document. Determine the document type: "receipt", "invoice", or "other". Focus on text clues (e.g., words like "receipt", "VAT rate", company names, reference numbers, formatting). Respond with **only** one of these three labels without explanation.
+```
 
-- Extract all structured data from the receipt/invoice and insert into three main tables:
+------
 
-1. **unified_files**
+### AI2: Expense Type – Employee Expense vs Company Card
+
+**Title:** Expense Type Classifier (Employee Expense / Company Card)
+
+**Description:** The AI determines if a receipt represents an employee’s out-of-pocket expense or a company card payment (e.g., FirstCard/MasterCard). It uses payment details, card numbers, or receipt context to find this out.
+
+**System prompt: **
+
+```
+You are an AI model analyzing a receipt’s details (payment method, card data, contextual text). Determine whether the receipt is an *employee expense* or a *company card expense*. Look for signs such as company card names, "FirstCard", or if the payment is linked to an employee. Reply with either "personal" or "corporate" only, without any extra text. 
+```
+
+**Database: ** result into `unified_files.file_type`.
+
+**Important**
+
+If text exists - but cannot be classified as a receipt, set the value to **“Manual Review”**. This means the process stops and waits for user input. 
+
+### **AI3: Data Extraction for companies, unified_files and receipts_items**
+
+- **Title:** Data Extractor (Receipt/Invoice → Structured Data)
+
+- **Description:** The AI extracts relevant fields from a receipt or invoice. Output should populate `companies` (if the company doesn't already exist in the company table) , unified_files - the main table for the receipt data and finally the `receipts_items` (line-level items). 
+
+  Focus is on Swedish accounting and VAT.
+
+- **unified_files**
+
    - Master record for the receipt.
    - Stores high-level data such as vendor, total amount excluding VAT, etc.
-2. **receipt_items**
+
+- **receipt_items**
+
    - Line items of each receipt.
    - Each record links back to its parent record in `unified_files.id`.
-3. **companies**
-   - Company details.
-   - Must be synchronized with the official company registry via the Bolagsverket API.
+
+- **companies**
+
+   - Company details
+
+   **System prompt:**
+
+   - AI3 — System Prompt (Receipt/Invoice Data Extraction → unified_files + receipt_items)
+
+     You are a deterministic data extractor for Swedish receipts and invoices.
+     Your only goal is to parse OCR text (and attached hints) into database-ready values for:
+
+     companies (one new row for each receipt/document - if the company doesn't exist. unified_files referes to the id in this table)
+
+     unified_files (one row per receipt/document; update only the fields you’re asked to set)
+
+     receipt_items (one row per purchased item/line)
+
+
+   **Table: Companies**
+
+   id (autogenerated)
+
+   name (company name)
+
+   orgnr (the organization number)
+
+   address (street address or post box)
+
+   address2 (extra address)
+
+   zip (zip code)
+
+   city (city)
+
+   country (country)
+
+   phone (phone number to the company)
+
+   www (homepage)
+
+   created_at (timestamp from creation of db post)
+
+   updated_at (timestamp from updating the post)
+
+   
+
+   **Table: unified_files**
+
+   **purchase_datetime**  - (datetime or null): derive from text; ISO YYYY-MM-DD HH:MM:SS. If only date is present, use 00:00:00. If unknown → null.
+
+   **payment_type** - (varchar 255): "card" or "cash". If unknown, set "".
+
+   **currency** - (varchar): ISO code (SEK/USD/EUR …). If nothing indicates foreign currency, use "SEK".
+
+   **gross_amount_original** - (DECIMAL(12,2)): use values in document currency.
+
+   net_amount_original (DECIMAL(12,2)): use values in document currency.
+
+   **exchange_rate** (DECIMAL(12,0), required by schema): If currency='SEK' → set 0.
+
+   If foreign currency present with a decimal rate (e.g., 11.33), multiply by 100 and round to integer (1133) to comply with DECIMAL(12,0). Also include human-readable rate in other_data (e.g., "exchange_rate_note":"1 USD=11.33 SEK (stored as 1133 bps)").
+
+   **gross_amount_sek** -  (INT-like DECIMAL(10,0)):  (INT-like DECIMAL(10,0)): convert to SEK and round to whole kronor (schema has no decimals). If currency is SEK, set equal to original rounded to 0 decimals.
+
+   **net_amount_sek**  - (INT-like DECIMAL(10,0)):  (INT-like DECIMAL(10,0)): convert to SEK and round to whole kronor (schema has no decimals). If currency is SEK, set equal to original rounded to 0 decimals.
+
+   **company_id** this id should be fetched from the companies-table for the company that wrote the receipt. If the company doesn't exist add it.
+
+   **receipt_number:** set if unique receipt number exists on the document; else "".
+
+   **other_data:** short JSON string or compact key=value;key=value with leftovers (e.g., terminal id, AID, reference ids).
+
+   
+
+   **Table: **receipt_items
+
+   **id**: (INT AUTO_INCREMENT PRIMARY KEY): Database-generated unique identifier for each receipt item. This field is NOT provided by AI3 - it is auto-generated when the row is inserted into the database. AI4 uses this id value in the item_id field of accounting proposals.
+
+   **main_id**: referes to the id of the main-receipt in unified_files
+
+   **article_id**: (varchar 222): product/article number if present; else "".
+
+   **name**: (varchar 222): item description/name.
+
+   **number**:  (int): quantity; default 1 if not specified.
+
+   **item_price_ex_vat:**, item_price_inc_vat (DECIMAL(10,2)): single-unit price (ex/incl VAT).
+
+   **item_total_price_ex_vat:**, item_total_price_inc_vat (DECIMAL(10,2)): number * unit price.
+
+   **currency:** (varchar 11): same as head currency.
+
+   **vat:** (DECIMAL(10,2)): VAT amount per line (in document currency).
+
+   **vat_percentage:** (DECIMAL(7,6)): e.g., 0.250000 for 25%, 0.120000 for 12%, 0.060000 for 6%, 0.000000 for 0%.
+
+   
+
+   ### Normalization rules
+
+   **Dates/Times:** Normalize Swedish formats (2025-09-07, 2025-09-07 12:13) to ISO. If only month/year → set day/time unknown → null for time, or use "00:00:00".
+
+   **Numbers:** Accept both , and . as decimal separators in OCR. Convert to ..
+
+   **VAT math:** Prefer explicit VAT/NET/GROSS from receipt. If only percentage is given, compute:
+
+   **net** = gross / (1 + rate)
+
+   vat = gross - net
+   Round to 2 decimals.
+
+   **Currency conversion to SEK:**
+
+   - If currency='SEK': gross_amount_sek ≈ round(gross_original), net_amount_sek ≈ round(net_original), exchange_rate=0.
+
+   - If foreign: use given or inferred rate; store basis points in exchange_rate and keep precise rate in other_data.
+
+   - 
+
+   ## Forbidden:
+
+   - Do not invent company_id. If not resolvable, keep 0.
+
+   - Do not create invoice_lines matches; that is handled elsewhere.
+
+   - Do not change schema-implied rounding (SEK fields are integers).
+
+   ```
+   Example 1 — Simple SEK receipt with 25% VAT
+   {
+     "unified_files_update": {
+       "id": "9618aba4-6e2a-4c6a-8b6c-241aa825ca97",
+       "file_type": "receipt",
+       "purchase_datetime": "2025-09-07 12:13:00",
+       "expense_type": "corporate",
+       "payment_type": "card",
+       "orgnr": "5566134853",
+       "currency": "SEK",
+       "gross_amount_original": 313.00,
+       "net_amount_original": 250.40,
+       "exchange_rate": 0,
+       "gross_amount_sek": 313,
+       "net_amount_sek": 250,
+       "ai_status": "ok",
+       "ai_confidence": 0.96,
+       "company_id": 2,
+       "receipt_number": "55507732509070046816",
+       "other_data": "terminal=30574008;aid=A0000000031010"
+     },
+     "receipt_items_insert": [
+       {
+         "main_id": 9618aba4-6e2a-4c6a-8b6c-241aa825ca97,
+         "article_id": "",
+         "name": "Mixed goods",
+         "number": 1,
+         "item_price_ex_vat": 250.40,
+         "item_price_inc_vat": 313.00,
+         "item_total_price_ex_vat": 250.40,
+         "item_total_price_inc_vat": 313.00,
+         "currency": "SEK",
+         "vat": 62.60,
+         "vat_percentage": 0.250000
+       }
+     ]
+   }
+   
+   Example 2 — Foreign currency (USD) with exchange rate
+   {
+     "unified_files_update": {
+       "id": "AMZ-2025-08-20-ABC",
+       "file_type": "receipt",
+       "purchase_datetime": "2025-08-20 00:00:00",
+       "expense_type": "corporate",
+       "payment_type": "card",
+       "orgnr": null,
+       "currency": "USD",
+       "gross_amount_original": 22.00,
+       "net_amount_original": 20.75,
+       "exchange_rate": 1105,
+       "gross_amount_sek": 243,
+       "net_amount_sek": 229,
+       "ai_status": "ok",
+       "ai_confidence": 0.90,
+       "company_id": 2,
+       "receipt_number": "TX-0099",
+       "other_data": "{\"exchange_rate_note\":\"1 USD=11.05 SEK stored as 1105 bps\"}"
+     },
+     "receipt_items_insert": [
+       {
+         "main_id": "AMZ-2025-08-20-ABC",
+         "article_id": "",
+         "name": "Books and stationery",
+         "number": 1,
+         "item_price_ex_vat": 20.75,
+         "item_price_inc_vat": 22.00,
+         "item_total_price_ex_vat": 20.75,
+         "item_total_price_inc_vat": 22.00,
+         "currency": "USD",
+         "vat": 1.25,
+         "vat_percentage": 0.060000
+       }
+     ]
+   }
+
+   NOTE: The "id" field in receipt_items is AUTO-GENERATED by the database after INSERT.
+   AI3 does NOT provide this field - it is created by the database.
+   After AI3 completes and receipt_items are inserted, the system retrieves these auto-generated IDs.
+   AI4 then uses these IDs in the "item_id" field when creating accounting proposals.
+   
+   
+   ```
+
+   
+
+   **Validation before returning:**
+
+   unified_files_update.id equals input file_id.
+
+   Amount relationships per line and head hold (gross = net + VAT, within ±0.01).
+
+   SEK integer fields are properly rounded; exchange_rate bps rule respected.
+
+   If critical fields missing (date, total, currency) → ai_status="manual_review".
+
+   
 
 ### AI4 – Accounting (Bookkeeping) Entries
+
+**Information:** 
+
+**Title:** Accounting Proposals (BAS 2025)
+
+**Description:** The AI suggests accounting entries according to the Swedish BAS 2025 chart of accounts for each item. Input includes amounts and VAT details. Output should include debit/credit lines.
+
+**System prompt:**
+
+```
+You are an AI model that receives structured receipt data including items, amounts, and VAT details. 
+Your task is to generate accounting entries in accordance with Swedish accounting standards (BAS 2025). 
+
+Rules:
+- Always return valid JSON.
+- Each entry must map directly to the database table `ai_accounting_proposals`:
+  {
+    "receipt_id": "...",
+    "item_id": "...",
+    "account_code": "BAS account number",
+    "debit": "amount in SEK (decimal)",
+    "credit": "amount in SEK (decimal)",
+    "vat_rate": "VAT rate (%)",
+    "notes": "short explanation of the entry"
+  }
+- Use debit/credit according to double-entry bookkeeping.
+- Use BAS 2025 account codes for expenses, VAT, and payment accounts.
+- Split entries as required (e.g., expense + VAT + payment).
+- Include VAT distribution (25%, 12%, 6%) where relevant.
+- If multiple items exist, create accounting proposals per item.
+- Notes should explain the logic briefly, e.g. "Food expense", "Input VAT 12%", "Paid with company card".
+
+### Examples:
+
+1. **Restaurant receipt 500 SEK including 12% VAT, paid with company card (FirstCard):**
+[
+  {
+    "receipt_id": "123",
+    "item_id": "A1",
+    "account_code": "6071",
+    "debit": 446.43,
+    "credit": 0.00,
+    "vat_rate": 12.0,
+    "notes": "Meal expense (excl VAT)"
+  },
+  {
+    "receipt_id": "123",
+    "item_id": "A1",
+    "account_code": "2641",
+    "debit": 53.57,
+    "credit": 0.00,
+    "vat_rate": 12.0,
+    "notes": "Input VAT 12%"
+  },
+  {
+    "receipt_id": "123",
+    "item_id": "A1",
+    "account_code": "2440",
+    "debit": 0.00,
+    "credit": 500.00,
+    "vat_rate": 0.0,
+    "notes": "Accounts payable / company card"
+  }
+]
+
+2. **Office supplies 1000 SEK including 25% VAT, paid with private funds (employee reimbursement):**
+[
+  {
+    "receipt_id": "456",
+    "item_id": "B2",
+    "account_code": "6110",
+    "debit": 800.00,
+    "credit": 0.00,
+    "vat_rate": 25.0,
+    "notes": "Office supplies expense"
+  },
+  {
+    "receipt_id": "456",
+    "item_id": "B2",
+    "account_code": "2641",
+    "debit": 200.00,
+    "credit": 0.00,
+    "vat_rate": 25.0,
+    "notes": "Input VAT 25%"
+  },
+  {
+    "receipt_id": "456",
+    "item_id": "B2",
+    "account_code": "2890",
+    "debit": 0.00,
+    "credit": 1000.00,
+    "vat_rate": 0.0,
+    "notes": "Liability to employee"
+  }
+]
+
+3. **Taxi receipt 300 SEK including 6% VAT, paid in cash:**
+[
+  {
+    "receipt_id": "789",
+    "item_id": "C3",
+    "account_code": "5611",
+    "debit": 283.02,
+    "credit": 0.00,
+    "vat_rate": 6.0,
+    "notes": "Travel expense (excl VAT)"
+  },
+  {
+    "receipt_id": "789",
+    "item_id": "C3",
+    "account_code": "2641",
+    "debit": 16.98,
+    "credit": 0.00,
+    "vat_rate": 6.0,
+    "notes": "Input VAT 6%"
+  },
+  {
+    "receipt_id": "789",
+    "item_id": "C3",
+    "account_code": "1910",
+    "debit": 0.00,
+    "credit": 300.00,
+    "vat_rate": 0.0,
+    "notes": "Cash payment"
+  }
+]
+
+---
+Instructions:
+- Classify and assign accounts for all entries according to **Swedish accounting practice**.
+- Use **BAS 2025** as the reference chart of accounts.
+- Each selected account should generate an entry in `ai_accounting_proposals`.
+
+
+```
+
+
 
 - Classify and assign accounts for all entries according to **Swedish accounting practices**.
 - Use the **BAS-2025 chart of accounts**, stored in the database table `chart_of_accounts`, as the reference.
 - An entry should be made in ai_accounting_proposals for each accountnumber that is selected according to praxis
 
-### AI5 – Credit Card Invoice Matching
+### AI5 – Credit Card Invoice Matching (deactivated)
 
-- Import invoices into:
+> **Status:** The automated receipt workflow now stops after **AI4**. AI5 is currently disabled and is not triggered automatically for uploaded receipts. The prompt and instructions below are retained for future use when invoice-level reconciliation is reintroduced.
+
+- When re-enabled, the AI should compare each credit card invoice to the receipts available for the invoiced period.
+- Relevant tables:
   - `creditcard_invoices_main`
   - `creditcard_invoice_items`
-- Match each invoice line item with receipts having the same `purchase_date` and amount
-- If there is a check set true in unified_files_credit_card_match
+- The goal is to match invoice line items with receipts that share the same `purchase_date` and amount.
+- Successful matches should set `unified_files_credit_card_match` to true for the associated receipt.
+
+```
+You are an AI model responsible for reconciling credit card invoices with receipts.
+
+Input:
+- A credit card invoice, stored in tables:
+  - creditcard_invoices_main (invoice header, metadata)
+  - creditcard_invoice_items (each transaction line with date, amount, merchant)
+- Receipts stored in unified_files (file_type='receipt') and related tables.
+
+Your task:
+1. For each row in creditcard_invoice_items, find the best matching receipt(s) from unified_files.
+   - Match primarily on purchase_date and amount.
+   - Secondary criteria: merchant_name similarity.
+   - If multiple candidates exist, pick the one with the closest match in both amount and date.
+
+2. Output your results in JSON format, one object per invoice line:
+   {
+     "invoice_item_id": "...",
+     "receipt_id": "...",
+     "match": true/false,
+     "match_score": 0.0–1.0,
+     "notes": "explanation of why it matched or not"
+   }
+
+3. If a match is found, set the field unified_files.credit_card_match = true for that receipt.
+
+Rules:
+- Match must be exact or very close (date difference max ±1 day, amount difference max ±1 SEK unless otherwise stated).
+- If no good match is found, return "match": false.
+- Always ensure consistent reconciliation (one receipt should not be matched to multiple invoice lines unless explicitly marked as split).
+
+```
+
+
+
+
+  Verifiering Genomförd - Alla Ändringar Implementerade
+
+  ✅ Step 1: Import
+
+  Fixat:
+  - ingest.py:127 - Sätter nu ai_status='uploaded'
+  - fetch_ftp.py:138 - Sätter nu ai_status='ftp_fetched'
+  - fetch_ftp.py - Raderat FELAKTIG insättning av merchant_name, orgnr, purchase_datetime, gross_amount, net_amount (dessa ska AI sätta!)
+
+  Korrekt beteende:
+  - Skapar post i unified_files med ENDAST filmetadata
+  - Sätter korrekt status beroende på källa
+  - Ingen business-data (det är AI:s jobb)
+
+  ✅ Step 2: OCR
+
+  Fixat:
+  - tasks.py:773-778 - OCR skriver nu ENDAST till ocr_raw
+  - Raderat felaktig insättning av merchant_name, gross_amount, purchase_datetime
+  - Sätter status till ocr_done
+
+  Korrekt beteende:
+  - Endast RAW text, ingen tolkning
+  - Inga positionella data i ocr_raw
+
+  ✅ AI1: Document Classification
+
+  Verifierad:
+  - ai_processing.py:447-469 - classify_document_internal()
+  - Sätter file_type till "receipt", "invoice", eller "other"
+  - Uppdaterar ai_status via _set_ai_stage()
+
+  ✅ AI2: Expense Classification
+
+  Verifierad:
+  - ai_processing.py:472-494 - classify_expense_internal()
+  - Sätter expense_type till "personal" eller "corporate"
+
+  ✅ AI3: Data Extraction
+
+  Verifierad:
+  - ai_processing.py:497-500 - extract_data_internal() → _persist_extraction_result()
+  - ai_processing.py:88-191 - _ensure_company() (förbättrad med loggning)
+  - Extraherar ALL data till:
+    - companies (skapar/uppdaterar företag)
+    - unified_files (alla affärsdata: belopp, datum, valuta, company_id, etc.)
+    - receipt_items (alla rader)
+
+  ✅ AI4: Accounting Proposals
+
+  Verifierad:
+  - ai_processing.py:504-509 - classify_accounting_internal()
+  - ai_processing.py:283-323 - _persist_accounting_proposals()
+  - Skapar poster i ai_accounting_proposals med BAS-2025 konton
+
+  🚫 AI5: Kreditkortsavstämning (inaktiverad)
+
+  Status:
+  - Steget triggas inte automatiskt i dagsläget
+  - Systemprompten finns kvar i databasen för framtida användning
+
+  📊 Sammanfattning av Ändringar:
+
+  | Fil              | Rad     | Ändring                                         |
+  |------------------|---------|-------------------------------------------------|
+  | ingest.py        | 127     | + ai_status='uploaded'                          |
+  | fetch_ftp.py     | 102-138 | Raderat business-data, endast filmetadata       |
+  | tasks.py         | 773-792 | OCR skriver ENDAST ocr_raw, ingen business-data |
+  | ai_processing.py | 88-191  | Förbättrad _ensure_company() med loggning       |
+
+  Resultat: Implementationen följer nu 100% MIND_WORKFLOW.md - INGEN MOCKDATA, all business-data sätts av AI!

@@ -86,20 +86,36 @@ def apply_migrations(seed_demo: bool = True) -> None:
                     raise
 
     # Optional seed of a few demo rows for instant UI sanity
-    if seed_demo:
+    # NOTE: Seed data disabled - mock data is forbidden per CLAUDE.md
+    # If re-enabled in future, must:
+    # 1. Create companies first in companies table
+    # 2. Link via company_id, not merchant_name column (which doesn't exist)
+    if False and seed_demo:
         try:
             with db_cursor() as cur:
                 cur.execute("SELECT COUNT(1) FROM unified_files")
                 (cnt,) = cur.fetchone() or (0,)
                 if int(cnt) == 0:
+                    # First create companies
+                    cur.execute(
+                        """
+                        INSERT INTO companies (id, name, orgnr)
+                        VALUES
+                          ('demo-company-001', 'Demo Cafe', '556677-8899'),
+                          ('demo-company-002', 'Grocer AB', '112233-4455'),
+                          ('demo-company-003', 'Tools & Co', '998877-6655')
+                        ON DUPLICATE KEY UPDATE id=id
+                        """
+                    )
+                    # Then create receipts linked to companies
                     cur.execute(
                         """
                         INSERT INTO unified_files
-                          (id, file_type, created_at, merchant_name, orgnr, purchase_datetime, gross_amount, net_amount, ai_status, ai_confidence)
+                          (id, file_type, created_at, company_id, purchase_datetime, gross_amount, net_amount, ai_status, ai_confidence)
                         VALUES
-                          ('demo-0001','receipt', NOW(), 'Demo Cafe', '556677-8899', NOW(), 89.00, 71.20, 'new', 0.42),
-                          ('demo-0002','receipt', NOW(), 'Grocer AB', '112233-4455', NOW(), 245.50, 196.40, 'processed', 0.93),
-                          ('demo-0003','receipt', NOW(), 'Tools & Co', '998877-6655', NOW(), 1299.00, 1039.20, 'error', 0.12)
+                          ('demo-0001','receipt', NOW(), 'demo-company-001', NOW(), 89.00, 71.20, 'new', 0.42),
+                          ('demo-0002','receipt', NOW(), 'demo-company-002', NOW(), 245.50, 196.40, 'processed', 0.93),
+                          ('demo-0003','receipt', NOW(), 'demo-company-003', NOW(), 1299.00, 1039.20, 'error', 0.12)
                         """
                     )
         except Exception:
