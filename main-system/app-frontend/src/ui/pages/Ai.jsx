@@ -1,22 +1,37 @@
-import React, { useState, useEffect } from 'react'
-import { FiCpu, FiEdit3, FiPlus, FiTrash2, FiSettings, FiMaximize2, FiX, FiSave } from 'react-icons/fi'
+import React, { useState, useEffect, useMemo } from 'react'
+import { FiEdit3, FiPlus, FiTrash2, FiSettings, FiMaximize2, FiX, FiSave, FiCheckCircle } from 'react-icons/fi'
 import { api } from '../api'
 
 // Modal component for expanded prompt editing
 function PromptModal({ isOpen, onClose, prompt, onSave }) {
   const [editedPrompt, setEditedPrompt] = useState(prompt)
+  const [isSaving, setIsSaving] = useState(false)
 
   useEffect(() => {
     setEditedPrompt(prompt)
   }, [prompt])
 
-  if (!isOpen) return null
+  if (!isOpen || !prompt) return null
+
+  const handleSave = async () => {
+    if (!editedPrompt) return
+    try {
+      setIsSaving(true)
+      await onSave(editedPrompt)
+      onClose()
+    } catch (err) {
+      // Error handled by parent component
+      console.error('Failed to save prompt from modal', err)
+    } finally {
+      setIsSaving(false)
+    }
+  }
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
       <div className="bg-gray-800 rounded-lg max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between p-4 border-b border-gray-700">
-          <h3 className="text-xl font-semibold text-white">{prompt.title}</h3>
+          <h3 className="text-xl font-semibold text-white">{prompt?.title || ''}</h3>
           <button
             onClick={onClose}
             className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
@@ -31,7 +46,7 @@ function PromptModal({ isOpen, onClose, prompt, onSave }) {
                 Beskrivning
               </label>
               <textarea
-                value={editedPrompt.description || ''}
+                value={editedPrompt?.description || ''}
                 onChange={(e) => setEditedPrompt({ ...editedPrompt, description: e.target.value })}
                 className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 h-20 resize-none"
                 placeholder="Kort beskrivning av vad prompten används till..."
@@ -42,7 +57,7 @@ function PromptModal({ isOpen, onClose, prompt, onSave }) {
                 Systemprompt
               </label>
               <textarea
-                value={editedPrompt.prompt_content || ''}
+                value={editedPrompt?.prompt_content || ''}
                 onChange={(e) => setEditedPrompt({ ...editedPrompt, prompt_content: e.target.value })}
                 className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 h-96 font-mono text-sm resize-none"
                 placeholder="Ange systemprompt här..."
@@ -53,18 +68,25 @@ function PromptModal({ isOpen, onClose, prompt, onSave }) {
         <div className="p-4 border-t border-gray-700 flex justify-end gap-3">
           <button
             onClick={onClose}
-            className="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors"
+            disabled={isSaving}
+            className={`px-4 py-2 rounded-lg transition-colors ${
+              isSaving
+                ? 'bg-gray-600 text-gray-300 cursor-not-allowed'
+                : 'bg-gray-700 text-white hover:bg-gray-600'
+            }`}
           >
             Avbryt
           </button>
           <button
-            onClick={() => {
-              onSave(editedPrompt)
-              onClose()
-            }}
-            className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+            onClick={handleSave}
+            disabled={isSaving}
+            className={`px-4 py-2 flex items-center gap-2 rounded-lg transition-colors ${
+              isSaving
+                ? 'bg-red-700/60 text-white cursor-wait'
+                : 'bg-red-600 text-white hover:bg-red-700'
+            }`}
           >
-            Spara
+            <FiSave /> {isSaving ? 'Sparar...' : 'Spara'}
           </button>
         </div>
       </div>
@@ -73,7 +95,7 @@ function PromptModal({ isOpen, onClose, prompt, onSave }) {
 }
 
 // Modal for adding/editing providers
-function ProviderModal({ isOpen, onClose, provider, onSave }) {
+function ProviderModal({ isOpen, onClose, provider, onSave, existingProviders, onTest }) {
   const [editedProvider, setEditedProvider] = useState(
     provider || {
       provider_name: 'OpenAI',
@@ -83,6 +105,8 @@ function ProviderModal({ isOpen, onClose, provider, onSave }) {
       enabled: false
     }
   )
+  const [isTesting, setIsTesting] = useState(false)
+  const [testResult, setTestResult] = useState(null)
 
   useEffect(() => {
     if (provider) {
@@ -96,11 +120,40 @@ function ProviderModal({ isOpen, onClose, provider, onSave }) {
         enabled: false
       })
     }
+    setTestResult(null)
   }, [provider])
 
   if (!isOpen) return null
 
-  const providerTypes = ['OpenAI', 'Anthropic', 'Ollama', 'OpenRouter', 'Google Gemini']
+  // Get unique provider types from existing providers
+  const providerTypes = [...new Set(existingProviders?.map(p => p.provider_name) || [])].sort()
+
+  const handleTest = async () => {
+    if (!provider?.id) {
+      setTestResult({
+        success: false,
+        message: 'Kan inte testa',
+        details: 'Spara leverantören först innan du testar'
+      })
+      return
+    }
+
+    setIsTesting(true)
+    setTestResult(null)
+
+    try {
+      const result = await onTest(provider.id)
+      setTestResult(result)
+    } catch (err) {
+      setTestResult({
+        success: false,
+        message: 'Test misslyckades',
+        details: err.message
+      })
+    } finally {
+      setIsTesting(false)
+    }
+  }
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
@@ -182,6 +235,48 @@ function ProviderModal({ isOpen, onClose, provider, onSave }) {
               <label htmlFor="enabled" className="text-sm font-medium text-gray-300">
                 Aktiverad
               </label>
+            </div>
+            <div className="pt-3 border-t border-gray-700">
+              {provider?.id ? (
+                <>
+                  <button
+                    onClick={handleTest}
+                    disabled={isTesting}
+                    className={`w-full px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-2 ${
+                      isTesting
+                        ? 'bg-gray-700 text-gray-400 cursor-wait'
+                        : 'bg-gray-700 text-white hover:bg-gray-600'
+                    }`}
+                  >
+                    <FiCheckCircle />
+                    {isTesting ? 'Testar anslutning...' : 'Testa anslutning'}
+                  </button>
+                  {testResult && (
+                    <div className={`mt-3 p-3 rounded-lg ${
+                      testResult.success
+                        ? 'bg-green-600 bg-opacity-20 border border-green-600'
+                        : 'bg-red-600 bg-opacity-20 border border-red-600'
+                    }`}>
+                      <p className={`text-sm font-medium ${
+                        testResult.success ? 'text-green-400' : 'text-red-400'
+                      }`}>
+                        {testResult.message}
+                      </p>
+                      {testResult.details && (
+                        <p className="text-sm text-gray-400 mt-1">
+                          {testResult.details}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="p-3 bg-gray-700 bg-opacity-50 rounded-lg">
+                  <p className="text-sm text-gray-400 text-center">
+                    Spara leverantören först för att kunna testa anslutningen
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -291,13 +386,89 @@ export default function AiPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [providerModalOpen, setProviderModalOpen] = useState(false)
   const [modelModalOpen, setModelModalOpen] = useState(false)
-  const [selectedPrompt, setSelectedPrompt] = useState(null)
+  const [selectedPromptId, setSelectedPromptId] = useState(null)
   const [selectedProvider, setSelectedProvider] = useState(null)
   const [selectedProviderId, setSelectedProviderId] = useState(null)
   const [providers, setProviders] = useState([])
   const [systemPrompts, setSystemPrompts] = useState([])
+  const [originalPrompts, setOriginalPrompts] = useState([])
+  const [unsavedPrompts, setUnsavedPrompts] = useState(() => new Set())
+  const [savingPrompts, setSavingPrompts] = useState(() => new Set())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+
+  const selectedPrompt = useMemo(
+    () => systemPrompts.find((prompt) => prompt.id === selectedPromptId) || null,
+    [systemPrompts, selectedPromptId]
+  )
+
+  const parseModelId = (value) => {
+    if (value === undefined || value === null || value === '') return null
+    const parsed = parseInt(value, 10)
+    return Number.isNaN(parsed) ? null : parsed
+  }
+
+  const normalizePrompt = (prompt) => {
+    if (!prompt) return { id: null, title: '', description: '', prompt_content: '', selected_model_id: null }
+    return {
+      ...prompt,
+      prompt_content: prompt.prompt_content || '',
+      description: prompt.description || '',
+      selected_model_id: parseModelId(prompt.selected_model_id)
+    }
+  }
+
+  const promptsAreEqual = (a, b) => {
+    if (!a || !b) return false
+    return (
+      (a.prompt_content || '') === (b.prompt_content || '') &&
+      (a.description || '') === (b.description || '') &&
+      parseModelId(a.selected_model_id) === parseModelId(b.selected_model_id)
+    )
+  }
+
+  const updatePromptDraft = (promptId, changes) => {
+    if (!promptId) return
+    setSystemPrompts((prev) => {
+      let updatedPrompt = null
+      const nextPrompts = prev.map((prompt) => {
+        if (prompt.id !== promptId) return prompt
+        updatedPrompt = normalizePrompt({ ...prompt, ...changes })
+        return updatedPrompt
+      })
+
+      if (updatedPrompt) {
+        const original = originalPrompts.find((prompt) => prompt.id === promptId)
+        setUnsavedPrompts((prevUnsaved) => {
+          const next = new Set(prevUnsaved)
+          if (original && promptsAreEqual(updatedPrompt, original)) {
+            next.delete(promptId)
+          } else {
+            next.add(promptId)
+          }
+          return next
+        })
+      }
+
+      return nextPrompts
+    })
+    setError(null)
+  }
+
+  const revertPromptChanges = (promptId) => {
+    const original = originalPrompts.find((prompt) => prompt.id === promptId)
+    if (!original) return
+    const originalClone = { ...original }
+    setSystemPrompts((prev) =>
+      prev.map((prompt) => (prompt.id === promptId ? originalClone : prompt))
+    )
+    setError(null)
+    setUnsavedPrompts((prev) => {
+      const next = new Set(prev)
+      next.delete(promptId)
+      return next
+    })
+  }
 
   // Fetch providers and prompts on mount
   useEffect(() => {
@@ -321,7 +492,11 @@ export default function AiPage() {
       const response = await api.fetch('/ai/api/ai-config/prompts')
       if (!response.ok) throw new Error('Failed to fetch prompts')
       const data = await response.json()
-      setSystemPrompts(data.prompts || [])
+      const prompts = (data.prompts || []).map((prompt) => normalizePrompt(prompt))
+      setSystemPrompts(prompts)
+      setOriginalPrompts(prompts.map((prompt) => ({ ...prompt })))
+      setUnsavedPrompts(() => new Set())
+      setSavingPrompts(() => new Set())
       setLoading(false)
     } catch (err) {
       setError('Kunde inte hämta systemprompter: ' + err.message)
@@ -404,26 +579,145 @@ export default function AiPage() {
     }
   }
 
+  const [testingProviders, setTestingProviders] = useState(new Set())
+  const [testResults, setTestResults] = useState({})
+
+  const handleTestProvider = async (providerId) => {
+    setTestingProviders(prev => new Set([...prev, providerId]))
+    setTestResults(prev => ({ ...prev, [providerId]: null }))
+    setError(null)
+
+    try {
+      const response = await api.fetch(`/ai/api/ai-config/providers/${providerId}/test`, {
+        method: 'POST'
+      })
+
+      const data = await response.json()
+
+      if (response.ok) {
+        setTestResults(prev => ({ ...prev, [providerId]: data }))
+      } else {
+        setTestResults(prev => ({
+          ...prev,
+          [providerId]: {
+            success: false,
+            message: 'Test misslyckades',
+            details: data.error || 'Okänt fel'
+          }
+        }))
+      }
+    } catch (err) {
+      setTestResults(prev => ({
+        ...prev,
+        [providerId]: {
+          success: false,
+          message: 'Test misslyckades',
+          details: err.message
+        }
+      }))
+    } finally {
+      setTestingProviders(prev => {
+        const next = new Set(prev)
+        next.delete(providerId)
+        return next
+      })
+    }
+  }
+
   const handlePromptEdit = (prompt) => {
-    setSelectedPrompt(prompt)
+    if (!prompt) return
+    setSelectedPromptId(prompt.id)
     setModalOpen(true)
   }
 
   const handlePromptSave = async (updatedPrompt) => {
+    if (!updatedPrompt?.id) return null
+    const promptId = updatedPrompt.id
+    setSavingPrompts((prev) => {
+      const next = new Set(prev)
+      next.add(promptId)
+      return next
+    })
+
+    const payload = normalizePrompt(updatedPrompt)
+
     try {
-      const response = await api.fetch(`/ai/api/ai-config/prompts/${updatedPrompt.id}`, {
+      const response = await api.fetch(`/ai/api/ai-config/prompts/${promptId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedPrompt)
+        body: JSON.stringify(payload)
       })
 
       if (!response.ok) throw new Error('Failed to save prompt')
 
-      fetchPrompts() // Refresh the list
+      let savedPrompt = payload
+      const contentType = response.headers.get('content-type') || ''
+      if (contentType.includes('application/json')) {
+        try {
+          const data = await response.json()
+          if (data?.prompt) {
+            savedPrompt = normalizePrompt(data.prompt)
+          } else if (data?.data) {
+            savedPrompt = normalizePrompt(data.data)
+          } else if (data && Object.keys(data).length > 0) {
+            savedPrompt = normalizePrompt({ ...payload, ...data })
+          }
+        } catch (jsonError) {
+          console.warn('Kunde inte tolka svaret från prompt-sparning', jsonError)
+        }
+      }
+
+      setSystemPrompts((prev) =>
+        prev.map((prompt) => (prompt.id === promptId ? { ...prompt, ...savedPrompt } : prompt))
+      )
+
+      setOriginalPrompts((prev) => {
+        let found = false
+        const updatedOriginals = prev.map((prompt) => {
+          if (prompt.id === promptId) {
+            found = true
+            return { ...prompt, ...savedPrompt }
+          }
+          return prompt
+        })
+        if (!found) {
+          updatedOriginals.push({ ...savedPrompt })
+        }
+        return updatedOriginals
+      })
+
+      setUnsavedPrompts((prev) => {
+        const next = new Set(prev)
+        next.delete(promptId)
+        return next
+      })
+
+      setError(null)
+      return savedPrompt
     } catch (err) {
       setError('Kunde inte spara prompt: ' + err.message)
+      throw err
+    } finally {
+      setSavingPrompts((prev) => {
+        const next = new Set(prev)
+        next.delete(promptId)
+        return next
+      })
     }
   }
+
+  const savePrompt = async (promptId) => {
+    const promptToSave = systemPrompts.find((prompt) => prompt.id === promptId)
+    if (!promptToSave) return
+    try {
+      await handlePromptSave(promptToSave)
+    } catch (err) {
+      console.error('Kunde inte spara prompt', err)
+    }
+  }
+
+  const isPromptUnsaved = (promptId) => unsavedPrompts.has(promptId)
+  const isPromptSaving = (promptId) => savingPrompts.has(promptId)
 
   const getAllAvailableModels = () => {
     const models = []
@@ -538,6 +832,22 @@ export default function AiPage() {
                   </div>
                   <div className="flex gap-2">
                     <button
+                      onClick={() => handleTestProvider(provider.id)}
+                      disabled={testingProviders.has(provider.id)}
+                      className={`p-2 rounded-lg transition-colors ${
+                        testingProviders.has(provider.id)
+                          ? 'bg-gray-700 text-gray-500 cursor-wait'
+                          : testResults[provider.id]?.success
+                          ? 'text-green-400 hover:bg-gray-700'
+                          : testResults[provider.id]?.success === false
+                          ? 'text-red-400 hover:bg-gray-700'
+                          : 'text-gray-400 hover:bg-gray-700'
+                      }`}
+                      title={testingProviders.has(provider.id) ? 'Testar...' : 'Testa anslutning'}
+                    >
+                      <FiCheckCircle />
+                    </button>
+                    <button
                       onClick={() => openModelModal(provider)}
                       className="p-2 hover:bg-gray-700 rounded-lg transition-colors text-gray-400"
                       title="Hantera modeller"
@@ -563,6 +873,24 @@ export default function AiPage() {
                     </button>
                   </div>
                 </div>
+                {testResults[provider.id] && (
+                  <div className={`mt-3 p-3 rounded-lg ${
+                    testResults[provider.id].success
+                      ? 'bg-green-600 bg-opacity-20 border border-green-600'
+                      : 'bg-red-600 bg-opacity-20 border border-red-600'
+                  }`}>
+                    <p className={`text-sm font-medium ${
+                      testResults[provider.id].success ? 'text-green-400' : 'text-red-400'
+                    }`}>
+                      {testResults[provider.id].message}
+                    </p>
+                    {testResults[provider.id].details && (
+                      <p className="text-sm text-gray-400 mt-1">
+                        {testResults[provider.id].details}
+                      </p>
+                    )}
+                  </div>
+                )}
                 {provider.enabled && provider.models?.length > 0 && (
                   <div className="mt-3 pt-3 border-t border-gray-700">
                     <p className="text-sm text-gray-400 mb-2">Tillgängliga modeller:</p>
@@ -603,11 +931,12 @@ export default function AiPage() {
                         AI-modell
                       </label>
                       <select
-                        value={prompt.selected_model_id || ''}
-                        onChange={(e) => handlePromptSave({
-                          ...prompt,
-                          selected_model_id: e.target.value ? parseInt(e.target.value) : null
-                        })}
+                        value={prompt.selected_model_id ?? ''}
+                        onChange={(e) =>
+                          updatePromptDraft(prompt.id, {
+                            selected_model_id: parseModelId(e.target.value)
+                          })
+                        }
                         className="bg-gray-700 text-white rounded-lg px-3 py-2 text-sm"
                       >
                         <option value="">Välj modell...</option>
@@ -621,11 +950,36 @@ export default function AiPage() {
                         Systemprompt
                       </label>
                       <textarea
-                        value={prompt.prompt_content || ''}
-                        onChange={(e) => handlePromptSave({ ...prompt, prompt_content: e.target.value })}
+                        value={prompt.prompt_content}
+                        onChange={(e) => updatePromptDraft(prompt.id, { prompt_content: e.target.value })}
                         className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 h-32 text-sm resize-none"
                         placeholder="Ange systemprompt här..."
                       />
+                      {isPromptUnsaved(prompt.id) && (
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <span className="text-xs text-amber-400">Osparade ändringar</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => revertPromptChanges(prompt.id)}
+                              className="px-3 py-1 text-sm bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors"
+                            >
+                              Ångra
+                            </button>
+                            <button
+                              onClick={() => savePrompt(prompt.id)}
+                              disabled={isPromptSaving(prompt.id)}
+                              className={`px-3 py-1 text-sm flex items-center gap-2 rounded-lg transition-colors ${
+                                isPromptSaving(prompt.id)
+                                  ? 'bg-red-700/60 text-white cursor-wait'
+                                  : 'bg-red-600 text-white hover:bg-red-700'
+                              }`}
+                            >
+                              <FiSave className="text-xs" />{' '}
+                              {isPromptSaving(prompt.id) ? 'Sparar...' : 'Spara'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -650,7 +1004,10 @@ export default function AiPage() {
       {/* Modals */}
       <PromptModal
         isOpen={modalOpen}
-        onClose={() => setModalOpen(false)}
+        onClose={() => {
+          setModalOpen(false)
+          setSelectedPromptId(null)
+        }}
         prompt={selectedPrompt}
         onSave={handlePromptSave}
       />
@@ -663,6 +1020,22 @@ export default function AiPage() {
         }}
         provider={selectedProvider}
         onSave={handleProviderSave}
+        existingProviders={providers}
+        onTest={async (providerId) => {
+          const response = await api.fetch(`/ai/api/ai-config/providers/${providerId}/test`, {
+            method: 'POST'
+          })
+          const data = await response.json()
+          if (response.ok) {
+            return data
+          } else {
+            return {
+              success: false,
+              message: 'Test misslyckades',
+              details: data.error || 'Okänt fel'
+            }
+          }
+        }}
       />
 
       <ModelModal

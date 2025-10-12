@@ -81,11 +81,7 @@ def health():
     return jsonify({"status": "ok", "service": "ai-api"}), 200
 
 
-@app.route("/ingest/upload", methods=["POST"])
-@track_request
-def ingest_upload():
-    # Minimal endpoint to satisfy integration smoke test
-    return jsonify({"uploaded": True}), 200
+# Upload endpoint moved to ingest_bp in api/ingest.py
 
 
 @app.route("/system/metrics")

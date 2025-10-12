@@ -2,6 +2,7 @@
 from flask import Blueprint, request, jsonify
 from datetime import datetime
 import logging
+import requests
 
 try:
     from services.db.connection import db_cursor
@@ -231,7 +232,15 @@ def get_prompts():
                 FROM ai_system_prompts sp
                 LEFT JOIN ai_llm_model m ON sp.selected_model_id = m.id
                 LEFT JOIN ai_llm l ON m.llm_id = l.id
-                ORDER BY sp.id
+                ORDER BY
+                    CASE sp.prompt_key
+                        WHEN 'document_analysis' THEN 1
+                        WHEN 'expense_classification' THEN 2
+                        WHEN 'data_extraction' THEN 3
+                        WHEN 'accounting_classification' THEN 4
+                        WHEN 'credit_card_matching' THEN 5
+                        ELSE 99
+                    END
             """)
 
             prompts = []
@@ -282,4 +291,127 @@ def update_prompt(prompt_id):
 
     except Exception as e:
         logger.error(f"Error updating prompt: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@ai_config_bp.route('/providers/<int:provider_id>/test', methods=['POST'])
+@auth_required
+def test_provider_connection(provider_id):
+    """Test connection to an AI LLM provider"""
+    if not db_cursor:
+        return jsonify({'error': 'Database not available'}), 503
+
+    try:
+        with db_cursor() as cursor:
+            # Get provider details
+            cursor.execute("""
+                SELECT provider_name, api_key, endpoint_url, enabled
+                FROM ai_llm
+                WHERE id = %s
+            """, (provider_id,))
+
+            provider = cursor.fetchone()
+            if not provider:
+                return jsonify({'error': 'Provider not found'}), 404
+
+            provider_name, api_key, endpoint_url, enabled = provider
+
+            if not enabled:
+                return jsonify({'error': 'Provider is disabled'}), 400
+
+            # Test based on provider type
+            if provider_name == 'OpenAI':
+                if not api_key:
+                    return jsonify({'error': 'API key not configured'}), 400
+
+                response = requests.get(
+                    'https://api.openai.com/v1/models',
+                    headers={'Authorization': f'Bearer {api_key}'},
+                    timeout=10
+                )
+
+                if response.status_code == 200:
+                    return jsonify({
+                        'success': True,
+                        'message': 'Connection successful',
+                        'details': 'OpenAI API responded successfully'
+                    }), 200
+                else:
+                    return jsonify({
+                        'success': False,
+                        'message': 'Connection failed',
+                        'details': f'HTTP {response.status_code}: {response.text[:200]}'
+                    }), 200
+
+            elif provider_name == 'Anthropic':
+                if not api_key:
+                    return jsonify({'error': 'API key not configured'}), 400
+
+                response = requests.post(
+                    'https://api.anthropic.com/v1/messages',
+                    headers={
+                        'x-api-key': api_key,
+                        'anthropic-version': '2023-06-01',
+                        'content-type': 'application/json'
+                    },
+                    json={
+                        'model': 'claude-3-haiku-20240307',
+                        'max_tokens': 10,
+                        'messages': [{'role': 'user', 'content': 'test'}]
+                    },
+                    timeout=10
+                )
+
+                if response.status_code == 200:
+                    return jsonify({
+                        'success': True,
+                        'message': 'Connection successful',
+                        'details': 'Anthropic API responded successfully'
+                    }), 200
+                else:
+                    return jsonify({
+                        'success': False,
+                        'message': 'Connection failed',
+                        'details': f'HTTP {response.status_code}: {response.text[:200]}'
+                    }), 200
+
+            elif provider_name == 'Ollama':
+                if not endpoint_url:
+                    return jsonify({'error': 'Endpoint URL not configured'}), 400
+
+                response = requests.get(
+                    f'{endpoint_url}/api/tags',
+                    timeout=10
+                )
+
+                if response.status_code == 200:
+                    return jsonify({
+                        'success': True,
+                        'message': 'Connection successful',
+                        'details': f'Ollama server responded successfully'
+                    }), 200
+                else:
+                    return jsonify({
+                        'success': False,
+                        'message': 'Connection failed',
+                        'details': f'HTTP {response.status_code}: {response.text[:200]}'
+                    }), 200
+
+            else:
+                return jsonify({'error': f'Testing not implemented for provider: {provider_name}'}), 400
+
+    except requests.Timeout:
+        return jsonify({
+            'success': False,
+            'message': 'Connection timeout',
+            'details': 'The provider did not respond within 10 seconds'
+        }), 200
+    except requests.RequestException as e:
+        return jsonify({
+            'success': False,
+            'message': 'Connection error',
+            'details': str(e)
+        }), 200
+    except Exception as e:
+        logger.error(f"Error testing provider connection: {e}")
         return jsonify({'error': str(e)}), 500

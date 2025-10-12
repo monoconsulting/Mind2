@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -25,6 +26,51 @@ except Exception:  # pragma: no cover
     def set_ai_status(file_id: str, status: str) -> bool:  # type: ignore
         _ = (file_id, status)
         return False
+
+
+INSERT_HISTORY_SQL = """
+    INSERT INTO ai_processing_history
+    (file_id, job_type, status, ai_stage_name, log_text, error_message,
+     confidence, processing_time_ms, provider, model_name)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+"""
+
+
+def _history(
+    file_id: str,
+    job: str,
+    status: str,
+    ai_stage_name: str | None = None,
+    log_text: str | None = None,
+    error_message: str | None = None,
+    confidence: float | None = None,
+    processing_time_ms: int | None = None,
+    provider: str | None = None,
+    model_name: str | None = None,
+) -> None:
+    """Log processing history with detailed information."""
+    if db_cursor is None:
+        return
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                INSERT_HISTORY_SQL,
+                (
+                    file_id,
+                    job,
+                    status,
+                    ai_stage_name,
+                    log_text,
+                    error_message,
+                    confidence,
+                    processing_time_ms,
+                    provider,
+                    model_name,
+                ),
+            )
+    except Exception:
+        # best-effort history
+        pass
 
 
 @dataclass
@@ -87,9 +133,10 @@ def _load_metadata(file_path: Path) -> Dict[str, Any]:
 def _insert_unified_file(
     file_id: str,
     filename: str,
-    metadata: Dict[str, Any]
+    metadata: Dict[str, Any],
+    content_hash: str
 ) -> None:
-    """Insert file record with complete metadata"""
+    """Insert file record with metadata from FTP. AI will populate business data later."""
     if db_cursor is None:
         return
 
@@ -97,14 +144,7 @@ def _insert_unified_file(
         file_suffix = _get_file_suffix(filename)
         file_category = _get_file_category(file_suffix)
 
-        # Extract metadata fields (old format)
-        merchant_name = metadata.get('merchant_name')
-        orgnr = metadata.get('orgnr')
-        purchase_datetime = metadata.get('purchase_datetime')
-        gross_amount = metadata.get('gross_amount')
-        net_amount = metadata.get('net_amount')
-
-        # Extract new JSON format fields
+        # Extract ONLY metadata fields (file system data, NOT business data)
         original_file_id = metadata.get('file_id')
         original_file_name = metadata.get('original_name')
         file_creation_timestamp = metadata.get('timestamp')
@@ -112,12 +152,6 @@ def _insert_unified_file(
         mime_type = metadata.get('file_type')
 
         # Convert datetime strings to datetime objects if needed
-        if purchase_datetime and isinstance(purchase_datetime, str):
-            try:
-                purchase_datetime = datetime.strptime(purchase_datetime, '%Y-%m-%d %H:%M:%S')
-            except:
-                purchase_datetime = None
-
         if file_creation_timestamp and isinstance(file_creation_timestamp, str):
             try:
                 # Handle ISO format with timezone: 2025-09-07T19:33:00+02:00
@@ -131,33 +165,43 @@ def _insert_unified_file(
             cur.execute(
                 """
                 INSERT INTO unified_files (
-                    id, file_type, created_at,
-                    file_category, file_suffix,
-                    merchant_name, orgnr, purchase_datetime,
-                    gross_amount, net_amount, original_filename,
+                    id, file_type, created_at, content_hash,
+                    file_category, file_suffix, original_filename,
                     original_file_id, original_file_name, file_creation_timestamp,
-                    original_file_size, mime_type
+                    original_file_size, mime_type, submitted_by, ai_status, ocr_raw, other_data
                 ) VALUES (
-                    %s, %s, NOW(),
-                    %s, %s,
+                    %s, %s, NOW(), %s,
                     %s, %s, %s,
                     %s, %s, %s,
-                    %s, %s, %s,
-                    %s, %s
+                    %s, %s, %s, %s, %s, %s
                 )
                 """,
                 (
-                    file_id, "receipt",
-                    file_category, file_suffix,
-                    merchant_name, orgnr, purchase_datetime,
-                    gross_amount, net_amount, filename,
+                    file_id, "receipt", content_hash,
+                    file_category, file_suffix, filename,
                     original_file_id, original_file_name, file_creation_timestamp,
-                    original_file_size, mime_type
+                    original_file_size, mime_type, 'ftp', 'ftp_fetched', '', '{}'
                 )
             )
-            logger.info(f"Inserted unified_file {file_id} with metadata")
+            logger.info(f"Inserted unified_file {file_id} with metadata and hash {content_hash[:16]}...")
+
+            # Log successful FTP fetch
+            file_size = metadata.get('file_size', 'unknown')
+            _history(
+                file_id=file_id,
+                job="ftp_fetch",
+                status="success",
+                ai_stage_name="FTP-FileFetched",
+                log_text=f"File fetched from FTP: filename={filename}, size={file_size} bytes, hash={content_hash[:16]}..., metadata_fields={list(metadata.keys())}",
+                provider="ftp",
+            )
     except Exception as e:
+        # Check for duplicate hash
+        if 'Duplicate entry' in str(e) and 'idx_content_hash' in str(e):
+            logger.warning(f"Skipping duplicate file {filename} (hash: {content_hash[:16]}...)")
+            raise ValueError("Duplicate file")
         logger.error(f"Error inserting unified file: {e}")
+        raise
 
 
 def _insert_file_location(file_id: str, location: Dict[str, Any]) -> None:
@@ -256,14 +300,27 @@ def fetch_from_local_inbox() -> FetchResult:
             file_id = str(uuid.uuid4())
             data = p.read_bytes()
 
+            # Calculate content hash for duplicate detection
+            content_hash = hashlib.sha256(data).hexdigest()
+            logger.info(f"Local: Processing {p.name} - hash {content_hash[:16]}...")
+
             # Load metadata from JSON file if it exists
             metadata = _load_metadata(p)
+            # Add file size to metadata for logging
+            metadata['file_size'] = len(data)
+
+            # Insert file record with metadata and hash (handles duplicates)
+            try:
+                _insert_unified_file(file_id, p.name, metadata, content_hash)
+            except ValueError as ve:
+                if "Duplicate file" in str(ve):
+                    skipped.append(p.name)
+                    logger.info(f"Local: Skipped duplicate file {p.name}")
+                    continue
+                raise
 
             # Save file to storage
             fs.save(file_id, p.name, data)
-
-            # Insert file record with metadata
-            _insert_unified_file(file_id, p.name, metadata)
 
             # Insert location data if available
             if 'location' in metadata:
@@ -273,20 +330,11 @@ def fetch_from_local_inbox() -> FetchResult:
             if 'tags' in metadata:
                 _insert_file_tags(file_id, metadata['tags'])
 
-            # Set AI status and trigger OCR automatically
+            # Set AI status
             set_ai_status(file_id, "new")
 
-            # Auto-trigger OCR processing
-            try:
-                from services.tasks import process_ocr
-                if process_ocr is not None:
-                    set_ai_status(file_id, "queued")
-                    process_ocr.delay(file_id)
-                    logger.info(f"LOCAL DEBUG: OCR queued for {p.name}")
-            except Exception as e:
-                logger.warning(f"LOCAL DEBUG: Could not queue OCR for {p.name}: {e}")
-
             downloaded.append((file_id, p.name))
+            logger.info(f"Local: Successfully processed {p.name} as {file_id}")
 
             # Move files if configured
             if move_dir:
@@ -302,7 +350,19 @@ def fetch_from_local_inbox() -> FetchResult:
                     json_path.rename(dst_dir / json_path.name)
 
         except Exception as e:
+            logger.error(f"Local: Error processing {p.name}: {e}")
             errors.append(f"{p.name}: {e}")
+            # Log error if we have a file_id
+            if 'file_id' in locals():
+                _history(
+                    file_id=file_id,
+                    job="ftp_fetch",
+                    status="error",
+                    ai_stage_name="FTP-FileFetched",
+                    log_text=f"Failed to process file from local inbox: {p.name}",
+                    error_message=f"{type(e).__name__}: {str(e)}",
+                    provider="ftp",
+                )
 
     return FetchResult(downloaded=downloaded, skipped=skipped, errors=errors)
 
@@ -402,14 +462,40 @@ def fetch_from_ftp() -> FetchResult:
                 ftp.retrbinary(f"RETR {name}", buf.extend)
                 logger.info(f"FTP DEBUG: Downloaded {len(buf)} bytes for {name}")
 
+                # Calculate content hash for duplicate detection
+                data = bytes(buf)
+                content_hash = hashlib.sha256(data).hexdigest()
+                logger.info(f"FTP DEBUG: Calculated hash {content_hash[:16]}... for {name}")
+
                 # Get metadata if available
                 metadata = metadata_cache.get(name, {})
+                # Add file size to metadata for logging
+                metadata['file_size'] = len(data)
+
+                # Insert file record with metadata and hash (handles duplicates)
+                try:
+                    _insert_unified_file(file_id, name, metadata, content_hash)
+                except ValueError as ve:
+                    if "Duplicate file" in str(ve):
+                        skipped.append(name)
+                        logger.info(f"FTP DEBUG: SKIPPED duplicate file {name}")
+                        # Delete from FTP if configured
+                        if delete_after:
+                            try:
+                                ftp.delete(name)
+                                if name in metadata_cache:
+                                    try:
+                                        ftp.delete(name + '.json')
+                                    except:
+                                        pass
+                                logger.info(f"FTP DEBUG: Deleted duplicate {name} from FTP server")
+                            except error_perm:
+                                logger.info(f"FTP DEBUG: Could not delete {name} - permission denied")
+                        continue
+                    raise
 
                 # Save file to storage
-                fs.save(file_id, name, bytes(buf))
-
-                # Insert file record with metadata
-                _insert_unified_file(file_id, name, metadata)
+                fs.save(file_id, name, data)
 
                 # Insert location data if available
                 if 'location' in metadata:
@@ -419,21 +505,11 @@ def fetch_from_ftp() -> FetchResult:
                 if 'tags' in metadata:
                     _insert_file_tags(file_id, metadata['tags'])
 
-                # Set AI status and trigger OCR automatically
+                # Set AI status
                 set_ai_status(file_id, "new")
 
-                # Auto-trigger OCR processing
-                try:
-                    from services.tasks import process_ocr
-                    if process_ocr is not None:
-                        set_ai_status(file_id, "queued")
-                        process_ocr.delay(file_id)
-                        logger.info(f"FTP DEBUG: OCR queued for {name}")
-                except Exception as e:
-                    logger.warning(f"FTP DEBUG: Could not queue OCR for {name}: {e}")
-
                 downloaded.append((file_id, name))
-                logger.info(f"FTP DEBUG: Successfully saved {name}")
+                logger.info(f"FTP DEBUG: Successfully saved {name} as {file_id}")
 
                 if delete_after:
                     try:
@@ -450,6 +526,17 @@ def fetch_from_ftp() -> FetchResult:
             except Exception as e:
                 logger.error(f"FTP DEBUG: Error processing {name}: {e}")
                 errors.append(f"{name}: {e}")
+                # Log error if we have a file_id
+                if 'file_id' in locals():
+                    _history(
+                        file_id=file_id,
+                        job="ftp_fetch",
+                        status="error",
+                        ai_stage_name="FTP-FileFetched",
+                        log_text=f"Failed to process file from FTP: {name}",
+                        error_message=f"{type(e).__name__}: {str(e)}",
+                        provider="ftp",
+                    )
     except Exception as e:
         logger.error(f"FTP DEBUG: Connection error: {e}")
         errors.append(str(e))

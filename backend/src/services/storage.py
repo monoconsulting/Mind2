@@ -1,8 +1,15 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List
+
+import shutil
+
+
+def _ensure_category(root: Path, category: str) -> Path:
+    target = root / category
+    target.mkdir(parents=True, exist_ok=True)
+    return target
 
 
 class FileStorage:
@@ -27,6 +34,59 @@ class FileStorage:
         p = self._safe_path(receipt_id, filename)
         p.write_bytes(data)
         return p
+
+    def adopt(self, receipt_id: str, filename: str, source_path: Path) -> Path:
+        """Move an existing file into the managed storage tree.
+
+        The operation is idempotent: if the source is already in the correct
+        location the path is returned unchanged. Otherwise the file is moved
+        atomically (when supported by the underlying filesystem).
+        """
+
+        destination = self._safe_path(receipt_id, filename)
+        source = Path(source_path).resolve()
+
+        if not source.exists():
+            raise FileNotFoundError(source)
+
+        if source == destination:
+            return destination
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        # If a previous run already placed a file in the destination path we
+        # replace it to guarantee callers observe the final content. This keeps
+        # the method safe to call multiple times with the same logical file.
+        if destination.exists():
+            destination.unlink()
+
+        shutil.move(str(source), destination)
+        return destination
+
+    def save_in_category(self, category: str, filename: str, data: bytes) -> Path:
+        if not filename or "/" in filename or ".." in filename:
+            raise ValueError("Unsafe category filename")
+        root = _ensure_category(self.base, category)
+        path = (root / filename).resolve()
+        if not str(path).startswith(str(root.resolve())):
+            raise ValueError("Unsafe category path")
+        path.write_bytes(data)
+        return path
+
+    def save_original(self, file_id: str, original_name: str, data: bytes) -> Path:
+        ext = Path(original_name).suffix or ".bin"
+        filename = f"{file_id}{ext if ext.startswith('.') else '.' + ext}"
+        return self.save_in_category("originals", filename, data)
+
+    def save_converted_page(self, file_id: str, page_number: int, data: bytes, ext: str = ".png") -> Path:
+        suffix = ext if ext.startswith(".") else f".{ext}"
+        filename = f"{file_id}_page_{page_number:04d}{suffix}"
+        return self.save_in_category("converted", filename, data)
+
+    def save_audio(self, file_id: str, original_name: str, data: bytes) -> Path:
+        ext = Path(original_name).suffix or ".bin"
+        filename = f"{file_id}{ext if ext.startswith('.') else '.' + ext}"
+        return self.save_in_category("audio", filename, data)
 
     def load(self, receipt_id: str, filename: str) -> bytes:
         p = self._safe_path(receipt_id, filename)

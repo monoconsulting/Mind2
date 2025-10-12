@@ -142,3 +142,42 @@ _____________
 | gross_amount         | decimal(13,2)   |      | Gross amount incl. VAT               |
 | cost_center_override | varchar(100)    |      | Optional cost center override        |
 | project_code         | varchar(100)    |      | Optional project code for accounting |
+
+## Step-by-step implementation guide
+
+Follow the checklist below to move from raw OCR uploads to persisted AI results that comply with the production schema. Each step should be completed in sequence; do not proceed until the current step has been verified.
+
+1. **Baseline the database schema**
+   - Load the latest production snapshot (for example `mono_se_db_9 (3).sql`) into your development database.
+   - Confirm the presence of the tables and columns listed above using `DESCRIBE` statements; resolve any mismatches before continuing.
+
+2. **Create schema migrations**
+   - Author an idempotent SQL migration that adds missing columns to `unified_files`, recreates `ai_accounting_proposals`, and provisions `receipt_items`, `companies`, and the credit-card invoice tables.
+   - Re-run migrations on a clean database to ensure they can be applied without manual intervention.
+
+3. **Align backend models and DTOs**
+   - Update Pydantic models in `backend/src/models/ai_processing.py` so every database field has a corresponding API representation.
+   - Add validation defaults for required columns (`payment_type`, `expense_type`, `currency`, etc.) to prevent `NULL` violations when AI output is incomplete.
+
+4. **Harden the AI API endpoints**
+   - Refactor `backend/src/api/ai_processing.py` to reuse the shared database connection helpers and the `auth_required` decorator.
+   - Ensure endpoints persist `ocr_raw`, AI statuses, receipt items, accounting proposals, and credit-card matches using transactions.
+   - Add integration tests that submit OCR payloads and verify resulting database rows.
+
+5. **Implement the AI service orchestration**
+   - Extend `backend/src/services/ai_service.py` to fetch model configuration and system prompts from `ai_llm` and `ai_system_prompts`.
+   - Implement adapters for the supported LLM providers, including prompt construction and robust parsing of responses into structured data.
+   - Provide graceful fallbacks and logging when the model returns incomplete or invalid results.
+
+6. **Wire the Celery workflow**
+   - Update the Celery tasks in `backend/src/services/tasks.py` to enqueue AI1–AI5 after OCR extraction, storing intermediate results (`ocr_raw`, AI status updates) at each stage.
+   - After AI3 completes, refresh `receipt_items`, upsert the selling company, and persist accounting proposals.
+   - After AI5 completes, register the `creditcard_receipt_matches` and set `credit_card_match = 1` for linked receipts.
+
+7. **Validate end-to-end**
+   - Run the documented test suite (see `docs/TEST_RULES.md`) and add targeted tests for AI parsing and persistence.
+   - Execute a manual smoke test: upload an OCR file, confirm AI statuses advance, and verify structured data is stored in the database.
+
+8. **Operational readiness**
+   - Document environment variables and external AI provider credentials required for each stage.
+   - Configure monitoring for Celery queues and AI task latencies to catch regressions early.

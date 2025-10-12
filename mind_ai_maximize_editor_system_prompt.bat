@@ -1,0 +1,1 @@
+npx playwright test web/tests/ai_maximize_editor_system_prompt.spec.ts --ui --ui-port=9335 --project=chromium-ultrawide

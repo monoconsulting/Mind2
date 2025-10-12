@@ -1,0 +1,1 @@
+docker-compose --profile main --profile monitoring up -d

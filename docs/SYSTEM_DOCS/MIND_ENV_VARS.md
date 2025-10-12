@@ -20,7 +20,6 @@
 | `STORAGE_DIR`    | No        | `/data/storage`           | -                        | Directory for storing uploaded files.                       |
 | `FTP_LOCAL_DIR`  | No        | `/data/inbox`             | -                        | Local directory for the FTP fetcher service.                |
 | `AI_PROCESSING_ENABLED` | No | -                         | `true`                   | Feature flag to enable or disable AI processing.            |
-| `ENABLE_REAL_OCR`| No        | -                         | `false`                  | Feature flag to switch between real and mock OCR services.  |
 
 ## `mysql` Service
 
