@@ -724,80 +724,163 @@ def approve_receipt(rid: str) -> Any:
 
 @receipts_bp.get("/receipts/<rid>/workflow-status")
 def get_workflow_status(rid: str) -> Any:
-    """Get the workflow status for a receipt showing all processing stages."""
-    if db_cursor is None:
-        return jsonify({"error": "db_unavailable"}), 500
+    """Get the current status of each workflow phase for a file."""
+    workflow_status = {
+        "file_id": rid,
+        "title": None,
+        "datetime": None,
+        "upload": "N/A",
+        "filename": None,
+        "pdf_convert": "N/A",
+        "ocr": {"status": "pending", "data": None},
+        "ai1": {"status": "pending", "data": None},
+        "ai2": {"status": "pending", "data": None},
+        "ai3": {"status": "pending", "data": None},
+        "ai4": {"status": "pending", "data": None},
+        "ai5": {"status": "pending", "data": None},
+        "match": {"status": "pending", "data": None},
+    }
 
-    try:
-        # Get basic file info
-        with db_cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, original_filename, merchant_name, purchase_datetime,
-                       ai_status, ocr_raw, created_at
-                FROM unified_files
-                WHERE id=%s
-                """,
-                (rid,)
-            )
-            row = cur.fetchone()
+    # Default to "pending" instead of "N/A" - will be updated based on detected_kind
+    pdf_convert_status = "pending"
 
-        if not row:
-            return jsonify({"error": "not_found"}), 404
+    if db_cursor is not None:
+        try:
+            # Get file metadata
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        u.id, u.original_filename, u.file_creation_timestamp,
+                        u.submitted_by, c.name as company_name, u.created_at, u.ocr_raw, u.other_data
+                    FROM unified_files u
+                    LEFT JOIN companies c ON c.id = u.company_id
+                    WHERE u.id = %s
+                    """,
+                    (rid,),
+                )
+                file_row = cur.fetchone()
+                if file_row:
+                    file_id, original_filename, file_creation_ts, submitted_by, company_name, created_at, ocr_raw, other_data = file_row
 
-        file_id, filename, merchant, purchase_dt, ai_status, ocr_raw, created_at = row
+                    # Set title: company name if exists, otherwise file ID
+                    workflow_status["title"] = company_name if company_name else f"ID: {file_id}"
 
-        # Get processing history for all stages
-        history = {}
-        with db_cursor() as cur:
-            cur.execute(
-                """
-                SELECT job_type, status, created_at
-                FROM ai_processing_history
-                WHERE file_id=%s
-                ORDER BY created_at ASC
-                """,
-                (rid,)
-            )
-            for job_type, status, timestamp in cur.fetchall() or []:
-                # Keep the latest status for each job type
-                history[job_type] = {
-                    "status": status,
-                    "created_at": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp)
-                }
+                    # Set datetime: created_at timestamp
+                    if created_at:
+                        if hasattr(created_at, "strftime"):
+                            workflow_status["datetime"] = created_at.strftime("%Y-%m-%d %H:%M")
+                        else:
+                            workflow_status["datetime"] = str(created_at)
 
-        # Build workflow response
-        def get_stage_status(job_type):
-            if job_type in history:
-                return {"status": history[job_type]["status"]}
-            return {"status": "pending"}
+                    # Set upload source
+                    workflow_status["upload"] = "Upload" if submitted_by and "upload" in submitted_by.lower() else "FTP"
+                    workflow_status["filename"] = original_filename
 
-        # Format datetime
-        datetime_str = None
-        if purchase_dt:
-            if hasattr(purchase_dt, "isoformat"):
-                datetime_str = purchase_dt.isoformat()
-            elif isinstance(purchase_dt, str):
-                datetime_str = purchase_dt
+                    # Store OCR raw text for modal display
+                    workflow_status["ocr_raw"] = ocr_raw
 
-        workflow = {
-            "file_id": file_id,
-            "title": merchant or filename or f"ID: {file_id}",
-            "datetime": datetime_str,
-            "filename": filename,
-            "upload": {"status": "success"},  # If we have the record, upload succeeded
-            "pdf_convert": {"status": "n/a"},  # Not applicable for most files
-            "ocr": get_stage_status("ocr"),
-            "ocr_raw": ocr_raw or "",
-            "ai1": get_stage_status("classification"),  # AI1 = classification
-            "ai2": get_stage_status("validation"),      # AI2 = validation
-            "ai3": {"status": "n/a"},  # AI3 not used in current flow
-            "ai4": get_stage_status("accounting_proposal"),  # AI4 = accounting
-            "match": {"status": "n/a"},  # Match not implemented yet
-        }
+                    # Determine PDF conversion status based on detected file type
+                    try:
+                        other_data_dict = json.loads(other_data) if other_data else {}
+                        detected_kind = other_data_dict.get("detected_kind")
+                        source_pdf = other_data_dict.get("source_pdf")
 
-        return jsonify(workflow), 200
+                        if detected_kind == "pdf_page" or source_pdf:
+                            # This is a PDF page - PDF conversion was successful
+                            pdf_convert_status = "success"
+                        elif detected_kind == "pdf":
+                            # This is a PDF parent file - check if pages were generated
+                            pdf_convert_status = "success" if other_data_dict.get("page_count", 0) > 0 else "pending"
+                        elif detected_kind == "image":
+                            # Regular image - no PDF conversion needed
+                            pdf_convert_status = "N/A"
+                        elif not detected_kind and original_filename:
+                            # Fallback: If detected_kind is missing (e.g., FTP files), check filename
+                            filename_lower = original_filename.lower()
+                            if filename_lower.endswith(('.jpg', '.jpeg')) and '-page-' not in filename_lower:
+                                # Regular JPG image file (not a PDF page) - no conversion needed
+                                pdf_convert_status = "N/A"
+                            elif filename_lower.endswith('.png') and '-page-' in filename_lower:
+                                # This looks like a PDF page (e.g., "file-page-0001.png")
+                                pdf_convert_status = "success"
+                            elif filename_lower.endswith('.png') and '-page-' not in filename_lower:
+                                # Regular PNG image - no conversion needed
+                                pdf_convert_status = "N/A"
+                            elif filename_lower.endswith('.pdf'):
+                                # PDF parent file
+                                pdf_convert_status = "pending"
+                            # Otherwise keep default "pending" for unknown file types
+                    except (json.JSONDecodeError, TypeError):
+                        # If parsing fails, try filename fallback
+                        if original_filename:
+                            filename_lower = original_filename.lower()
+                            if filename_lower.endswith(('.jpg', '.jpeg', '.png')) and '-page-' not in filename_lower:
+                                pdf_convert_status = "N/A"
 
-    except Exception as e:
-        logger.error(f"Error in get_workflow_status: {e}")
-        return jsonify({"error": str(e)}), 500
+            # Get AI processing history
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        job_type, status, ai_stage_name, log_text, error_message,
+                        confidence, processing_time_ms, provider, model_name, created_at
+                    FROM ai_processing_history
+                    WHERE file_id = %s
+                    ORDER BY created_at DESC, id DESC
+                    """,
+                    (rid,),
+                )
+
+                # Process history records
+                seen_stages = set()
+                for row in cur.fetchall() or []:
+                    (
+                        job_type, status, ai_stage_name, log_text, error_message,
+                        confidence, processing_time_ms, provider, model_name, created_at
+                    ) = row
+
+                    # Map job_type and ai_stage_name to workflow phases
+                    stage_key = None
+                    if job_type == "ocr":
+                        stage_key = "ocr"
+                    elif ai_stage_name:
+                        # Map AI stage names to workflow phases
+                        stage_lower = ai_stage_name.lower()
+                        if "ai1" in stage_lower or "document" in stage_lower and "classif" in stage_lower:
+                            stage_key = "ai1"
+                        elif "ai2" in stage_lower or "expense" in stage_lower and "classif" in stage_lower:
+                            stage_key = "ai2"
+                        elif "ai3" in stage_lower or "extract" in stage_lower:
+                            stage_key = "ai3"
+                        elif "ai4" in stage_lower or "accounting" in stage_lower:
+                            stage_key = "ai4"
+                        elif "ai5" in stage_lower or ("credit" in stage_lower and "card" in stage_lower):
+                            stage_key = "ai5"
+                        elif "match" in stage_lower:
+                            stage_key = "match"
+
+                    # Only update if we haven't seen this stage yet (most recent first)
+                    if stage_key and stage_key not in seen_stages:
+                        seen_stages.add(stage_key)
+                        workflow_status[stage_key] = {
+                            "status": status,
+                            "ai_stage_name": ai_stage_name,
+                            "log_text": log_text,
+                            "error_message": error_message,
+                            "confidence": float(confidence) if confidence is not None else None,
+                            "processing_time_ms": processing_time_ms,
+                            "provider": provider,
+                            "model": model_name,
+                            "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                        }
+
+        except Exception as e:
+            logger.error(f"Error fetching workflow status for {rid}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    # Set pdf_convert status
+    workflow_status["pdf_convert"] = pdf_convert_status
+
+    return jsonify(workflow_status), 200
