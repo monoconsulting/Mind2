@@ -491,7 +491,7 @@ def upload_files() -> Any:
                     try:
                         _insert_unified_file(
                             file_id=page_id,
-                            file_type="receipt",
+                            file_type="unknown",
                             content_hash=page_hash,
                             submitted_by=submitted_by,
                             original_filename=f"{safe_filename}-page-{page_number:04d}.png",
@@ -629,7 +629,7 @@ def upload_files() -> Any:
                 try:
                     _insert_unified_file(
                         file_id=receipt_id,
-                        file_type="receipt",
+                        file_type="unknown",
                         content_hash=file_hash,
                         submitted_by=submitted_by,
                         original_filename=safe_filename,
