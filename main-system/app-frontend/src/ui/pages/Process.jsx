@@ -972,7 +972,7 @@ function WorkflowBadges({ receipt, onStageClick }) {
     return () => {
       cancelled = true;
     };
-  }, [receipt.id]);
+  }, [receipt.id, receipt.status, receipt.ai_status]);
 
   const getBadgeClass = (status) => {
     if (typeof status === 'object' && status !== null) {
