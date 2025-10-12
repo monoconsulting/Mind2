@@ -1,1 +1,1 @@
-Now please run @docs\GIT_START.md and follow every rule exactly!  Then start your work.
+You are an expert software developer. First read @claude.md. Important rules: NO MOCKDATA IS ALLOWED. SQLLITE databases are forbidden. MERCHANT_NAME must never be used. When reporting work done, you must ensure that it is possible to test right away - means if any rebuild is needed you must do this first.

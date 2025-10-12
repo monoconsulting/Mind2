@@ -117,6 +117,28 @@ services:
     networks: [main]
     profiles: [main]
 
+  mind-web-main-frontend-dev:
+    build:
+      context: ./main-system/app-frontend
+      dockerfile: Dockerfile.dev
+    image: mind2-admin-frontend:dev-hotreload
+    volumes:
+      # Mount source code for hot-reload
+      - ./main-system/app-frontend/src:/app/src:ro
+      - ./main-system/app-frontend/index.html:/app/index.html:ro
+      - ./main-system/app-frontend/vite.config.js:/app/vite.config.js:ro
+      # Use named volume for node_modules to avoid platform conflicts
+      - mind-frontend-node-modules:/app/node_modules
+    environment:
+      # Proxy API requests directly to backend service (not through nginx)
+      - VITE_API_PROXY_TARGET=http://ai-api:5000
+    ports:
+      # Expose Vite dev server on host port 5169
+      - "5169:5169"
+    depends_on: [ai-api]
+    networks: [main]
+    profiles: [main]
+
   prometheus:
     image: prom/prometheus:latest
     volumes:
@@ -139,3 +161,6 @@ services:
 networks:
   main: {}
   monitoring: {}
+
+volumes:
+  mind-frontend-node-modules:
