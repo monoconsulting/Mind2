@@ -46,3 +46,47 @@ Om du ser någon kod som försöker läsa eller skriva `merchant_name` från/til
 **ai_accounting_proposals:**
 - ✅ HAR: `id` (PK), `receipt_id` (FK till unified_files.id), `item_id` (FK till receipt_items.id), `account_code`, `debit`, `credit`, etc.
 - ✅ `item_id` refererar till `receipt_items.id` och används för att koppla kontering till specifik artikel
+
+
+## UTVECKLINGS- OCH TESTMILJÖ
+
+### Frontend Utvecklingslägen
+
+**Produktionsläge (Port 8008):**
+- Byggd frontend via Docker + Nginx
+- Kräver ombyggnad vid kodändringar
+- Används för slutlig testning
+
+**Utvecklingsläge (Port 5169) - HOT-RELOAD:**
+- Vite dev-server med instant hot-reload
+- **Startar AUTOMATISKT med `mind_docker_compose_up.bat`**
+- Ingen ombyggnad behövs - ändringar syns direkt
+- Två alternativ:
+  1. **Docker-läge (Rekommenderat)**: `mind-web-main-frontend-dev` service
+  2. **Lokalt läge**: `mind_frontend_dev.bat`
+
+### Testningsflöden
+
+**För Utvecklingstestning (med hot-reload):**
+1. Starta: `mind_docker_compose_up.bat`
+2. Frontend på: `http://localhost:5169` (startar automatiskt)
+3. Redigera kod → instant reload
+4. Testa: `npx playwright test --config=playwright.dev.config.ts --headed`
+
+**För Produktionstestning:**
+1. Bygg: `mind_docker_build_nocache.bat`
+2. Starta: `mind_docker_compose_up.bat`
+3. Testa: `npx playwright test --headed`
+
+**VIKTIGT vid rapportering:** När arbete rapporteras som klart, se till att ombyggnader är utförda om produktionstestning krävs. För utvecklingstestning räcker det att använda dev-servern på port 5169.
+
+### Porttilldelningar (FÅR EJ ÄNDRAS)
+- **8008** - Produktions frontend + API (via nginx)
+- **5169** - Dev frontend med hot-reload
+- **5000** - Backend API (intern)
+- **3310** - MySQL
+- **6380** - Redis
+- **8087** - phpMyAdmin
+
+### Fullständig Dokumentation
+Se `@docs/SYSTEM_DOCS/MIND_TASK_IMPLEMENTATION_REVIEW.md` för detaljer om frontend-testning och hot-reload setup.

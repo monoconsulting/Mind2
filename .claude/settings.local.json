@@ -42,7 +42,8 @@
       "Bash(gh pr diff:*)",
       "Bash(docker-compose:*)",
       "Bash(mysql:*)",
-      "Bash(docker inspect:*)"
+      "Bash(docker inspect:*)",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": []
