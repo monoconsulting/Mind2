@@ -11,6 +11,10 @@ RUN npm install
 # Copy the rest of the frontend source code
 COPY . .
 
+# Accept build argument and set as environment variable for Vite
+ARG VITE_REFRESH_INTERVAL_SECONDS=10
+ENV VITE_REFRESH_INTERVAL_SECONDS=${VITE_REFRESH_INTERVAL_SECONDS}
+
 # Build the application
 RUN npm run build
 

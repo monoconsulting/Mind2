@@ -112,6 +112,8 @@ services:
     build:
       context: ./main-system/app-frontend
       dockerfile: Dockerfile
+      args:
+        - VITE_REFRESH_INTERVAL_SECONDS=${VITE_REFRESH_INTERVAL_SECONDS}
     image: mind2-admin-frontend:dev
     depends_on: [ai-api]
     networks: [main]
@@ -132,6 +134,7 @@ services:
     environment:
       # Proxy API requests directly to backend service (not through nginx)
       - VITE_API_PROXY_TARGET=http://ai-api:5000
+      - VITE_REFRESH_INTERVAL_SECONDS=${VITE_REFRESH_INTERVAL_SECONDS}
     ports:
       # Expose Vite dev server on host port 5169
       - "5169:5169"
