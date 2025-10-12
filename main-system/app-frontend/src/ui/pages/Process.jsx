@@ -1529,7 +1529,11 @@ export default function Receipts() {
                       />
                     </td>
                     <td>
-                      <WorkflowBadges receipt={receipt} onStageClick={handleShowAIStage} />
+                      <WorkflowBadges
+                        key={`${receipt.id}-${receipt.status || receipt.ai_status || 'unknown'}`}
+                        receipt={receipt}
+                        onStageClick={handleShowAIStage}
+                      />
                     </td>
                     <td>
                       <div className="font-medium">{formatDate(receipt.file_creation_timestamp)}</div>
