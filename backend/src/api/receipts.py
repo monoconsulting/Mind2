@@ -738,7 +738,7 @@ def list_receipts() -> Any:
 
     if db_cursor is not None:
         try:
-            where: list[str] = ["u.deleted_at IS NULL"]
+            where: list[str] = ["u.deleted_at IS NULL", "u.file_type != 'pdf'"]
             params: list[Any] = []
             if q_status:
                 where.append("ai_status = %s")
@@ -1388,7 +1388,8 @@ def get_workflow_status(rid: str) -> Any:
         "match": {"status": "pending", "data": None},
     }
 
-    pdf_convert_status = "N/A"
+    # Default to "pending" instead of "N/A" - will be updated based on detected_kind
+    pdf_convert_status = "pending"
 
     if db_cursor is not None:
         try:
@@ -1426,7 +1427,7 @@ def get_workflow_status(rid: str) -> Any:
                     # Store OCR raw text for modal display
                     workflow_status["ocr_raw"] = ocr_raw
 
-                    # Check if this is a PDF page (converted from PDF)
+                    # Determine PDF conversion status based on detected file type
                     try:
                         other_data_dict = json.loads(other_data) if other_data else {}
                         detected_kind = other_data_dict.get("detected_kind")
@@ -1438,8 +1439,31 @@ def get_workflow_status(rid: str) -> Any:
                         elif detected_kind == "pdf":
                             # This is a PDF parent file - check if pages were generated
                             pdf_convert_status = "success" if other_data_dict.get("page_count", 0) > 0 else "pending"
+                        elif detected_kind == "image":
+                            # Regular image - no PDF conversion needed
+                            pdf_convert_status = "N/A"
+                        elif not detected_kind and original_filename:
+                            # Fallback: If detected_kind is missing (e.g., FTP files), check filename
+                            filename_lower = original_filename.lower()
+                            if filename_lower.endswith(('.jpg', '.jpeg')) and '-page-' not in filename_lower:
+                                # Regular JPG image file (not a PDF page) - no conversion needed
+                                pdf_convert_status = "N/A"
+                            elif filename_lower.endswith('.png') and '-page-' in filename_lower:
+                                # This looks like a PDF page (e.g., "file-page-0001.png")
+                                pdf_convert_status = "success"
+                            elif filename_lower.endswith('.png') and '-page-' not in filename_lower:
+                                # Regular PNG image - no conversion needed
+                                pdf_convert_status = "N/A"
+                            elif filename_lower.endswith('.pdf'):
+                                # PDF parent file
+                                pdf_convert_status = "pending"
+                            # Otherwise keep default "pending" for unknown file types
                     except (json.JSONDecodeError, TypeError):
-                        pass
+                        # If parsing fails, try filename fallback
+                        if original_filename:
+                            filename_lower = original_filename.lower()
+                            if filename_lower.endswith(('.jpg', '.jpeg', '.png')) and '-page-' not in filename_lower:
+                                pdf_convert_status = "N/A"
 
             # Get AI processing history
             with db_cursor() as cur:

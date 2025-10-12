@@ -42,7 +42,7 @@ const initialFilters = {
   to: '',
   orgnr: '',
   tag: '',
-  fileType: 'receipt'
+  fileType: ''
 }
 
 const statusClassMap = {
@@ -1549,9 +1549,11 @@ export default function Receipts() {
                     </td>
                     <td>
                       <div className="font-medium text-sm">
-                        {receipt.file_type === 'receipt' ? 'Kvitto' :
+                        {!receipt.file_type || receipt.file_type === 'unknown' || receipt.file_type === '' ? 'Okänd' :
+                         receipt.file_type === 'receipt' ? 'Kvitto' :
                          receipt.file_type === 'invoice' ? 'Faktura' :
-                         receipt.file_type || 'Okänd'}
+                         receipt.file_type === 'other' ? 'Övrigt' :
+                         'Okänd'}
                       </div>
                     </td>
                     <td className="text-center">
