@@ -67,6 +67,66 @@ def trigger_classify(fid: str):
     return jsonify({"queued": True, "task_id": getattr(r, "id", None)}), 200
 
 
+@ingest_bp.post("/ingest/process/<fid>/resume")
+@auth_required
+def resume_processing(fid: str):
+    """Resume processing by resetting AI stages and restarting from classification.
+
+    This endpoint:
+    1. Deletes AI processing history (classification, validation, accounting_proposal)
+    2. Resets the file's ai_status to 'ocr_done'
+    3. Triggers classification to restart the AI pipeline
+    """
+    try:
+        if db_cursor is None:
+            return jsonify({"error": "db_unavailable", "queued": False}), 500
+
+        # Delete AI processing history entries for this file
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM ai_processing_history
+                WHERE file_id = %s
+                AND job_type IN ('classification', 'validation', 'accounting_proposal')
+                """,
+                (fid,)
+            )
+            deleted_count = cur.rowcount
+
+        # Reset the file's ai_status to ocr_done (state before AI processing)
+        with db_cursor() as cur:
+            cur.execute(
+                "UPDATE unified_files SET ai_status='ocr_done', updated_at=NOW() WHERE id=%s",
+                (fid,)
+            )
+            updated = cur.rowcount > 0
+
+        if not updated:
+            return jsonify({
+                "error": "file_not_found",
+                "queued": False
+            }), 404
+
+        # Trigger classification to restart the AI pipeline
+        if process_classification is None:
+            raise RuntimeError("tasks_unavailable")
+
+        r = process_classification.delay(fid)  # type: ignore[attr-defined]
+
+        return jsonify({
+            "queued": True,
+            "task_id": getattr(r, "id", None),
+            "action": "reset_and_restart_ai_pipeline",
+            "history_entries_deleted": deleted_count
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "queued": False,
+            "error": str(e)
+        }), 500
+
+
 @ingest_bp.post("/capture/upload")
 def capture_upload() -> Any:
     """Public capture endpoint: accepts multi-page images, optional tags and location.

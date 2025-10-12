@@ -720,3 +720,84 @@ def approve_receipt(rid: str) -> Any:
         except Exception:
             ok = False
     return jsonify({"id": rid, "approved": ok}), 200
+
+
+@receipts_bp.get("/receipts/<rid>/workflow-status")
+def get_workflow_status(rid: str) -> Any:
+    """Get the workflow status for a receipt showing all processing stages."""
+    if db_cursor is None:
+        return jsonify({"error": "db_unavailable"}), 500
+
+    try:
+        # Get basic file info
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, original_filename, merchant_name, purchase_datetime,
+                       ai_status, ocr_raw, created_at
+                FROM unified_files
+                WHERE id=%s
+                """,
+                (rid,)
+            )
+            row = cur.fetchone()
+
+        if not row:
+            return jsonify({"error": "not_found"}), 404
+
+        file_id, filename, merchant, purchase_dt, ai_status, ocr_raw, created_at = row
+
+        # Get processing history for all stages
+        history = {}
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT job_type, status, created_at
+                FROM ai_processing_history
+                WHERE file_id=%s
+                ORDER BY created_at ASC
+                """,
+                (rid,)
+            )
+            for job_type, status, timestamp in cur.fetchall() or []:
+                # Keep the latest status for each job type
+                history[job_type] = {
+                    "status": status,
+                    "created_at": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp)
+                }
+
+        # Build workflow response
+        def get_stage_status(job_type):
+            if job_type in history:
+                return {"status": history[job_type]["status"]}
+            return {"status": "pending"}
+
+        # Format datetime
+        datetime_str = None
+        if purchase_dt:
+            if hasattr(purchase_dt, "isoformat"):
+                datetime_str = purchase_dt.isoformat()
+            elif isinstance(purchase_dt, str):
+                datetime_str = purchase_dt
+
+        workflow = {
+            "file_id": file_id,
+            "title": merchant or filename or f"ID: {file_id}",
+            "datetime": datetime_str,
+            "filename": filename,
+            "upload": {"status": "success"},  # If we have the record, upload succeeded
+            "pdf_convert": {"status": "n/a"},  # Not applicable for most files
+            "ocr": get_stage_status("ocr"),
+            "ocr_raw": ocr_raw or "",
+            "ai1": get_stage_status("classification"),  # AI1 = classification
+            "ai2": get_stage_status("validation"),      # AI2 = validation
+            "ai3": {"status": "n/a"},  # AI3 not used in current flow
+            "ai4": get_stage_status("accounting_proposal"),  # AI4 = accounting
+            "match": {"status": "n/a"},  # Match not implemented yet
+        }
+
+        return jsonify(workflow), 200
+
+    except Exception as e:
+        logger.error(f"Error in get_workflow_status: {e}")
+        return jsonify({"error": str(e)}), 500
