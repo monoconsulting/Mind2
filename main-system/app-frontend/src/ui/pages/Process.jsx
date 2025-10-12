@@ -1132,12 +1132,13 @@ export default function Receipts() {
     loadReceipts()
   }, [loadReceipts])
 
-  // Polling för automatisk uppdatering av status (var 5:e sekund)
+  // Polling för automatisk uppdatering av status (konfigurerbart intervall från .env)
   React.useEffect(() => {
+    const refreshInterval = (import.meta.env.VITE_REFRESH_INTERVAL_SECONDS || 10) * 1000
     const intervalId = setInterval(() => {
       // Ladda om data tyst utan att visa loading-spinner eller uppdatera banner
       loadReceipts(true)
-    }, 5000) // 5 sekunder
+    }, refreshInterval)
 
     return () => clearInterval(intervalId)
   }, [loadReceipts])
