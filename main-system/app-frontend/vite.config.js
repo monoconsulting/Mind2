@@ -9,6 +9,7 @@ const apiProxy = {
   '/ai/api': {
     target: apiProxyTarget,
     changeOrigin: true,
+    rewrite: (path) => path.replace(/^\/ai\/api/, ''), // Strip /ai/api prefix like nginx does
   },
 };
 
