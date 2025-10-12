@@ -601,8 +601,10 @@ export default function ReceiptsList() {
     setSelectedReceipt((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev))
   }, [])
 
-  const loadReceipts = React.useCallback(async () => {
-    setLoading(true)
+  const loadReceipts = React.useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true)
+    }
     const params = new URLSearchParams()
     params.set('page', String(page))
     params.set('page_size', String(pageSize))
@@ -628,25 +630,42 @@ export default function ReceiptsList() {
         page_size: fetchedMeta.page_size ?? pageSize,
         total: fetchedMeta.total ?? list.length
       })
-      setBanner({
-        type: 'info',
-        message: `Visar ${list.length} av ${fetchedMeta.total ?? list.length} kvitton`
-      })
+      if (!silent) {
+        setBanner({
+          type: 'info',
+          message: `Visar ${list.length} av ${fetchedMeta.total ?? list.length} kvitton`
+        })
+      }
     } catch (error) {
       console.error('Receipts fetch failed', error)
-      setItems([])
-      setMeta((prev) => ({ ...prev, total: 0 }))
-      setBanner({
-        type: 'error',
-        message: `Kunde inte hämta kvitton: ${error instanceof Error ? error.message : error}`
-      })
+      if (!silent) {
+        setItems([])
+        setMeta((prev) => ({ ...prev, total: 0 }))
+        setBanner({
+          type: 'error',
+          message: `Kunde inte hämta kvitton: ${error instanceof Error ? error.message : error}`
+        })
+      }
     } finally {
-      setLoading(false)
+      if (!silent) {
+        setLoading(false)
+      }
     }
   }, [page, pageSize, searchTerm, filters])
 
   React.useEffect(() => {
     loadReceipts()
+  }, [loadReceipts])
+
+  // Polling för automatisk uppdatering av status (konfigurerbart intervall från .env)
+  React.useEffect(() => {
+    const refreshInterval = (import.meta.env.VITE_REFRESH_INTERVAL_SECONDS || 10) * 1000
+    const intervalId = setInterval(() => {
+      // Ladda om data tyst utan att visa loading-spinner eller uppdatera banner
+      loadReceipts(true)
+    }, refreshInterval)
+
+    return () => clearInterval(intervalId)
   }, [loadReceipts])
 
   const displayedItems = React.useMemo(() => {
