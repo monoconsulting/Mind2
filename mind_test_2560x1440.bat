@@ -1,0 +1,1 @@
+npx playwright codegen http://localhost:8008 --browser=chromium --viewport-size=2560,1440
