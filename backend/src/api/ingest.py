@@ -235,6 +235,7 @@ def resume_processing(fid: str):
 
         last_status = None
         last_job_type = None
+        logger.info(f"[RESUME] Fetching last processing state for {fid}")
 
         with db_cursor() as cur:
             cur.execute(
@@ -251,75 +252,83 @@ def resume_processing(fid: str):
             if row:
                 last_job_type, last_status = row
 
+        def _reset_workflow_stages(stages_to_pending: list[str]) -> bool:
+            """Set ai_status to pending and append history markers for specified stages."""
+            if db_cursor is None:
+                return False
+
+            try:
+                with db_cursor() as cur:
+                    cur.execute(
+                        "UPDATE unified_files SET ai_status=%s, ai_confidence=NULL, updated_at=NOW() WHERE id=%s",
+                        ("pending", fid),
+                    )
+
+                if stages_to_pending:
+                    with db_cursor() as cur:
+                        for stage in stages_to_pending:
+                            ai_stage_name = "OCR" if stage == "ocr" else stage.upper()
+                            cur.execute(
+                                INSERT_HISTORY_SQL,
+                                (
+                                    fid,
+                                    stage,
+                                    "pending",
+                                    ai_stage_name,
+                                    "Reset to pending by resume",
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                ),
+                            )
+                logger.info(f"[RESUME] Workflow stages reset to pending for {fid} ({', '.join(stages_to_pending)})")
+                return True
+            except Exception as reset_exc:  # pragma: no cover - defensive logging
+                logger.error(f"[RESUME] Failed to reset workflow stages for {fid}: {reset_exc}")
+                try:
+                    import traceback
+
+                    logger.debug(traceback.format_exc())
+                except Exception:
+                    pass
+                return False
+
+        def _queue_and_respond(task_callable, resumed_from: str, action: str, stages_to_pending: list[str]):
+            if task_callable is None:
+                raise RuntimeError("tasks_unavailable")
+            result = task_callable.delay(fid)  # type: ignore[attr-defined]
+            reset_ok = _reset_workflow_stages(stages_to_pending)
+            if not reset_ok:
+                logger.warning(f"[RESUME] Workflow stages could not be reset for {fid}")
+            return jsonify(
+                {
+                    "queued": True,
+                    "task_id": getattr(result, "id", None),
+                    "resumed_from": resumed_from,
+                    "action": action,
+                }
+            ), 200
+
+        resumed_from = last_job_type or "unknown"
+
         # Determine next step based on last job type and status
         if last_status == "error":
-            # If any error, determine where to restart from
             if last_job_type in ("upload", "ocr"):
-                # Restart from OCR
-                if process_ocr is None:
-                    raise RuntimeError("tasks_unavailable")
-                r = process_ocr.delay(fid)  # type: ignore[attr-defined]
-                return jsonify({
-                    "queued": True,
-                    "task_id": getattr(r, "id", None),
-                    "resumed_from": last_job_type,
-                    "action": "restart_from_ocr"
-                }), 200
-            elif last_job_type in ("ai1", "ai2", "ai3", "ai4", "ai5", "ai_pipeline"):
-                # Restart AI pipeline (OCR already done)
-                if process_ai_pipeline is None:
-                    raise RuntimeError("tasks_unavailable")
-                r = process_ai_pipeline.delay(fid)  # type: ignore[attr-defined]
-                return jsonify({
-                    "queued": True,
-                    "task_id": getattr(r, "id", None),
-                    "resumed_from": last_job_type,
-                    "action": "restart_ai_pipeline"
-                }), 200
-            else:
-                # Unknown error, restart from OCR
-                if process_ocr is None:
-                    raise RuntimeError("tasks_unavailable")
-                r = process_ocr.delay(fid)  # type: ignore[attr-defined]
-                return jsonify({
-                    "queued": True,
-                    "task_id": getattr(r, "id", None),
-                    "resumed_from": last_job_type or "unknown",
-                    "action": "restart_from_ocr"
-                }), 200
-        elif last_job_type == "ocr" and last_status == "success":
-            # OCR succeeded, continue to AI pipeline
-            if process_ai_pipeline is None:
-                raise RuntimeError("tasks_unavailable")
-            r = process_ai_pipeline.delay(fid)  # type: ignore[attr-defined]
-            return jsonify({
-                "queued": True,
-                "task_id": getattr(r, "id", None),
-                "resumed_from": last_job_type,
-                "action": "continue_to_ai_pipeline"
-            }), 200
-        elif last_job_type == "upload" and last_status == "success":
-            # Upload succeeded, start OCR
-            if process_ocr is None:
-                raise RuntimeError("tasks_unavailable")
-            r = process_ocr.delay(fid)  # type: ignore[attr-defined]
-            return jsonify({
-                "queued": True,
-                "task_id": getattr(r, "id", None),
-                "resumed_from": last_job_type,
-                "action": "continue_to_ocr"
-            }), 200
-        else:
-            # Default: restart full pipeline
-            if process_ocr is None:
-                raise RuntimeError("tasks_unavailable")
-            r = process_ocr.delay(fid)  # type: ignore[attr-defined]
-            return jsonify({
-                "queued": True,
-                "task_id": getattr(r, "id", None),
-                "resumed_from": last_job_type or "unknown",
-                "action": "restart_pipeline"
-            }), 200
+                return _queue_and_respond(process_ocr, resumed_from, "restart_from_ocr", ["ocr", "ai1", "ai2", "ai3", "ai4"])
+            if last_job_type in ("ai1", "ai2", "ai3", "ai4", "ai5", "ai_pipeline"):
+                return _queue_and_respond(process_ai_pipeline, resumed_from, "restart_ai_pipeline", ["ai1", "ai2", "ai3", "ai4"])
+            return _queue_and_respond(process_ocr, resumed_from, "restart_from_ocr", ["ocr", "ai1", "ai2", "ai3", "ai4"])
+
+        if last_job_type == "ocr" and last_status == "success":
+            return _queue_and_respond(process_ai_pipeline, resumed_from, "continue_to_ai_pipeline", ["ai1", "ai2", "ai3", "ai4"])
+
+        if last_job_type == "upload" and last_status == "success":
+            return _queue_and_respond(process_ocr, resumed_from, "continue_to_ocr", ["ocr", "ai1", "ai2", "ai3", "ai4"])
+
+        # Default: restart the full pipeline from OCR
+        return _queue_and_respond(process_ocr, resumed_from, "restart_pipeline", ["ocr", "ai1", "ai2", "ai3", "ai4"])
 
     except Exception as e:
         logger.error(f"Error resuming processing for {fid}: {e}")
