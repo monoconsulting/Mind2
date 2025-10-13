@@ -940,7 +940,7 @@ function AIStageModal({ open, stageData, onClose }) {
 }
 
 
-function WorkflowBadges({ receipt, onStageClick }) {
+function WorkflowBadges({ receipt, refreshTick, onStageClick }) {
   const [workflow, setWorkflow] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
 
@@ -950,7 +950,8 @@ function WorkflowBadges({ receipt, onStageClick }) {
     const fetchWorkflow = async () => {
       try {
         setLoading(true);
-        const res = await api.fetch(`/ai/api/receipts/${receipt.id}/workflow-status`);
+        const cacheBuster = typeof refreshTick === 'number' ? refreshTick : Date.now();
+        const res = await api.fetch(`/ai/api/receipts/${receipt.id}/workflow-status?tick=${cacheBuster}`);
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
@@ -972,7 +973,7 @@ function WorkflowBadges({ receipt, onStageClick }) {
     return () => {
       cancelled = true;
     };
-  }, [receipt.id, receipt.status, receipt.ai_status]);
+  }, [receipt.id, receipt.status, receipt.ai_status, refreshTick]);
 
   const getBadgeClass = (status) => {
     if (typeof status === 'object' && status !== null) {
@@ -1073,6 +1074,31 @@ export default function Receipts() {
   const [selectedAIStage, setSelectedAIStage] = React.useState(null)
   const [previewState, setPreviewState] = React.useState(initialPreviewState)
   const previewCache = React.useRef(new Map())
+  const [refreshTick, setRefreshTick] = React.useState(0)
+
+  const resetReceiptForResume = React.useCallback((fileId) => {
+    setItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== fileId) {
+          return item
+        }
+        return {
+          ...item,
+          status: 'pending',
+          ai_status: 'pending',
+          purchase_datetime: null,
+          purchase_date: null,
+          file_creation_timestamp: null,
+          merchant: '',
+          net_amount: null,
+          gross_amount: null,
+          line_item_count: 0,
+          file_type: 'unknown',
+        }
+      })
+    )
+    setRefreshTick((prev) => prev + 1)
+  }, [])
 
   const loadReceipts = React.useCallback(async (silent = false) => {
     if (!silent) {
@@ -1105,6 +1131,7 @@ export default function Receipts() {
         page_size: fetchedMeta.page_size ?? pageSize,
         total: fetchedMeta.total ?? list.length
       })
+      setRefreshTick((prev) => prev + 1)
       if (!silent) {
         setBanner({
           type: 'info',
@@ -1312,6 +1339,7 @@ export default function Receipts() {
   };
 
   const handleResume = async (fileId) => {
+    resetReceiptForResume(fileId);
     try {
       const res = await api.fetch(`/ai/api/ingest/process/${fileId}/resume`, {
         method: 'POST',
@@ -1328,10 +1356,16 @@ export default function Receipts() {
           type: 'success',
           message: `Bearbetning återupptagen: ${data.action || 'processing resumed'}`,
         });
-        // Reload receipts after a short delay to show updated status
+        // Refresh immediately so the UI shows the pending state without waiting for polling
+        try {
+          await loadReceipts(true);
+        } catch (reloadError) {
+          console.error('Immediate receipts refresh failed after resume', reloadError);
+        }
+        // Schedule a follow-up refresh to capture pipeline progress updates
         setTimeout(() => {
-          loadReceipts(true);
-        }, 2000);
+          loadReceipts(true).catch((err) => console.error('Delayed receipts refresh failed after resume', err));
+        }, 5000);
       } else {
         setBanner({
           type: 'error',
@@ -1344,6 +1378,7 @@ export default function Receipts() {
         type: 'error',
         message: 'Fel vid återupptagning av bearbetning',
       });
+      loadReceipts(true);
     }
   };
 
@@ -1365,6 +1400,7 @@ export default function Receipts() {
     let errorCount = 0;
 
     for (const receipt of displayedItems) {
+      resetReceiptForResume(receipt.id)
       try {
         const res = await api.fetch(`/ai/api/ingest/process/${receipt.id}/resume`, {
           method: 'POST',
@@ -1532,6 +1568,7 @@ export default function Receipts() {
                       <WorkflowBadges
                         key={`${receipt.id}-${receipt.status || receipt.ai_status || 'unknown'}`}
                         receipt={receipt}
+                        refreshTick={refreshTick}
                         onStageClick={handleShowAIStage}
                       />
                     </td>

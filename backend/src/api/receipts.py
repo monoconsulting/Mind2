@@ -841,6 +841,7 @@ def list_receipts() -> Any:
                             "net_amount": net_value,
                             "gross_amount": gross_value,
                             "status": status,
+                            "ai_status": status,  # Add ai_status field so frontend deps can detect changes
                             "file_type": file_type,
                             "submitted_by": submitted_by,
                             "line_item_count": line_items,
