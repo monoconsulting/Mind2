@@ -1075,8 +1075,10 @@ export default function Receipts() {
   const [previewState, setPreviewState] = React.useState(initialPreviewState)
   const previewCache = React.useRef(new Map())
   const [refreshTick, setRefreshTick] = React.useState(0)
+  const resumePending = React.useRef(new Set())
 
   const resetReceiptForResume = React.useCallback((fileId) => {
+    resumePending.current.add(fileId)
     setItems((prev) =>
       prev.map((item) => {
         if (item.id !== fileId) {
@@ -1093,7 +1095,7 @@ export default function Receipts() {
           net_amount: null,
           gross_amount: null,
           line_item_count: 0,
-          file_type: 'unknown',
+          file_type: 'unknown'
         }
       })
     )
@@ -1124,18 +1126,51 @@ export default function Receipts() {
       }
       const payload = await res.json()
       const list = Array.isArray(payload?.items) ? payload.items : []
+      const normalisedList = list.map((item) => {
+        if (!item?.id || !resumePending.current.has(item.id)) {
+          return item
+        }
+        const hasNewValues =
+          !!(
+            item.purchase_datetime ||
+            item.purchase_date ||
+            (typeof item.merchant === 'string' && item.merchant.trim()) ||
+            (typeof item.net_amount === 'number' && !Number.isNaN(item.net_amount)) ||
+            (typeof item.gross_amount === 'number' && !Number.isNaN(item.gross_amount)) ||
+            (item.file_type && item.file_type !== 'unknown')
+          )
+        const aiStatus = typeof item.ai_status === 'string' ? item.ai_status.toLowerCase() : ''
+        const shouldReleaseByStatus = aiStatus && !['pending', 'queued', 'processing', 'ftp_fetched'].includes(aiStatus)
+        if (hasNewValues || shouldReleaseByStatus) {
+          resumePending.current.delete(item.id)
+          return item
+        }
+        return {
+          ...item,
+          status: 'pending',
+          ai_status: 'pending',
+          purchase_datetime: null,
+          purchase_date: null,
+          file_creation_timestamp: null,
+          merchant: '',
+          net_amount: null,
+          gross_amount: null,
+          line_item_count: 0,
+          file_type: 'unknown'
+        }
+      })
       const fetchedMeta = payload?.meta || {}
-      setItems(list)
+      setItems(normalisedList)
       setMeta({
         page: fetchedMeta.page ?? page,
         page_size: fetchedMeta.page_size ?? pageSize,
-        total: fetchedMeta.total ?? list.length
+        total: fetchedMeta.total ?? normalisedList.length
       })
       setRefreshTick((prev) => prev + 1)
       if (!silent) {
         setBanner({
           type: 'info',
-          message: `Visar ${list.length} av ${fetchedMeta.total ?? list.length} kvitton`
+          message: `Visar ${normalisedList.length} av ${fetchedMeta.total ?? normalisedList.length} kvitton`
         })
       }
     } catch (error) {
