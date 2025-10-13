@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 import json
 import logging
@@ -399,6 +399,7 @@ def _fetch_receipt_details(rid: str) -> dict[str, Any]:
                     "expense_type": expense_type,
                     "credit_card_number": card_number,
                     "credit_card_last_4": str(card_last_4) if card_last_4 not in (None, 0) else None,
+                    "credit_card_last_4_digits": str(card_last_4) if card_last_4 not in (None, 0) else None,
                     "credit_card_type": card_type,
                     "credit_card_brand_full": card_brand_full,
                     "credit_card_brand_short": card_brand_short,
@@ -623,26 +624,74 @@ def _normalise_accounting_entries(entries: Iterable[dict[str, Any]]) -> list[dic
 
 def _normalise_receipt_update(payload: dict[str, Any]) -> dict[str, Any]:
     editable: dict[str, Any] = {}
-    # NOTE: merchant_name does NOT exist in unified_files
-    # Merchant name is stored in companies table via company_id
-    if "orgnr" in payload and isinstance(payload["orgnr"], str):
-        editable["orgnr"] = payload["orgnr"][:32]
-    for key in ("gross_amount", "net_amount"):
-        if key in payload:
-            try:
-                editable[key] = float(payload[key])
-            except Exception:
-                continue
-    if "purchase_datetime" in payload and isinstance(payload["purchase_datetime"], str):
-        editable["purchase_datetime"] = payload["purchase_datetime"]
-    if "purchase_date" in payload and isinstance(payload["purchase_date"], str):
-        editable["purchase_datetime"] = payload["purchase_date"]
-    if "ai_status" in payload and isinstance(payload["ai_status"], str):
-        editable["ai_status"] = payload["ai_status"][:32]
-    if "status" in payload and isinstance(payload["status"], str):
-        editable["ai_status"] = payload["status"][:32]
-    if "expense_type" in payload and isinstance(payload["expense_type"], str):
-        editable["expense_type"] = payload["expense_type"][:64]
+    if not isinstance(payload, dict):
+        return editable
+
+    def add_string(source_key: str, *, target_key: Optional[str] = None, max_length: Optional[int] = None) -> None:
+        if source_key not in payload:
+            return
+        key = target_key or source_key
+        value = payload.get(source_key)
+        if value is None:
+            editable[key] = None
+            return
+        if isinstance(value, str):
+            cleaned = value.strip()
+        else:
+            cleaned = str(value).strip()
+        if cleaned == "":
+            editable[key] = None
+            return
+        if max_length is not None:
+            editable[key] = cleaned[:max_length]
+        else:
+            editable[key] = cleaned
+
+    def add_float(source_key: str, *, target_key: Optional[str] = None) -> None:
+        if source_key not in payload:
+            return
+        key = target_key or source_key
+        value = payload.get(source_key)
+        if value in (None, "", []):
+            editable[key] = None
+            return
+        try:
+            editable[key] = float(value)
+        except Exception:
+            pass
+
+    add_string("vat", max_length=32)
+    add_string("orgnr", target_key="vat", max_length=32)
+    add_string("receipt_number", max_length=128)
+    add_string("payment_type", max_length=255)
+    add_string("expense_type", max_length=64)
+    add_string("credit_card_number", max_length=64)
+    add_string("credit_card_last_4_digits", max_length=8)
+    add_string("credit_card_last_4", target_key="credit_card_last_4_digits", max_length=8)
+    add_string("credit_card_type", max_length=64)
+    add_string("credit_card_brand_full", max_length=128)
+    add_string("credit_card_brand_short", max_length=64)
+    add_string("credit_card_payment_variant", max_length=64)
+    add_string("credit_card_token", max_length=128)
+    add_string("credit_card_entering_mode", max_length=64)
+    add_string("currency", max_length=16)
+    add_string("ai_status", max_length=64)
+    add_string("status", target_key="ai_status", max_length=64)
+    add_string("other_data")
+    add_string("ocr_raw")
+    add_string("purchase_datetime")
+    add_string("purchase_date", target_key="purchase_datetime")
+
+    add_float("gross_amount")
+    add_float("net_amount")
+    add_float("gross_amount_sek")
+    add_float("net_amount_sek")
+    add_float("total_vat_25")
+    add_float("total_vat_12")
+    add_float("total_vat_6")
+    add_float("exchange_rate")
+    add_float("ai_confidence")
+
     return editable
 
 
@@ -659,6 +708,110 @@ def _commit_receipt_update(rid: str, editable: dict[str, Any]) -> bool:
             cur.execute(sql, tuple(values))
             return cur.rowcount > 0
     except Exception:
+        return False
+
+
+def _normalise_company_update(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    fields = {
+        "name": 255,
+        "orgnr": 32,
+        "address": 255,
+        "address2": 255,
+        "zip": 32,
+        "city": 128,
+        "country": 128,
+        "phone": 64,
+        "www": 255,
+        "email": 255,
+    }
+    normalised: dict[str, Any] = {}
+    for key, max_len in fields.items():
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if value is None:
+            normalised[key] = None
+            continue
+        text = str(value).strip()
+        if text == "":
+            normalised[key] = None
+            continue
+        normalised[key] = text[:max_len]
+    return normalised
+
+
+def _commit_company_update(rid: str, company_id: Optional[int], payload: dict[str, Any]) -> tuple[bool, Optional[int]]:
+    if db_cursor is None or not payload:
+        return False, company_id
+    try:
+        with db_cursor() as cur:
+            if company_id:
+                fields = [f"{column}=%s" for column in payload.keys()]
+                values = list(payload.values())
+                values.append(company_id)
+                sql = "UPDATE companies SET " + ", ".join(fields) + ", updated_at=NOW() WHERE id=%s"
+                cur.execute(sql, tuple(values))
+                return cur.rowcount > 0, company_id
+
+            has_value = any(value not in (None, "", []) for value in payload.values())
+            if not has_value:
+                return False, company_id
+            columns = ", ".join(payload.keys())
+            placeholders = ", ".join(["%s"] * len(payload))
+            values = list(payload.values())
+            cur.execute(
+                f"INSERT INTO companies ({columns}, created_at, updated_at) VALUES ({placeholders}, NOW(), NOW())",
+                tuple(values),
+            )
+            new_company_id = int(cur.lastrowid)
+            cur.execute(
+                "UPDATE unified_files SET company_id=%s, updated_at=NOW() WHERE id=%s",
+                (new_company_id, rid),
+            )
+            return True, new_company_id
+    except Exception:  # pragma: no cover - defensive log
+        logger.error("Failed to persist company update for %s", rid, exc_info=True)
+        return False, company_id
+
+
+def _normalise_tags(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        candidates = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        candidates = value
+    else:
+        return []
+    normalised: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        text = str(candidate).strip()
+        if not text:
+            continue
+        tag = text[:64]
+        if tag not in seen:
+            normalised.append(tag)
+            seen.add(tag)
+    return normalised
+
+
+def _replace_file_tags(rid: str, tags: list[str]) -> bool:
+    if db_cursor is None:
+        return False
+    try:
+        with db_cursor() as cur:
+            cur.execute("DELETE FROM file_tags WHERE file_id=%s", (rid,))
+            if not tags:
+                return True
+            sql = "INSERT INTO file_tags (file_id, tag, created_at) VALUES (%s, %s, NOW())"
+            for tag in tags:
+                cur.execute(sql, (rid, tag))
+        return True
+    except Exception:  # pragma: no cover - defensive log
+        logger.error("Failed to replace tags for %s", rid, exc_info=True)
         return False
 
 
@@ -921,7 +1074,18 @@ def put_receipt_modal(rid: str) -> Any:
 
     payload = request.get_json(silent=True) or {}
 
+    current_details = _fetch_receipt_details(rid)
+    current_company_id = None
+    existing_tags: list[str] = []
+    existing_company_snapshot: dict[str, Any] = {}
+    if isinstance(current_details, dict):
+        current_company_id = current_details.get("company_id")
+        existing_tags = list(current_details.get("tags") or [])
+        if current_company_id not in (None, 0):
+            existing_company_snapshot = _fetch_company_by_id(current_company_id)
+
     receipt_payload = payload.get("receipt") or {}
+    company_payload = payload.get("company") or {}
     items_payload = payload.get("items")
     proposals_payload = (
         payload.get("proposals")
@@ -931,6 +1095,37 @@ def put_receipt_modal(rid: str) -> Any:
 
     editable = _normalise_receipt_update(receipt_payload)
     receipt_updated = _commit_receipt_update(rid, editable)
+
+    tags_updated = False
+    if isinstance(receipt_payload, dict) and "tags" in receipt_payload:
+        tags = _normalise_tags(receipt_payload.get("tags"))
+        if tags != existing_tags:
+            tags_updated = _replace_file_tags(rid, tags)
+
+    def _normalise_existing_company_value(value: Any) -> Any:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped if stripped else None
+        return value
+
+    company_updated = False
+    if isinstance(company_payload, dict):
+        company_updates = _normalise_company_update(company_payload)
+        if company_updates:
+            if current_company_id in (None, 0):
+                has_changes = any(value is not None for value in company_updates.values())
+            else:
+                has_changes = any(
+                    company_updates[key]
+                    != _normalise_existing_company_value(existing_company_snapshot.get(key))
+                    for key in company_updates.keys()
+                )
+            if has_changes:
+                company_updated, current_company_id = _commit_company_update(
+                    rid,
+                    int(current_company_id) if current_company_id not in (None, 0) else None,
+                    company_updates,
+                )
 
     items_updated = False
     if items_payload is not None:
@@ -947,8 +1142,10 @@ def put_receipt_modal(rid: str) -> Any:
     refreshed_receipt = _fetch_receipt_details(rid)
     refreshed_items, refreshed_items_source = _get_receipt_items_with_source(rid, refreshed_receipt.get("currency"))
     refreshed_proposals = _fetch_saved_accounting_entries(rid)
+    refreshed_company = _fetch_company_by_id(refreshed_receipt.get("company_id"))
     refreshed = {
         "receipt": refreshed_receipt,
+        "company": refreshed_company,
         "items": refreshed_items,
         "proposals": refreshed_proposals,
         "meta": {
@@ -960,6 +1157,8 @@ def put_receipt_modal(rid: str) -> Any:
     if refreshed_items_source != "database":
         refreshed["line_items"] = refreshed_items
 
+    receipt_updated = bool(receipt_updated or company_updated or tags_updated)
+
     return (
         jsonify(
             {
@@ -967,6 +1166,8 @@ def put_receipt_modal(rid: str) -> Any:
                 "receipt_updated": receipt_updated,
                 "items_updated": items_updated,
                 "proposals_updated": proposals_updated,
+                "company_updated": company_updated,
+                "tags_updated": tags_updated,
                 "data": refreshed,
             }
         ),
