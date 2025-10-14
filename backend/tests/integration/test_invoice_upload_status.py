@@ -3,8 +3,13 @@ import json
 import sys
 import types
 import uuid
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List
+
+from services.invoice_status import InvoiceLineMatchStatus
+from models.ai_processing import CreditCardMatchResponse
 
 import pytest
 from flask import Flask
@@ -52,7 +57,10 @@ class FakeDB:
         self.unified_files: Dict[str, Dict[str, Any]] = {}
         self.invoice_documents: Dict[str, Dict[str, Any]] = {}
         self.invoice_lines: List[Dict[str, Any]] = []
+        self.creditcard_receipt_matches: List[Dict[str, Any]] = []
+        self.companies: Dict[int, Dict[str, Any]] = {}
         self._results: List[Any] = []
+        self.rowcount: int = 0
 
     def cursor(self):
         return self
@@ -69,6 +77,7 @@ class FakeDB:
     def execute(self, sql: Any, params: Any | None = None) -> None:
         statement = " ".join(str(sql).split()).lower()
         params = params or ()
+        self.rowcount = 0
 
         if statement.startswith("insert into unified_files"):
             (
@@ -102,11 +111,14 @@ class FakeDB:
                 "original_file_id": original_file_id,
                 "original_file_name": original_file_name,
                 "original_file_size": original_file_size,
+                "credit_card_match": 0,
             }
+            self.rowcount = 1
         elif statement.startswith("update unified_files set other_data"):
             other_data, file_id = params
             if file_id in self.unified_files:
                 self.unified_files[file_id]["other_data"] = other_data
+                self.rowcount = 1
         elif "from unified_files" in statement and "content_hash" in statement:
             content_hash = params[0]
             matches = [
@@ -130,45 +142,195 @@ class FakeDB:
                         )
                     )
             self._results = rows
+        elif statement.startswith(
+            "select id, transaction_date, amount, coalesce(merchant_name, description) as merchant_hint, match_status from invoice_lines"
+        ):
+            invoice_id = params[0]
+            rows = []
+            for ln in self.invoice_lines:
+                status = ln.get("match_status")
+                if ln["invoice_id"] == invoice_id and (status is None or status in {"pending", "unmatched"}):
+                    rows.append(
+                        (
+                            ln["id"],
+                            ln.get("transaction_date"),
+                            ln.get("amount"),
+                            ln.get("merchant_name") or ln.get("description"),
+                            ln.get("match_status"),
+                        )
+                    )
+            self._results = rows
+        elif statement.startswith("select invoice_id, transaction_date, amount, match_status, matched_file_id from invoice_lines where id=%s"):
+            line_id = params[0]
+            for ln in self.invoice_lines:
+                if ln["id"] == int(line_id):
+                    self._results = [
+                        (
+                            ln["invoice_id"],
+                            ln.get("transaction_date"),
+                            ln.get("amount"),
+                            ln.get("match_status"),
+                            ln.get("matched_file_id"),
+                        )
+                    ]
+                    break
+            else:
+                self._results = []
+        elif statement.startswith("select id, transaction_date, amount from invoice_lines"):
+            invoice_id = params[0]
+            rows = []
+            for ln in self.invoice_lines:
+                status = ln.get("match_status")
+                if ln["invoice_id"] == invoice_id and (status is None or status in {"pending", "unmatched"}):
+                    rows.append(
+                        (
+                            ln["id"],
+                            ln.get("transaction_date"),
+                            ln.get("amount"),
+                        )
+                    )
+            self._results = rows
+        elif statement.startswith("select uf.id, uf.purchase_datetime, uf.gross_amount, c.name from unified_files as uf"):
+            target_date = params[0]
+            amount = Decimal(str(params[1]))
+            results = []
+            for entry in self.unified_files.values():
+                purchase_dt = entry.get("purchase_datetime")
+                gross_amount = entry.get("gross_amount")
+                if purchase_dt is None or gross_amount is None:
+                    continue
+                if isinstance(purchase_dt, datetime):
+                    purchase_date = purchase_dt.date().isoformat()
+                else:
+                    purchase_date = str(purchase_dt).split(" ")[0]
+                if str(purchase_date) != str(target_date):
+                    continue
+                if abs(Decimal(str(gross_amount)) - amount) > Decimal("5"):
+                    continue
+                if entry.get("credit_card_match"):
+                    continue
+                if any(match["receipt_id"] == entry["id"] for match in self.creditcard_receipt_matches):
+                    continue
+                results.append((entry["id"], purchase_dt, gross_amount, entry.get("company_name")))
+            self._results = results[:10]
         elif statement.startswith("update unified_files set ai_status=%s, ai_confidence"):
             ai_status, _confidence, file_id = params
             if file_id in self.unified_files:
                 self.unified_files[file_id]["ai_status"] = ai_status
+                self.rowcount = 1
         elif statement.startswith("update unified_files set ai_status"):
             ai_status, file_id = params
             if file_id in self.unified_files:
                 self.unified_files[file_id]["ai_status"] = ai_status
+                self.rowcount = 1
         elif statement.startswith("insert into invoice_documents"):
-            doc_id, invoice_type, status, metadata_json = params
+            doc_id, invoice_type, status, processing_status, metadata_json = params
             self.invoice_documents[doc_id] = {
                 "invoice_type": invoice_type,
                 "status": status,
+                "processing_status": processing_status,
                 "metadata_json": metadata_json,
+                "uploaded_at": datetime.now(),
+                "period_start": None,
+                "period_end": None,
             }
+            self.rowcount = 1
         elif statement.startswith("update invoice_documents set metadata_json="):
             metadata_json, doc_id = params
             if doc_id in self.invoice_documents:
                 self.invoice_documents[doc_id]["metadata_json"] = metadata_json
-        elif statement.startswith("update invoice_documents set status="):
-            status, metadata_json, doc_id = params
+                self.rowcount = 1
+                self.rowcount = 1
+        elif (
+            statement.startswith("update invoice_documents set status=")
+            and "metadata_json" in statement
+        ):
+            status, processing_status, metadata_json, doc_id = params
             if doc_id in self.invoice_documents:
                 self.invoice_documents[doc_id]["status"] = status
+                self.invoice_documents[doc_id]["processing_status"] = processing_status
                 self.invoice_documents[doc_id]["metadata_json"] = metadata_json
+                self.rowcount = 1
+        elif statement.startswith("update invoice_documents set status="):
+            target_status = params[0]
+            doc_id = params[1]
+            if doc_id in self.invoice_documents:
+                self.invoice_documents[doc_id]["status"] = target_status
+                self.rowcount = 1
         elif statement.startswith("select status, metadata_json from invoice_documents"):
             doc_id = params[0]
             doc = self.invoice_documents.get(doc_id)
             self._results = [
                 (doc["status"], doc["metadata_json"])
             ] if doc else []
+        elif statement.startswith("update invoice_documents set processing_status="):
+            target_status = params[0]
+            doc_id = params[1]
+            if doc_id in self.invoice_documents:
+                self.invoice_documents[doc_id]["processing_status"] = target_status
+                self.rowcount = 1
+        elif statement.startswith("update invoice_documents set period_start=%s, period_end=%s"):
+            period_start, period_end, doc_id = params
+            if doc_id in self.invoice_documents:
+                self.invoice_documents[doc_id]["period_start"] = period_start
+                self.invoice_documents[doc_id]["period_end"] = period_end
+                self.rowcount = 1
+        elif statement.startswith("update invoice_documents set period_start="):
+            period_start, doc_id = params
+            if doc_id in self.invoice_documents:
+                self.invoice_documents[doc_id]["period_start"] = period_start
+                self.rowcount = 1
+        elif statement.startswith("update invoice_documents set period_end="):
+            period_end, doc_id = params
+            if doc_id in self.invoice_documents:
+                self.invoice_documents[doc_id]["period_end"] = period_end
+                self.rowcount = 1
+        elif statement.startswith("select id, invoice_type, uploaded_at, status, processing_status, metadata_json"):
+            rows = []
+            for did, doc in self.invoice_documents.items():
+                rows.append(
+                    (
+                        did,
+                        doc.get("invoice_type"),
+                        doc.get("uploaded_at"),
+                        doc.get("status"),
+                        doc.get("processing_status"),
+                        doc.get("metadata_json"),
+                    )
+                )
+            self._results = rows
+        elif statement.startswith("select invoice_type, status, processing_status, period_start, period_end, uploaded_at, metadata_json from invoice_documents"):
+            doc_id = params[0]
+            doc = self.invoice_documents.get(doc_id)
+            if doc:
+                self._results = [
+                    (
+                        doc.get("invoice_type"),
+                        doc.get("status"),
+                        doc.get("processing_status"),
+                        doc.get("period_start"),
+                        doc.get("period_end"),
+                        doc.get("uploaded_at"),
+                        doc.get("metadata_json"),
+                    )
+                ]
+            else:
+                self._results = []
         elif statement.startswith("select metadata_json from invoice_documents"):
             doc_id = params[0]
             doc = self.invoice_documents.get(doc_id)
             self._results = [(doc["metadata_json"],)] if doc else []
-        elif statement.startswith("select count(1), sum(case when match_status") and "from invoice_lines" in statement:
+        elif (
+            (
+                statement.startswith("select count(1), sum(case when match_status")
+                or statement.startswith("select count(*), sum(case when match_status")
+            )
+            and "from invoice_lines" in statement
+        ):
             invoice_id = params[0]
             lines = [ln for ln in self.invoice_lines if ln["invoice_id"] == invoice_id]
             total = len(lines)
-            matched = sum(1 for ln in lines if ln.get("match_status") in {"auto", "manual"})
+            matched = sum(1 for ln in lines if ln.get("match_status") in {"auto", "manual", "confirmed"})
             self._results = [(total, matched)]
         elif statement.startswith("select id, transaction_date, amount, merchant_name, description, match_status, match_score, matched_file_id"):
             invoice_id, limit, offset = params
@@ -189,6 +351,85 @@ class FakeDB:
                     )
                 )
             self._results = rows
+        elif "from invoice_lines as il" in statement and "left join unified_files" in statement:
+            invoice_id = params[0]
+            lines = [ln for ln in self.invoice_lines if ln["invoice_id"] == invoice_id]
+            lines.sort(key=lambda ln: (ln.get("transaction_date") or "", ln["id"]))
+            rows = []
+            for ln in lines:
+                receipt = self.unified_files.get(ln.get("matched_file_id"))
+                purchase_dt = receipt.get("purchase_datetime") if receipt else None
+                gross_amount = receipt.get("gross_amount") if receipt else None
+                credit_flag = receipt.get("credit_card_match") if receipt else None
+                vendor_name = None
+                if receipt and receipt.get("company_id") in self.companies:
+                    vendor_name = self.companies[receipt["company_id"]]["name"]
+                rows.append(
+                    (
+                        ln["id"],
+                        ln.get("transaction_date"),
+                        ln.get("amount"),
+                        ln.get("description"),
+                        ln.get("match_status"),
+                        ln.get("match_score"),
+                        ln.get("matched_file_id"),
+                        purchase_dt,
+                        gross_amount,
+                        credit_flag,
+                        vendor_name,
+                    )
+                )
+            self._results = rows
+        elif statement.startswith("update invoice_lines set matched_file_id"):
+            matched_file_id, match_score, match_status, line_id, *_allowed = params
+            for ln in self.invoice_lines:
+                if ln["id"] == int(line_id):
+                    ln["matched_file_id"] = matched_file_id
+                    ln["match_score"] = match_score
+                    ln["match_status"] = match_status
+                    self.rowcount = 1
+                    break
+        elif statement.startswith("update invoice_lines set match_status=%s where id=%s"):
+            new_status, line_id, *allowed = params
+            allowed_states = {state for state in allowed}
+            for ln in self.invoice_lines:
+                if ln["id"] == int(line_id):
+                    current = ln.get("match_status")
+                    if current in allowed_states or current is None:
+                        ln["match_status"] = new_status
+                        self.rowcount = 1
+                    break
+        elif statement.startswith("insert into invoice_line_history"):
+            invoice_line_id = params[0]
+            if len(params) == 3:
+                new_matched_file_id = params[1]
+                reason = params[2]
+                action = "matched"
+            elif len(params) == 2:
+                new_matched_file_id = None
+                reason = params[1]
+                action = "no_match"
+            else:
+                new_matched_file_id = None
+                reason = "auto-match"
+                action = "matched"
+            history = self.unified_files.setdefault("_history", [])
+            history.append(
+                {
+                    "invoice_line_id": invoice_line_id,
+                    "action": action,
+                    "new_matched_file_id": new_matched_file_id,
+                    "reason": reason,
+                }
+            )
+            self.rowcount = 1
+        elif statement.startswith("delete from invoice_lines"):
+            invoice_id = params[0]
+            before = len(self.invoice_lines)
+            self.invoice_lines = [
+                ln for ln in self.invoice_lines if ln["invoice_id"] != invoice_id
+            ]
+            self.rowcount = before - len(self.invoice_lines)
         elif statement.startswith("insert into invoice_lines"):
             invoice_id, transaction_date, amount, merchant_name, description = params
             line_id = len(self.invoice_lines) + 1
@@ -205,6 +446,67 @@ class FakeDB:
                     "matched_file_id": None,
                 }
             )
+            self.rowcount = 1
+        elif statement.startswith(
+            "select uf.id, uf.purchase_datetime, uf.gross_amount, uf.credit_card_match, uf.created_at, c.name, existing.id as matched_line_id, crm.invoice_item_id"
+        ):
+            rows = []
+            for receipt in self.unified_files.values():
+                company_id = receipt.get("company_id")
+                vendor_name = None
+                if company_id in self.companies:
+                    vendor_name = self.companies[company_id]["name"]
+                matched_line_id = None
+                for ln in self.invoice_lines:
+                    if ln.get("matched_file_id") == receipt["id"]:
+                        matched_line_id = ln["id"]
+                        break
+                matched_invoice_item = None
+                for match in self.creditcard_receipt_matches:
+                    if match.get("receipt_id") == receipt["id"]:
+                        matched_invoice_item = match.get("invoice_item_id")
+                        break
+                rows.append(
+                    (
+                        receipt["id"],
+                        receipt.get("purchase_datetime"),
+                        receipt.get("gross_amount"),
+                        receipt.get("credit_card_match"),
+                        receipt.get("created_at"),
+                        vendor_name,
+                        matched_line_id,
+                        matched_invoice_item,
+                    )
+                )
+            rows.sort(
+                key=lambda r: (
+                    r[1] if isinstance(r[1], datetime) else datetime.min,
+                ),
+                reverse=True,
+            )
+            self._results = rows[:200]
+        elif statement.startswith(
+            "select uf.id, uf.purchase_datetime, uf.gross_amount, uf.credit_card_match, uf.created_at, c.name from unified_files as uf"
+        ):
+            file_id = params[0]
+            receipt = self.unified_files.get(file_id)
+            if receipt:
+                company_id = receipt.get("company_id")
+                vendor_name = None
+                if company_id in self.companies:
+                    vendor_name = self.companies[company_id]["name"]
+                self._results = [
+                    (
+                        receipt["id"],
+                        receipt.get("purchase_datetime"),
+                        receipt.get("gross_amount"),
+                        receipt.get("credit_card_match"),
+                        receipt.get("created_at"),
+                        vendor_name,
+                    )
+                ]
+            else:
+                self._results = []
         else:
             # Unused query in these tests.
             self._results = []
@@ -253,12 +555,25 @@ def app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Flask:
 def _patch_db(monkeypatch: pytest.MonkeyPatch, fake: FakeDB) -> None:
     from api import reconciliation_firstcard as module
     import api.ingest as ingest
+    from services import invoice_status
+    from services import tasks as tasks_module
+    raw_processor = tasks_module.process_invoice_document
+    while hasattr(raw_processor, "__wrapped__"):
+        raw_processor = getattr(raw_processor, "__wrapped__")  # type: ignore[attr-defined]
+    monkeypatch.setattr(tasks_module, "process_invoice_document", raw_processor)
+
+    raw_match = tasks_module.process_matching
+    while hasattr(raw_match, "__wrapped__"):
+        raw_match = getattr(raw_match, "__wrapped__")  # type: ignore[attr-defined]
+    monkeypatch.setattr(tasks_module, "process_matching", raw_match)
 
     def cursor_factory():
         return fake.cursor()
 
     monkeypatch.setattr(module, "db_cursor", cursor_factory)
     monkeypatch.setattr(ingest, "db_cursor", cursor_factory)
+    monkeypatch.setattr(invoice_status, "db_cursor", cursor_factory)
+    monkeypatch.setattr(tasks_module, "db_cursor", cursor_factory)
 
 
 def _stub_tasks(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -316,6 +631,8 @@ def test_upload_invoice_pdf_creates_records(app: Flask, monkeypatch: pytest.Monk
     metadata = json.loads(fake.invoice_documents[invoice_id]["metadata_json"])
     assert metadata["page_count"] == 2
     assert metadata["processing_status"] == "ocr_pending"
+    assert fake.invoice_documents[invoice_id]["status"] == "imported"
+    assert fake.invoice_documents[invoice_id]["processing_status"] == "ocr_pending"
 
     # Unified files include the parent and pages
     assert invoice_id in fake.unified_files
@@ -400,3 +717,328 @@ def test_invoice_status_and_lines_endpoint(app: Flask, monkeypatch: pytest.Monke
     assert len(lines_payload["items"]) == 1
     assert lines_payload["items"][0]["merchant_name"] == "Cafe"
     assert lines_payload["next_offset"] == 1
+
+
+def test_list_statements_includes_processing_metadata(app: Flask, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeDB()
+    _patch_db(monkeypatch, fake)
+    _stub_tasks(monkeypatch)
+
+    invoice_id = str(uuid.uuid4())
+    metadata = {
+        "processing_status": "ready_for_matching",
+        "period_start": "2025-09-01",
+        "period_end": "2025-09-30",
+        "line_counts": {"total": 3, "matched": 1},
+        "submitted_by": "tester",
+    }
+    fake.invoice_documents[invoice_id] = {
+        "invoice_type": "credit_card_invoice",
+        "status": "imported",
+        "processing_status": "ready_for_matching",
+        "metadata_json": json.dumps(metadata),
+        "uploaded_at": datetime.now(),
+        "period_start": "2025-09-01",
+        "period_end": "2025-09-30",
+    }
+
+    client = app.test_client()
+    response = client.get("/reconciliation/firstcard/statements")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["total"] == 1
+    item = payload["items"][0]
+    assert item["invoice_type"] == "credit_card_invoice"
+    assert item["processing_status"] == "ready_for_matching"
+    assert item["period_start"] == "2025-09-01"
+    assert item["line_counts"]["total"] == 3
+    assert item["line_counts"]["matched"] == 1
+    assert item["line_counts"]["unmatched"] == 2
+
+
+def test_invoice_detail_includes_matched_receipt(app: Flask, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeDB()
+    _patch_db(monkeypatch, fake)
+    _stub_tasks(monkeypatch)
+
+    invoice_id = str(uuid.uuid4())
+    receipt_id = str(uuid.uuid4())
+    company_id = 101
+    metadata = {
+        "processing_status": "ready_for_matching",
+        "submitted_by": "tester",
+    }
+    fake.invoice_documents[invoice_id] = {
+        "invoice_type": "credit_card_invoice",
+        "status": "imported",
+        "processing_status": "ready_for_matching",
+        "metadata_json": json.dumps(metadata),
+        "uploaded_at": datetime(2025, 9, 21, 9, 0),
+        "period_start": "2025-09-01",
+        "period_end": "2025-09-30",
+    }
+    fake.invoice_lines.append(
+        {
+            "id": 1,
+            "invoice_id": invoice_id,
+            "transaction_date": "2025-09-05",
+            "amount": 150.25,
+            "merchant_name": "Coffee Shop",
+            "description": "Coffee",
+            "match_status": "auto",
+            "match_score": 0.92,
+            "matched_file_id": receipt_id,
+        }
+    )
+    fake.unified_files[receipt_id] = {
+        "id": receipt_id,
+        "file_type": "receipt",
+        "purchase_datetime": datetime(2025, 9, 5, 12, 0),
+        "gross_amount": 150.25,
+        "credit_card_match": 1,
+        "company_id": company_id,
+        "created_at": datetime(2025, 9, 6, 8, 30),
+    }
+    fake.companies[company_id] = {"id": company_id, "name": "Coffee Shop AB"}
+
+    client = app.test_client()
+    response = client.get(f"/reconciliation/firstcard/invoices/{invoice_id}")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["invoice"]["id"] == invoice_id
+    assert payload["invoice"]["line_counts"]["matched"] == 1
+    assert payload["invoice"]["line_counts"]["unmatched"] == 0
+    assert payload["invoice"]["metadata"]["submitted_by"] == "tester"
+    assert len(payload["lines"]) == 1
+    line = payload["lines"][0]
+    assert line["matched_file_id"] == receipt_id
+    assert line["matched_receipt"]["vendor_name"] == "Coffee Shop AB"
+    assert line["matched_receipt"]["credit_card_match"] is True
+
+
+def test_line_candidates_excludes_matched_receipts(app: Flask, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeDB()
+    _patch_db(monkeypatch, fake)
+    _stub_tasks(monkeypatch)
+
+    invoice_id = str(uuid.uuid4())
+    fake.invoice_documents[invoice_id] = {
+        "invoice_type": "credit_card_invoice",
+        "status": "imported",
+        "processing_status": "ready_for_matching",
+        "metadata_json": json.dumps({"processing_status": "ready_for_matching"}),
+        "uploaded_at": datetime.now(),
+    }
+    candidate_receipt_id = str(uuid.uuid4())
+    excluded_receipt_id = str(uuid.uuid4())
+    creditcard_matched_id = str(uuid.uuid4())
+    other_line_receipt = str(uuid.uuid4())
+
+    fake.invoice_lines.append(
+        {
+            "id": 1,
+            "invoice_id": invoice_id,
+            "transaction_date": "2025-09-10",
+            "amount": 200.00,
+            "merchant_name": "Target Cafe",
+            "description": "Lunch",
+            "match_status": "pending",
+            "match_score": None,
+            "matched_file_id": None,
+        }
+    )
+    fake.invoice_lines.append(
+        {
+            "id": 2,
+            "invoice_id": invoice_id,
+            "transaction_date": "2025-09-09",
+            "amount": 75.00,
+            "merchant_name": "Other",
+            "description": "Other",
+            "match_status": "manual",
+            "match_score": 0.8,
+            "matched_file_id": other_line_receipt,
+        }
+    )
+
+    fake.unified_files[candidate_receipt_id] = {
+        "id": candidate_receipt_id,
+        "purchase_datetime": datetime(2025, 9, 10, 14, 0),
+        "gross_amount": 200.00,
+        "credit_card_match": 0,
+        "created_at": datetime(2025, 9, 11, 9, 0),
+        "company_id": 201,
+    }
+    fake.unified_files[excluded_receipt_id] = {
+        "id": excluded_receipt_id,
+        "purchase_datetime": datetime(2025, 9, 10, 12, 0),
+        "gross_amount": 200.00,
+        "credit_card_match": 1,
+        "created_at": datetime(2025, 9, 10, 13, 0),
+        "company_id": 202,
+    }
+    fake.unified_files[creditcard_matched_id] = {
+        "id": creditcard_matched_id,
+        "purchase_datetime": datetime(2025, 9, 10, 15, 0),
+        "gross_amount": 200.00,
+        "credit_card_match": 0,
+        "created_at": datetime(2025, 9, 10, 16, 0),
+        "company_id": 203,
+    }
+    fake.unified_files[other_line_receipt] = {
+        "id": other_line_receipt,
+        "purchase_datetime": datetime(2025, 9, 9, 10, 0),
+        "gross_amount": 75.00,
+        "credit_card_match": 0,
+        "created_at": datetime(2025, 9, 9, 11, 0),
+        "company_id": 204,
+    }
+    fake.companies[201] = {"id": 201, "name": "Candidate Vendor"}
+    fake.companies[202] = {"id": 202, "name": "Excluded Vendor"}
+    fake.companies[203] = {"id": 203, "name": "CRM Vendor"}
+    fake.companies[204] = {"id": 204, "name": "Other Vendor"}
+
+    fake.creditcard_receipt_matches.append(
+        {"receipt_id": creditcard_matched_id, "invoice_item_id": 99, "matched_amount": 200.00}
+    )
+
+    client = app.test_client()
+    response = client.get("/reconciliation/firstcard/lines/1/candidates")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["line"]["id"] == 1
+    assert payload["line"]["invoice_id"] == invoice_id
+    candidate_ids = [item["file_id"] for item in payload["candidates"]]
+    assert candidate_receipt_id in candidate_ids
+    assert excluded_receipt_id not in candidate_ids
+    assert creditcard_matched_id not in candidate_ids
+    assert other_line_receipt not in candidate_ids
+    first_candidate = payload["candidates"][0]
+    assert first_candidate["file_id"] == candidate_receipt_id
+    assert first_candidate["vendor_name"] == "Candidate Vendor"
+
+def test_process_matching_auto_matches_lines(app: Flask, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeDB()
+    _patch_db(monkeypatch, fake)
+    _stub_tasks(monkeypatch)
+
+    from services import tasks as tasks_module
+
+    invoice_id = str(uuid.uuid4())
+    receipt_id = str(uuid.uuid4())
+    metadata = {
+        "processing_status": "ready_for_matching",
+        "line_counts": {"total": 1, "matched": 0, "unmatched": 1},
+        "page_count": 1,
+        "page_ids": ["page-1"],
+    }
+    fake.invoice_documents[invoice_id] = {
+        "invoice_type": "credit_card_invoice",
+        "status": "imported",
+        "processing_status": "ready_for_matching",
+        "metadata_json": json.dumps(metadata),
+        "uploaded_at": datetime.now(),
+    }
+    fake.invoice_lines.append(
+        {
+            "id": 1,
+            "invoice_id": invoice_id,
+            "transaction_date": "2025-09-05",
+            "amount": 150.25,
+            "merchant_name": "Coffee Shop",
+            "description": "Coffee Shop",
+            "match_status": "pending",
+            "match_score": None,
+            "matched_file_id": None,
+        }
+    )
+    fake.unified_files[receipt_id] = {
+        "id": receipt_id,
+        "file_type": "receipt",
+        "purchase_datetime": datetime(2025, 9, 5, 12, 0),
+        "gross_amount": 150.25,
+        "content_hash": f"hash-{receipt_id}",
+        "company_name": "Coffee Shop AB",
+        "credit_card_match": 0,
+    }
+
+    def fake_ai_match(request: Any) -> CreditCardMatchResponse:
+        line_id = fake.invoice_lines[0]["id"]
+        fake.creditcard_receipt_matches.append(
+            {
+                "receipt_id": request.file_id,
+                "invoice_item_id": line_id,
+                "matched_amount": float(request.amount),
+            }
+        )
+        if request.file_id in fake.unified_files:
+            fake.unified_files[request.file_id]["credit_card_match"] = 1
+        return CreditCardMatchResponse(
+            file_id=request.file_id,
+            matched=True,
+            credit_card_invoice_item_id=line_id,
+            confidence=0.93,
+            match_details={"matched_amount": float(request.amount)},
+        )
+
+    monkeypatch.setattr(tasks_module, "match_credit_card_internal", fake_ai_match)
+
+    matched, pending = tasks_module._auto_match_invoice_lines(invoice_id)
+    assert matched == 1
+
+    tasks_module.process_matching(invoice_id)
+
+    assert fake.invoice_lines[0]["matched_file_id"] == receipt_id
+    assert fake.invoice_lines[0]["match_status"] == "auto"
+    doc_metadata = json.loads(fake.invoice_documents[invoice_id]["metadata_json"])
+    assert doc_metadata["line_counts"]["matched"] == 1
+    assert fake.creditcard_receipt_matches
+    assert fake.creditcard_receipt_matches[0]["receipt_id"] == receipt_id
+    assert fake.creditcard_receipt_matches[0]["invoice_item_id"] == fake.invoice_lines[0]["id"]
+    assert fake.unified_files[receipt_id]["credit_card_match"] == 1
+
+
+def test_auto_match_marks_unmatched_when_no_receipts(app: Flask, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeDB()
+    _patch_db(monkeypatch, fake)
+    _stub_tasks(monkeypatch)
+
+    from services import tasks as tasks_module
+
+    invoice_id = str(uuid.uuid4())
+    metadata = {
+        "processing_status": "ready_for_matching",
+        "line_counts": {"total": 1, "matched": 0, "unmatched": 1},
+        "page_count": 1,
+        "page_ids": ["page-1"],
+    }
+    fake.invoice_documents[invoice_id] = {
+        "invoice_type": "credit_card_invoice",
+        "status": "imported",
+        "processing_status": "ready_for_matching",
+        "metadata_json": json.dumps(metadata),
+        "uploaded_at": datetime.now(),
+    }
+    fake.invoice_lines.append(
+        {
+            "id": 1,
+            "invoice_id": invoice_id,
+            "transaction_date": "2025-09-10",
+            "amount": 300.00,
+            "merchant_name": "No Match Cafe",
+            "description": "No Match Cafe",
+            "match_status": "pending",
+            "match_score": None,
+            "matched_file_id": None,
+        }
+    )
+
+    matched, pending = tasks_module._auto_match_invoice_lines(invoice_id)
+    assert matched == 0
+    assert pending == 1
+
+    tasks_module.process_matching(invoice_id)
+
+    assert fake.invoice_lines[0]["match_status"] == InvoiceLineMatchStatus.UNMATCHED.value
+    history = fake.unified_files.get("_history", [])
+    assert any(entry.get("reason") == "auto-match-ai5-unmatched" for entry in history)
