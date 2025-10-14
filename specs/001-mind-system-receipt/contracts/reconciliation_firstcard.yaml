@@ -1,33 +1,467 @@
 openapi: 3.0.0
 info:
   title: FirstCard Reconciliation API
-  version: 0.1.0
+  version: 0.2.0
 servers:
   - url: /ai/api
     description: MIND v2.0 API base
+tags:
+  - name: FirstCard
+    description: Credit card invoice reconciliation workflow for FirstCard statements.
 paths:
   /reconciliation/firstcard/import:
     post:
+      tags: [FirstCard]
       summary: Import FirstCard invoice
+      description: |
+        Accepts a PDF or JSON payload representing a FirstCard statement and persists the
+        invoice document together with its individual line items.
       responses:
-        '200': { description: OK }
+        '200':
+          description: Statement imported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResponse'
   /reconciliation/firstcard/match:
     post:
+      tags: [FirstCard]
       summary: Match invoice lines to receipts
+      description: |
+        Triggers the matching flow for a given invoice document, linking invoice lines to unified receipts.
       responses:
-        '200': { description: OK }
+        '200':
+          description: Matching completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchResponse'
   /reconciliation/firstcard/statements:
     get:
+      tags: [FirstCard]
       summary: List statements
+      description: |
+        Returns the most recent FirstCard statements with processing metadata and line counts for quick overview.
       responses:
-        '200': { description: OK }
+        '200':
+          description: Statement summary list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatementListResponse'
   /reconciliation/firstcard/statements/{id}/confirm:
     post:
+      tags: [FirstCard]
       summary: Confirm match
+      parameters:
+        - $ref: '#/components/parameters/StatementIdParam'
       responses:
-        '200': { description: OK }
+        '200':
+          description: Statement confirmed
   /reconciliation/firstcard/statements/{id}/reject:
     post:
+      tags: [FirstCard]
       summary: Reject match
+      parameters:
+        - $ref: '#/components/parameters/StatementIdParam'
       responses:
-        '200': { description: OK }
+        '200':
+          description: Statement set back to matching
+  /reconciliation/firstcard/invoices/{invoice_id}/status:
+    get:
+      tags: [FirstCard]
+      summary: Get invoice processing status
+      parameters:
+        - $ref: '#/components/parameters/InvoiceIdParam'
+      responses:
+        '200':
+          description: Processing state for the invoice
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceStatusResponse'
+        '404':
+          description: Invoice not found
+  /reconciliation/firstcard/invoices/{invoice_id}:
+    get:
+      tags: [FirstCard]
+      summary: Get invoice detail with matched receipts
+      parameters:
+        - $ref: '#/components/parameters/InvoiceIdParam'
+      responses:
+        '200':
+          description: Invoice detail with line items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceDetailResponse'
+        '404':
+          description: Invoice not found
+  /reconciliation/firstcard/invoices/{invoice_id}/lines:
+    get:
+      tags: [FirstCard]
+      summary: Paginated invoice lines
+      parameters:
+        - $ref: '#/components/parameters/InvoiceIdParam'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Invoice lines
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceLinesResponse'
+        '404':
+          description: Invoice not found
+  /reconciliation/firstcard/lines/{line_id}/candidates:
+    get:
+      tags: [FirstCard]
+      summary: Candidate receipts for an invoice line
+      parameters:
+        - $ref: '#/components/parameters/LineIdParam'
+      responses:
+        '200':
+          description: Candidate receipts with scoring metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LineCandidatesResponse'
+        '404':
+          description: Invoice line not found
+components:
+  parameters:
+    StatementIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Identifier of the invoice document (UUID).
+    InvoiceIdParam:
+      name: invoice_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Identifier of the invoice document (UUID).
+    LineIdParam:
+      name: line_id
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+      description: Identifier of the invoice line.
+  schemas:
+    LineCounts:
+      type: object
+      required: [total, matched, unmatched]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        matched:
+          type: integer
+          minimum: 0
+        unmatched:
+          type: integer
+          minimum: 0
+    StatementItem:
+      type: object
+      required: [id, invoice_type, status, line_counts]
+      properties:
+        id:
+          type: string
+          description: Invoice document identifier (UUID).
+        invoice_type:
+          type: string
+          enum: [company_card, credit_card_invoice]
+        uploaded_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          description: Business-facing document status.
+        processing_status:
+          type: string
+          description: Technical processing state for the invoice pipeline.
+        period_start:
+          type: string
+          format: date
+          nullable: true
+        period_end:
+          type: string
+          format: date
+          nullable: true
+        page_count:
+          type: integer
+          minimum: 0
+          nullable: true
+        source_file_id:
+          type: string
+          nullable: true
+        submitted_by:
+          type: string
+          nullable: true
+        line_counts:
+          $ref: '#/components/schemas/LineCounts'
+    StatementListResponse:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/StatementItem'
+        total:
+          type: integer
+          minimum: 0
+    ImportResponse:
+      type: object
+      required: [status, id, lines]
+      properties:
+        status:
+          type: string
+        id:
+          type: string
+        lines:
+          type: integer
+          minimum: 0
+    MatchResponse:
+      type: object
+      required: [matched, document_id]
+      properties:
+        matched:
+          type: integer
+          minimum: 0
+        document_id:
+          type: string
+    InvoiceStatusResponse:
+      type: object
+      required: [invoice_id, status, processing_status, ocr_progress, line_counts]
+      properties:
+        invoice_id:
+          type: string
+        status:
+          type: string
+        processing_status:
+          type: string
+        source_file_id:
+          type: string
+        ai_summary:
+          type: string
+        ocr_progress:
+          type: object
+          required: [total_pages, completed_pages, percentage, pages]
+          properties:
+            total_pages:
+              type: integer
+              minimum: 0
+            completed_pages:
+              type: integer
+              minimum: 0
+            percentage:
+              type: number
+            pages:
+              type: array
+              items:
+                type: object
+                required: [file_id, page_number, status]
+                properties:
+                  file_id:
+                    type: string
+                  page_number:
+                    type: integer
+                    minimum: 1
+                  status:
+                    type: string
+        line_counts:
+          $ref: '#/components/schemas/LineCounts'
+    MatchedReceipt:
+      type: object
+      required: [file_id]
+      properties:
+        file_id:
+          type: string
+        purchase_datetime:
+          type: string
+          format: date-time
+          nullable: true
+        gross_amount:
+          type: number
+          format: float
+          nullable: true
+        credit_card_match:
+          type: boolean
+          nullable: true
+        vendor_name:
+          type: string
+          nullable: true
+    InvoiceLine:
+      type: object
+      required: [id, transaction_date, amount, description, match_status]
+      properties:
+        id:
+          type: integer
+        transaction_date:
+          type: string
+        amount:
+          type: number
+          format: float
+          nullable: true
+        description:
+          type: string
+        match_status:
+          type: string
+        match_score:
+          type: number
+          format: float
+          nullable: true
+        matched_file_id:
+          type: string
+          nullable: true
+        matched_receipt:
+          allOf:
+            - $ref: '#/components/schemas/MatchedReceipt'
+          nullable: true
+    InvoiceDetail:
+      type: object
+      required: [id, invoice_type, status, line_counts]
+      properties:
+        id:
+          type: string
+        invoice_type:
+          type: string
+        status:
+          type: string
+        processing_status:
+          type: string
+          nullable: true
+        period_start:
+          type: string
+          format: date
+          nullable: true
+        period_end:
+          type: string
+          format: date
+          nullable: true
+        uploaded_at:
+          type: string
+          format: date-time
+          nullable: true
+        submitted_by:
+          type: string
+          nullable: true
+        line_counts:
+          $ref: '#/components/schemas/LineCounts'
+        metadata:
+          type: object
+          additionalProperties: true
+    InvoiceDetailResponse:
+      type: object
+      required: [invoice, lines]
+      properties:
+        invoice:
+          $ref: '#/components/schemas/InvoiceDetail'
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/InvoiceLine'
+    InvoiceLinesResponse:
+      type: object
+      required: [items, total, matched, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/InvoiceLine'
+        total:
+          type: integer
+          minimum: 0
+        matched:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+          minimum: 1
+        offset:
+          type: integer
+          minimum: 0
+        next_offset:
+          type: integer
+          nullable: true
+    LineCandidate:
+      type: object
+      required: [file_id, gross_amount]
+      properties:
+        file_id:
+          type: string
+        purchase_datetime:
+          type: string
+          nullable: true
+        gross_amount:
+          type: number
+          format: float
+          nullable: true
+        vendor_name:
+          type: string
+          nullable: true
+        credit_card_match:
+          type: boolean
+          nullable: true
+        amount_difference:
+          type: number
+          format: float
+          nullable: true
+        date_difference_days:
+          type: integer
+          nullable: true
+        is_current_match:
+          type: boolean
+          nullable: true
+    LineCandidatesResponse:
+      type: object
+      required: [line, candidates]
+      properties:
+        line:
+          type: object
+          required: [id, invoice_id, transaction_date, amount, match_status]
+          properties:
+            id:
+              type: integer
+            invoice_id:
+              type: string
+            transaction_date:
+              type: string
+            amount:
+              type: number
+              format: float
+              nullable: true
+            match_status:
+              type: string
+            matched_file_id:
+              type: string
+              nullable: true
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/LineCandidate'

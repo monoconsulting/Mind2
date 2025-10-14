@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from datetime import datetime
+from decimal import Decimal
 import uuid
 import base64
 import io
 import os
 import json
-import re
 import hashlib
 
 from flask import Blueprint, jsonify, request
@@ -23,6 +24,7 @@ from api.ingest import (  # type: ignore
 from services.file_detection import detect_file
 from services.pdf_conversion import pdf_to_png_pages
 from services.storage import FileStorage
+from services.invoice_parser import parse_credit_card_statement
 try:
     from observability.metrics import record_invoice_decision  # type: ignore
 except Exception:  # pragma: no cover
@@ -89,15 +91,20 @@ def _create_invoice_document(
 ) -> None:
     if db_cursor is None:  # pragma: no cover - database optional in tests
         return
+    metadata_payload = metadata or {}
+    processing_state = str(
+        metadata_payload.get("processing_status") or InvoiceProcessingStatus.UPLOADED.value
+    )
+    metadata_json = json.dumps(metadata_payload)
     try:
         with db_cursor() as cur:
             cur.execute(
                 (
                     "INSERT INTO invoice_documents "
-                    "(id, invoice_type, status, metadata_json) "
-                    "VALUES (%s, %s, %s, %s)"
+                    "(id, invoice_type, status, processing_status, metadata_json) "
+                    "VALUES (%s, %s, %s, %s, %s)"
                 ),
-                (invoice_id, invoice_type, status, json.dumps(metadata)),
+                (invoice_id, invoice_type, status, processing_state, metadata_json),
             )
     except Exception:
         # Allow idempotent re-uploads to update metadata.
@@ -106,9 +113,9 @@ def _create_invoice_document(
                 cur.execute(
                     (
                         "UPDATE invoice_documents "
-                        "SET status=%s, metadata_json=%s WHERE id=%s"
+                        "SET status=%s, processing_status=%s, metadata_json=%s WHERE id=%s"
                     ),
-                    (status, json.dumps(metadata), invoice_id),
+                    (status, processing_state, metadata_json, invoice_id),
                 )
         except Exception:
             pass
@@ -178,6 +185,48 @@ def _list_invoice_files(invoice_id: str) -> list[dict[str, Any]]:
         return []
 
 
+def _load_receipt_summary(file_id: str) -> Optional[dict[str, Any]]:
+    if db_cursor is None:  # pragma: no cover
+        return None
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT uf.id,
+                       uf.purchase_datetime,
+                       uf.gross_amount,
+                       uf.credit_card_match,
+                       uf.created_at,
+                       c.name
+                  FROM unified_files AS uf
+             LEFT JOIN companies AS c ON c.id = uf.company_id
+                 WHERE uf.id = %s
+                """,
+                (file_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            (
+                rid,
+                purchase_dt,
+                gross_amount,
+                credit_match_flag,
+                created_at,
+                company_name,
+            ) = row
+            return {
+                "file_id": rid,
+                "purchase_datetime": purchase_dt,
+                "gross_amount": gross_amount,
+                "credit_card_match": credit_match_flag,
+                "created_at": created_at,
+                "vendor_name": company_name,
+            }
+    except Exception:
+        return None
+
+
 def _count_invoice_lines(invoice_id: str) -> tuple[int, int]:
     if db_cursor is None:  # pragma: no cover
         return (0, 0)
@@ -186,7 +235,7 @@ def _count_invoice_lines(invoice_id: str) -> tuple[int, int]:
             cur.execute(
                 (
                     "SELECT COUNT(1), "
-                    "SUM(CASE WHEN match_status IN ('auto','manual') THEN 1 ELSE 0 END) "
+                    "SUM(CASE WHEN match_status IN ('auto','manual','confirmed') THEN 1 ELSE 0 END) "
                     "FROM invoice_lines WHERE invoice_id=%s"
                 ),
                 (invoice_id,),
@@ -224,7 +273,7 @@ def upload_invoice() -> Any:
 
     metadata: dict[str, Any] = {
         "source_file_id": invoice_id,
-        "processing_status": "ocr_pending",
+        "processing_status": InvoiceProcessingStatus.OCR_PENDING.value,
         "submitted_by": submitted_by,
         "original_filename": safe_name,
         "detected_kind": detection.kind,
@@ -341,8 +390,29 @@ def upload_invoice() -> Any:
     _create_invoice_document(
         invoice_id=invoice_id,
         invoice_type="credit_card_invoice",
-        status="processing",
+        status=InvoiceDocumentStatus.IMPORTED.value,
         metadata=metadata,
+    )
+
+    transition_processing_status(
+        invoice_id,
+        InvoiceProcessingStatus.OCR_PENDING,
+        (
+            InvoiceProcessingStatus.UPLOADED,
+            InvoiceProcessingStatus.OCR_PENDING,
+        ),
+    )
+    transition_document_status(
+        invoice_id,
+        InvoiceDocumentStatus.IMPORTED,
+        (
+            InvoiceDocumentStatus.IMPORTED,
+            InvoiceDocumentStatus.MATCHING,
+            InvoiceDocumentStatus.PARTIALLY_MATCHED,
+            InvoiceDocumentStatus.MATCHED,
+            InvoiceDocumentStatus.COMPLETED,
+            InvoiceDocumentStatus.FAILED,
+        ),
     )
 
     response = {
@@ -446,6 +516,149 @@ def invoice_status(invoice_id: str) -> Any:
     return jsonify(response), 200
 
 
+@recon_bp.get("/reconciliation/firstcard/invoices/<invoice_id>")
+def invoice_detail(invoice_id: str) -> Any:
+    if db_cursor is None:  # pragma: no cover
+        return jsonify({"error": "not_found"}), 404
+
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT invoice_type,
+                       status,
+                       processing_status,
+                       period_start,
+                       period_end,
+                       uploaded_at,
+                       metadata_json
+                  FROM invoice_documents
+                 WHERE id = %s
+                """,
+                (invoice_id,),
+            )
+            row = cur.fetchone()
+    except Exception:
+        row = None
+
+    if not row:
+        return jsonify({"error": "not_found"}), 404
+
+    (
+        invoice_type,
+        status,
+        processing_status,
+        period_start,
+        period_end,
+        uploaded_at,
+        metadata_raw,
+    ) = row
+
+    metadata: dict[str, Any] = {}
+    if metadata_raw:
+        try:
+            metadata = json.loads(metadata_raw)
+        except Exception:
+            metadata = {}
+
+    computed_total, computed_matched = _count_invoice_lines(invoice_id)
+    stored_counts = metadata.get("line_counts") if isinstance(metadata.get("line_counts"), dict) else None
+    if isinstance(stored_counts, dict):
+        total_lines = int(stored_counts.get("total") or computed_total)
+        matched_lines = int(stored_counts.get("matched") or computed_matched)
+        unmatched_lines = stored_counts.get("unmatched")
+        if unmatched_lines is None:
+            unmatched_lines = max(total_lines - matched_lines, 0)
+    else:
+        total_lines = computed_total
+        matched_lines = computed_matched
+        unmatched_lines = max(total_lines - matched_lines, 0)
+    line_counts = {
+        "total": total_lines,
+        "matched": matched_lines,
+        "unmatched": unmatched_lines,
+    }
+    metadata["line_counts"] = line_counts
+
+    lines: list[dict[str, Any]] = []
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT il.id,
+                       il.transaction_date,
+                       il.amount,
+                       il.description,
+                       il.match_status,
+                       il.match_score,
+                       il.matched_file_id,
+                       uf.purchase_datetime,
+                       uf.gross_amount,
+                       uf.credit_card_match,
+                       c.name
+                  FROM invoice_lines AS il
+             LEFT JOIN unified_files AS uf ON uf.id = il.matched_file_id
+             LEFT JOIN companies AS c ON c.id = uf.company_id
+                 WHERE il.invoice_id = %s
+              ORDER BY il.transaction_date ASC, il.id ASC
+                """,
+                (invoice_id,),
+            )
+            fetch_rows = cur.fetchall() or []
+    except Exception:
+        fetch_rows = []
+
+    for (
+        line_id,
+        transaction_date,
+        amount,
+        description,
+        match_status,
+        match_score,
+        matched_file_id,
+        purchase_dt,
+        gross_amount,
+        credit_match_flag,
+        vendor_name,
+    ) in fetch_rows:
+        matched_receipt: Optional[dict[str, Any]] = None
+        if matched_file_id:
+            matched_receipt = {
+                "file_id": matched_file_id,
+                "purchase_datetime": purchase_dt.isoformat() if hasattr(purchase_dt, "isoformat") else purchase_dt,
+                "gross_amount": float(gross_amount) if gross_amount is not None else None,
+                "credit_card_match": bool(credit_match_flag) if credit_match_flag is not None else False,
+                "vendor_name": vendor_name,
+            }
+        lines.append(
+            {
+                "id": int(line_id),
+                "transaction_date": transaction_date.isoformat() if hasattr(transaction_date, "isoformat") else transaction_date,
+                "amount": float(amount) if amount is not None else None,
+                "description": description,
+                "match_status": match_status,
+                "match_score": float(match_score) if match_score is not None else None,
+                "matched_file_id": matched_file_id,
+                "matched_receipt": matched_receipt,
+            }
+        )
+
+    invoice_payload = {
+        "id": invoice_id,
+        "invoice_type": invoice_type,
+        "status": status,
+        "processing_status": processing_status or metadata.get("processing_status"),
+        "period_start": metadata.get("period_start") or period_start,
+        "period_end": metadata.get("period_end") or period_end,
+        "uploaded_at": str(uploaded_at) if uploaded_at else None,
+        "submitted_by": metadata.get("submitted_by"),
+        "line_counts": line_counts,
+        "metadata": metadata,
+    }
+
+    return jsonify({"invoice": invoice_payload, "lines": lines}), 200
+
+
 @recon_bp.get("/reconciliation/firstcard/invoices/<invoice_id>/lines")
 def invoice_lines(invoice_id: str) -> Any:
     """Return invoice line items with pagination guards."""
@@ -471,7 +684,7 @@ def invoice_lines(invoice_id: str) -> Any:
         with db_cursor() as cur:
             cur.execute(
                 "SELECT COUNT(1), "
-                "SUM(CASE WHEN match_status IN ('auto','manual') THEN 1 ELSE 0 END) "
+                "SUM(CASE WHEN match_status IN ('auto','manual','confirmed') THEN 1 ELSE 0 END) "
                 "FROM invoice_lines WHERE invoice_id=%s",
                 (invoice_id,),
             )
@@ -535,6 +748,204 @@ def invoice_lines(invoice_id: str) -> Any:
     )
 
 
+@recon_bp.get("/reconciliation/firstcard/lines/<int:line_id>/candidates")
+def line_candidates(line_id: int) -> Any:
+    if db_cursor is None:  # pragma: no cover
+        return jsonify({"error": "not_found"}), 404
+
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT invoice_id, transaction_date, amount, match_status, matched_file_id
+                  FROM invoice_lines WHERE id=%s
+                """,
+                (line_id,),
+            )
+            row = cur.fetchone()
+    except Exception:
+        row = None
+
+    if not row:
+        return jsonify({"error": "not_found"}), 404
+
+    (
+        invoice_id,
+        transaction_date,
+        amount,
+        match_status,
+        matched_file_id,
+    ) = row
+
+    def _to_date(value: Any) -> Optional[datetime.date]:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value).date()
+            except ValueError:
+                try:
+                    return datetime.fromisoformat(value[:10]).date()
+                except Exception:
+                    return None
+        return None
+
+    def _to_decimal(value: Any) -> Optional[Decimal]:
+        if value is None:
+            return None
+        try:
+            return Decimal(str(value))
+        except Exception:
+            return None
+
+    def _to_datetime(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
+                try:
+                    return datetime.fromisoformat(value[:19])
+                except Exception:
+                    return None
+        return None
+
+    target_date = _to_date(transaction_date)
+    target_amount = _to_decimal(amount)
+
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT uf.id,
+                       uf.purchase_datetime,
+                       uf.gross_amount,
+                       uf.credit_card_match,
+                       uf.created_at,
+                       c.name,
+                       existing.id AS matched_line_id,
+                       crm.invoice_item_id
+                  FROM unified_files AS uf
+             LEFT JOIN companies AS c ON c.id = uf.company_id
+             LEFT JOIN invoice_lines AS existing ON existing.matched_file_id = uf.id
+             LEFT JOIN creditcard_receipt_matches AS crm ON crm.receipt_id = uf.id
+                 WHERE uf.purchase_datetime IS NOT NULL
+                   AND uf.gross_amount IS NOT NULL
+              ORDER BY uf.purchase_datetime DESC
+                 LIMIT 200
+                """,
+            )
+            receipt_rows = cur.fetchall() or []
+    except Exception:
+        receipt_rows = []
+
+    candidates: list[dict[str, Any]] = []
+
+    for (
+        receipt_id,
+        purchase_dt,
+        gross_amount,
+        credit_match_flag,
+        created_at,
+        vendor_name,
+        matched_line_id,
+        matched_invoice_item_id,
+    ) in receipt_rows:
+        if receipt_id is None:
+            continue
+        if matched_line_id and int(matched_line_id) != line_id:
+            continue
+        if matched_invoice_item_id and matched_invoice_item_id != line_id:
+            continue
+        if credit_match_flag and matched_file_id != receipt_id:
+            continue
+
+        receipt_amount = _to_decimal(gross_amount)
+        amount_diff: Optional[Decimal] = None
+        if target_amount is not None and receipt_amount is not None:
+            amount_diff = abs(receipt_amount - target_amount)
+
+        receipt_date = _to_date(purchase_dt)
+        date_diff: Optional[int] = None
+        if target_date is not None and receipt_date is not None:
+            date_diff = abs((receipt_date - target_date).days)
+
+        created_dt = _to_datetime(created_at)
+        candidate = {
+            "file_id": receipt_id,
+            "purchase_datetime": purchase_dt.isoformat() if hasattr(purchase_dt, "isoformat") else purchase_dt,
+            "gross_amount": float(receipt_amount) if receipt_amount is not None else None,
+            "vendor_name": vendor_name,
+            "credit_card_match": bool(credit_match_flag) if credit_match_flag is not None else False,
+            "amount_difference": float(amount_diff) if amount_diff is not None else None,
+            "date_difference_days": date_diff,
+            "_score_amount": amount_diff if amount_diff is not None else Decimal("999999"),
+            "_score_date": date_diff if date_diff is not None else 9999,
+            "_score_created": created_dt or datetime.min,
+        }
+        if receipt_id == matched_file_id:
+            candidate["is_current_match"] = True
+        candidates.append(candidate)
+
+    if matched_file_id and not any(c.get("is_current_match") for c in candidates):
+        receipt_summary = _load_receipt_summary(matched_file_id)
+        if receipt_summary:
+            receipt_amount = _to_decimal(receipt_summary.get("gross_amount"))
+            amount_diff = None
+            if target_amount is not None and receipt_amount is not None:
+                amount_diff = abs(receipt_amount - target_amount)
+            receipt_date = _to_date(receipt_summary.get("purchase_datetime"))
+            date_diff = None
+            if target_date is not None and receipt_date is not None:
+                date_diff = abs((receipt_date - target_date).days)
+            created_dt = _to_datetime(receipt_summary.get("created_at"))
+            candidates.append(
+                {
+                    "file_id": matched_file_id,
+                    "purchase_datetime": (
+                        receipt_summary["purchase_datetime"].isoformat()
+                        if hasattr(receipt_summary["purchase_datetime"], "isoformat")
+                        else receipt_summary["purchase_datetime"]
+                    ),
+                    "gross_amount": float(receipt_amount) if receipt_amount is not None else None,
+                    "vendor_name": receipt_summary.get("vendor_name"),
+                    "credit_card_match": bool(receipt_summary.get("credit_card_match") or False),
+                    "amount_difference": float(amount_diff) if amount_diff is not None else None,
+                    "date_difference_days": date_diff,
+                    "is_current_match": True,
+                    "_score_amount": amount_diff if amount_diff is not None else Decimal("0"),
+                    "_score_date": date_diff if date_diff is not None else 0,
+                    "_score_created": created_dt or datetime.min,
+                }
+            )
+
+    candidates.sort(
+        key=lambda c: (
+            c.get("is_current_match") is not True,
+            c.get("_score_amount") or Decimal("0"),
+            c.get("_score_date") or 0,
+            c.get("_score_created") or datetime.min,
+        )
+    )
+
+    for candidate in candidates:
+        candidate.pop("_score_amount", None)
+        candidate.pop("_score_date", None)
+        candidate.pop("_score_created", None)
+
+    line_payload = {
+        "id": line_id,
+        "invoice_id": str(invoice_id),
+        "transaction_date": transaction_date.isoformat() if hasattr(transaction_date, "isoformat") else transaction_date,
+        "amount": float(amount) if amount is not None else None,
+        "match_status": match_status,
+        "matched_file_id": matched_file_id,
+    }
+
+    return jsonify({"line": line_payload, "candidates": candidates}), 200
+
+
 def _decode_pdf_payload(payload: dict[str, Any]) -> Optional[bytes]:
     pdf_b64 = payload.get('pdf_base64') or payload.get('pdf')
     if pdf_b64:
@@ -555,30 +966,9 @@ def _parse_pdf_statement(pdf_bytes: bytes) -> dict[str, Any]:
             text = pdf_bytes.decode('utf-8', errors='ignore')
         except Exception:
             text = ''
-    lines: list[dict[str, Any]] = []
-    period_start: Optional[str] = None
-    period_end: Optional[str] = None
-    pattern = re.compile(r'(20\d{2}-\d{2}-\d{2})\s+(.+?)\s+(-?\d+[\.,]\d{2})')
-    for match in pattern.finditer(text):
-        tx_date, merchant, amount = match.groups()
-        amount_val = float(amount.replace(',', '.'))
-        lines.append(
-            {
-                "transaction_date": tx_date,
-                "merchant_name": merchant.strip(),
-                "amount": amount_val,
-                "description": merchant.strip(),
-            }
-        )
-    period_match = re.search(r'Period\s*:?\s*(20\d{2}-\d{2}-\d{2})\s*(?:to|-)\s*(20\d{2}-\d{2}-\d{2})', text, re.IGNORECASE)
-    if period_match:
-        period_start, period_end = period_match.groups()
-    return {
-        "period_start": period_start,
-        "period_end": period_end,
-        "lines": lines,
-        "raw_text": text,
-    }
+    parsed = parse_credit_card_statement(text)
+    parsed["raw_text"] = text
+    return parsed
 
 
 
@@ -810,17 +1200,53 @@ def list_statements() -> Any:
             with db_cursor() as cur:
                 cur.execute(
                     (
-                        "SELECT id, uploaded_at, status FROM invoice_documents "
-                        "WHERE invoice_type='company_card' ORDER BY uploaded_at DESC LIMIT 100"
+                        "SELECT id, invoice_type, uploaded_at, status, processing_status, metadata_json "
+                        "FROM invoice_documents "
+                        "WHERE invoice_type IN ('company_card', 'credit_card_invoice') "
+                        "ORDER BY uploaded_at DESC LIMIT 100"
                     )
                 )
-                for sid, uploaded_at, status in cur.fetchall():
+                for sid, invoice_type, uploaded_at, status, processing_status, metadata_raw in cur.fetchall():
+                    metadata: dict[str, Any] = {}
+                    if metadata_raw:
+                        try:
+                            metadata = json.loads(metadata_raw)
+                        except Exception:
+                            metadata = {}
+                    item_processing = processing_status or metadata.get("processing_status") or ""
+                    line_counts = metadata.get("line_counts")
+                    if isinstance(line_counts, dict):
+                        total_lines = int(line_counts.get("total") or 0)
+                        matched_lines = int(line_counts.get("matched") or 0)
+                        unmatched_lines = line_counts.get("unmatched")
+                        if unmatched_lines is None:
+                            unmatched_lines = max(total_lines - matched_lines, 0)
+                        line_counts = {
+                            "total": total_lines,
+                            "matched": matched_lines,
+                            "unmatched": unmatched_lines,
+                        }
+                    else:
+                        total_lines, matched_lines = _count_invoice_lines(str(sid))
+                        line_counts = {
+                            "total": total_lines,
+                            "matched": matched_lines,
+                            "unmatched": max(total_lines - matched_lines, 0),
+                        }
                     items.append(
                         {
                             "id": sid,
+                            "invoice_type": invoice_type,
                             "uploaded_at": str(uploaded_at),
                             "created_at": str(uploaded_at),
                             "status": status,
+                            "processing_status": item_processing,
+                            "period_start": metadata.get("period_start"),
+                            "period_end": metadata.get("period_end"),
+                            "page_count": metadata.get("page_count"),
+                            "source_file_id": metadata.get("source_file_id"),
+                            "submitted_by": metadata.get("submitted_by"),
+                            "line_counts": line_counts,
                         }
                     )
         except Exception:
