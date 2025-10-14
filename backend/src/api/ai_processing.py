@@ -466,23 +466,37 @@ def _load_match_context(file_id: str) -> Optional[Tuple[datetime, Optional[Decim
 
 def _potential_credit_matches(req: CreditCardMatchRequest) -> List[Tuple[Any, ...]]:
     with db_cursor() as cursor:
+        date_value: Optional[Any]
+        if isinstance(req.purchase_date, datetime):
+            date_value = req.purchase_date.date()
+        else:
+            date_value = req.purchase_date
+        amount_value = req.amount
+        amount_for_order = amount_value if amount_value is not None else Decimal("0")
         cursor.execute(
             """
-            SELECT i.id, i.merchant_name, i.amount_sek
-              FROM creditcard_invoice_items AS i
-         LEFT JOIN creditcard_receipt_matches AS m ON m.invoice_item_id = i.id
-             WHERE i.purchase_date = %s
+            SELECT il.id,
+                   COALESCE(il.merchant_name, il.description) AS candidate_name,
+                   il.amount
+              FROM invoice_lines AS il
+         LEFT JOIN creditcard_receipt_matches AS m ON m.invoice_item_id = il.id
+             WHERE (%s IS NULL OR DATE(il.transaction_date) = %s)
+               AND (%s IS NULL OR il.amount IS NULL OR ABS(il.amount - %s) <= 5)
+               AND (il.match_status IS NULL OR il.match_status IN ('pending','unmatched'))
                AND m.invoice_item_id IS NULL
-               AND (%s IS NULL OR i.amount_sek IS NULL OR ABS(i.amount_sek - %s) <= 5)
-          ORDER BY ABS(IFNULL(i.amount_sek, %s) - %s)
+               AND (%s IS NULL OR il.invoice_id = %s)
+          ORDER BY ABS(IFNULL(il.amount, %s) - %s)
              LIMIT 25
             """,
             (
-                req.purchase_date.date() if isinstance(req.purchase_date, datetime) else req.purchase_date,
-                req.amount,
-                req.amount,
-                req.amount,
-                req.amount,
+                date_value,
+                date_value,
+                amount_value,
+                amount_value,
+                req.invoice_id,
+                req.invoice_id,
+                amount_for_order,
+                amount_for_order,
             ),
         )
         return cursor.fetchall()
