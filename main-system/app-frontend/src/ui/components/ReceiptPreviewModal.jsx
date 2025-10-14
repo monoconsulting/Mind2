@@ -1,5 +1,5 @@
 import React from 'react';
-import { FiX, FiSave, FiEdit2, FiTrash2 } from 'react-icons/fi';
+import { FiX, FiSave, FiEdit2, FiTrash2, FiCreditCard } from 'react-icons/fi';
 import { api } from '../api';
 
 // Helper functions
@@ -576,16 +576,22 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
   const baseImageSrc = previewImage || `/ai/api/receipts/${receipt.id}/image?size=preview&rotate=portrait`;
 
   return (
-    <div className="modal-backdrop receipt-preview-modal" role="dialog" aria-label={`Förhandsgranskning kvitto ${receipt.id}`} onClick={handleBackdrop}>
+    <div className="modal-backdrop receipt-preview-modal" role="dialog" aria-label={`F├╢rhandsgranskning kvitto ${receipt.id}`} onClick={handleBackdrop}>
       <div className="modal modal-xxl" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>
-            <h3>Förhandsgranska kvitto</h3>
+            <h3>F├╢rhandsgranska kvitto</h3>
             <p className="card-subtitle">
-              {receiptData.merchant || receipt.merchant || 'Kvitto'} · {formatDate(receiptData.purchase_datetime)}
+              {receiptData.merchant || receipt.merchant || 'Kvitto'} ┬╖ {formatDate(receiptData.purchase_datetime)}
             </p>
+            {(receipt.credit_card_match || receiptData.credit_card_match) && (
+              <span className="status-badge status-passed mt-2 inline-flex items-center gap-2 text-xs">
+                <FiCreditCard className="text-sm" />
+                Kortmatchat
+              </span>
+            )}
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Stäng förhandsgranskning" disabled={saving}>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="St├ñng f├╢rhandsgranskning" disabled={saving}>
             <FiX />
           </button>
         </div>
@@ -602,17 +608,17 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
               <span>{error}</span>
             </div>
           ) : !payload ? (
-            <div className="receipt-modal-loading">Ingen data tillgänglig</div>
+            <div className="receipt-modal-loading">Ingen data tillg├ñnglig</div>
           ) : (
             <div className="receipt-modal-content">
               {/* Left Column - Company & Receipt Data */}
               <div className="receipt-modal-column receipt-modal-left">
                 {/* RP5: Grunddata (Box 1) - Company Information */}
                 <div className="receipt-modal-section">
-                  <h4>Grunddata (Företagsinformation)</h4>
+                  <h4>Grunddata (F├╢retagsinformation)</h4>
                   <div className="receipt-modal-grid">
                     {[
-                      { key: 'name', label: 'Företag', source: 'company' },
+                      { key: 'name', label: 'F├╢retag', source: 'company' },
                       { key: 'orgnr', label: 'Organisationsnummer', source: 'company' },
                       { key: 'address', label: 'Adress', source: 'company' },
                       { key: 'address2', label: 'Adress 2', source: 'company' },
@@ -649,7 +655,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                   <h4>Betalningstyp</h4>
                   <div className="receipt-modal-grid">
                     {[
-                      { key: 'purchase_datetime', label: 'Inköpsdatum' },
+                      { key: 'purchase_datetime', label: 'Ink├╢psdatum' },
                       { key: 'receipt_number', label: 'Kvittonnummer' },
                       { key: 'payment_type', label: 'Betalningstyp' },
                       { key: 'expense_type', label: 'Utgiftstyp' },
@@ -660,7 +666,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                       { key: 'credit_card_brand_short', label: 'Korttyp kort' },
                       { key: 'credit_card_payment_variant', label: 'Betalningsvariant' },
                       { key: 'credit_card_token', label: 'Korttyp token' },
-                      { key: 'credit_card_entering_mode', label: 'Inmatningsläge' },
+                      { key: 'credit_card_entering_mode', label: 'Inmatningsl├ñge' },
                     ].map((field) => (
                       <div key={field.key} className="receipt-modal-field">
                         <label className="field-label">{field.label}</label>
@@ -687,7 +693,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                   <div className="receipt-modal-grid">
                     {[
                       { key: 'currency', label: 'Valuta' },
-                      { key: 'exchange_rate', label: 'Växlingskurs' },
+                      { key: 'exchange_rate', label: 'V├ñxlingskurs' },
                       { key: 'gross_amount', label: 'Originalbelopp ink. moms', format: 'currency' },
                       { key: 'net_amount', label: 'Originalbelopp ex. moms', format: 'currency' },
                       { key: 'gross_amount_sek', label: 'Svenskt totalbelopp ink moms SEK', format: 'currency' },
@@ -715,11 +721,11 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                   </div>
                 </div>
 
-                {/* RP8: Övrigt (Box 4) - Other Data (Full Width) */}
+                {/* RP8: ├ûvrigt (Box 4) - Other Data (Full Width) */}
                 <div className="receipt-modal-section">
-                  <h4>Övrigt</h4>
+                  <h4>├ûvrigt</h4>
                   <div className="receipt-modal-field">
-                    <label className="field-label">Övrig data</label>
+                    <label className="field-label">├ûvrig data</label>
                     {editing ? (
                       <textarea
                         className="dm-input"
@@ -740,7 +746,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                 <div className="receipt-modal-section ocr-section">
                   <h4>OCR-text</h4>
                   <div className="ocr-content" style={{ whiteSpace: 'pre-wrap', maxHeight: '200px', overflowY: 'auto' }}>
-                    {receiptDraft.ocr_raw || 'Ingen OCR-data tillgänglig'}
+                    {receiptDraft.ocr_raw || 'Ingen OCR-data tillg├ñnglig'}
                   </div>
                 </div>
                 )}
@@ -846,7 +852,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                           <div className="proposal-group-new">
                             <div className="proposal-group-header-new">Kontering</div>
                             {itemProposals.length === 0 ? (
-                              <div className="proposal-empty-new">Inga konteringsförslag</div>
+                              <div className="proposal-empty-new">Inga konteringsf├╢rslag</div>
                             ) : (
                               itemProposals.map((proposal) => {
                                 const globalIndex = proposal._globalIndex;
@@ -954,7 +960,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
           )}
         </div>
         <div className="modal-footer receipt-modal-footer">
-          <div className="footer-hint">Hovra över fält eller bildmarkeringar för att se kopplingarna.</div>
+          <div className="footer-hint">Hovra ├╢ver f├ñlt eller bildmarkeringar f├╢r att se kopplingarna.</div>
           <div className="modal-footer-actions">
             {editing ? (
               <>
@@ -979,7 +985,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
               </>
             )}
             <button type="button" className="btn btn-text" onClick={onClose} disabled={saving}>
-              Stäng
+              St├ñng
             </button>
           </div>
         </div>

@@ -205,6 +205,7 @@ class CreditCardMatchRequest(BaseModel):
     file_id: str
     purchase_date: datetime
     amount: Decimal
+    invoice_id: Optional[str] = None
     merchant_name: Optional[str] = None
 
 
