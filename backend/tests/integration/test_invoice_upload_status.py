@@ -3,13 +3,22 @@ import json
 import sys
 import types
 import uuid
-from datetime import datetime
+from datetime import datetime, date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List
 
-from services.invoice_status import InvoiceLineMatchStatus
-from models.ai_processing import CreditCardMatchResponse
+from services.invoice_status import (
+    InvoiceLineMatchStatus,
+    InvoiceProcessingStatus,
+    InvoiceDocumentStatus,
+)
+from models.ai_processing import (
+    CreditCardMatchResponse,
+    CreditCardInvoiceExtractionResponse,
+    CreditCardInvoiceHeader,
+    CreditCardInvoiceLine,
+)
 
 import pytest
 from flask import Flask
@@ -59,8 +68,12 @@ class FakeDB:
         self.invoice_lines: List[Dict[str, Any]] = []
         self.creditcard_receipt_matches: List[Dict[str, Any]] = []
         self.companies: Dict[int, Dict[str, Any]] = {}
+        self.creditcard_invoices_main: Dict[int, Dict[str, Any]] = {}
+        self.creditcard_invoice_items: List[Dict[str, Any]] = []
         self._results: List[Any] = []
         self.rowcount: int = 0
+        self.lastrowid: int | None = None
+        self._next_creditcard_main_id: int = 1
 
     def cursor(self):
         return self
@@ -75,9 +88,11 @@ class FakeDB:
 
     # SQL handlers -------------------------------------------------------------
     def execute(self, sql: Any, params: Any | None = None) -> None:
-        statement = " ".join(str(sql).split()).lower()
+        sql_norm = " ".join(str(sql).split())
+        statement = sql_norm.lower()
         params = params or ()
         self.rowcount = 0
+        self.lastrowid = None
 
         if statement.startswith("insert into unified_files"):
             (
@@ -139,9 +154,57 @@ class FakeDB:
                             entry.get("ai_status"),
                             entry.get("other_data"),
                             entry.get("ocr_raw"),
-                        )
                     )
+                )
             self._results = rows
+        elif statement.startswith("insert into creditcard_invoices_main"):
+            columns_segment = sql_norm[sql_norm.index("(") + 1 : sql_norm.index(")")]
+            columns = [col.strip() for col in columns_segment.split(",")]
+            row = {column: value for column, value in zip(columns, params)}
+            main_id = self._next_creditcard_main_id
+            self._next_creditcard_main_id += 1
+            row["id"] = main_id
+            self.creditcard_invoices_main[main_id] = row
+            self.lastrowid = main_id
+            self.rowcount = 1
+        elif statement.startswith("update creditcard_invoices_main set"):
+            set_clause = sql_norm.split(" set ", 1)[1].rsplit(" where ", 1)[0]
+            assignments = [segment.strip() for segment in set_clause.split(",")]
+            target_id = params[-1]
+            try:
+                target_id_int = int(target_id)
+            except (TypeError, ValueError):
+                target_id_int = target_id
+            row = self.creditcard_invoices_main.get(target_id_int)
+            if row:
+                for assignment, value in zip(assignments, params[:-1]):
+                    column = assignment.split("=")[0].strip()
+                    row[column] = value
+                self.rowcount = 1
+        elif statement.startswith("delete from creditcard_invoice_items where main_id="):
+            (main_id,) = params
+            try:
+                main_id_int = int(main_id)
+            except (TypeError, ValueError):
+                main_id_int = main_id
+            self.creditcard_invoice_items = [
+                item for item in self.creditcard_invoice_items if item.get("main_id") != main_id_int
+            ]
+            self.rowcount = 1
+        elif statement.startswith("insert into creditcard_invoice_items"):
+            columns_segment = sql_norm[sql_norm.index("(") + 1 : sql_norm.index(")")]
+            columns = [col.strip() for col in columns_segment.split(",")]
+            row = {column: value for column, value in zip(columns, params)}
+            self.creditcard_invoice_items.append(row)
+            self.rowcount = 1
+        elif statement.startswith("select id from creditcard_invoices_main where invoice_number"):
+            invoice_number = params[0]
+            matches = [
+                (main_id,)
+                for main_id, row in self.creditcard_invoices_main.items()
+                if row.get("invoice_number") == invoice_number
+            ]
+            self._results = matches[:1]
         elif statement.startswith(
             "select id, transaction_date, amount, coalesce(merchant_name, description) as merchant_hint, match_status from invoice_lines"
         ):
@@ -431,21 +494,18 @@ class FakeDB:
             ]
             self.rowcount = before - len(self.invoice_lines)
         elif statement.startswith("insert into invoice_lines"):
-            invoice_id, transaction_date, amount, merchant_name, description = params
+            columns_segment = sql_norm[sql_norm.index("(") + 1 : sql_norm.index(")")]
+            columns = [col.strip() for col in columns_segment.split(",")]
+            row = {column: value for column, value in zip(columns, params)}
             line_id = len(self.invoice_lines) + 1
-            self.invoice_lines.append(
-                {
-                    "id": line_id,
-                    "invoice_id": invoice_id,
-                    "transaction_date": transaction_date,
-                    "amount": amount,
-                    "merchant_name": merchant_name,
-                    "description": description,
-                    "match_status": None,
-                    "match_score": None,
-                    "matched_file_id": None,
-                }
-            )
+            row.setdefault("invoice_id", row.get("invoice_id"))
+            row.setdefault("match_status", None)
+            row.setdefault("match_score", None)
+            row.setdefault("matched_file_id", None)
+            row.setdefault("extraction_confidence", row.get("extraction_confidence"))
+            row.setdefault("ocr_source_text", row.get("ocr_source_text"))
+            row["id"] = line_id
+            self.invoice_lines.append(row)
             self.rowcount = 1
         elif statement.startswith(
             "select uf.id, uf.purchase_datetime, uf.gross_amount, uf.credit_card_match, uf.created_at, c.name, existing.id as matched_line_id, crm.invoice_item_id"
@@ -643,6 +703,128 @@ def test_upload_invoice_pdf_creates_records(app: Flask, monkeypatch: pytest.Monk
     assert set(calls) == set(payload["page_ids"])
 
 
+def test_process_invoice_document_parses_credit_card_invoice(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeDB()
+    _patch_db(monkeypatch, fake)
+
+    from services import tasks as tasks_module
+
+    transitions: list[tuple[str, InvoiceProcessingStatus]] = []
+    document_transitions: list[tuple[str, InvoiceDocumentStatus]] = []
+
+    def record_processing(doc_id: str, target: InvoiceProcessingStatus, allowed: tuple[InvoiceProcessingStatus, ...]) -> bool:
+        transitions.append((doc_id, target))
+        return True
+
+    def record_document(doc_id: str, target: InvoiceDocumentStatus, allowed: tuple[InvoiceDocumentStatus, ...]) -> bool:
+        document_transitions.append((doc_id, target))
+        return True
+
+    monkeypatch.setattr(tasks_module, "transition_processing_status", record_processing)
+    monkeypatch.setattr(tasks_module, "transition_document_status", record_document)
+
+    class StubAIService:
+        def __init__(self) -> None:
+            self.prompt_provider_names = {"credit_card_invoice_parsing": "openai"}
+            self.prompt_model_names = {"credit_card_invoice_parsing": "gpt-test"}
+
+        def parse_credit_card_invoice(self, request):
+            header = CreditCardInvoiceHeader(
+                invoice_number="FC-2025-09",
+                period_start=date(2025, 9, 1),
+                period_end=date(2025, 9, 30),
+                card_holder="Test User",
+                card_number_masked="****1234",
+                currency="SEK",
+                invoice_total=Decimal("1000.00"),
+                amount_to_pay=Decimal("1000.00"),
+            )
+            line = CreditCardInvoiceLine(
+                line_no=1,
+                transaction_id="ABC123",
+                purchase_date=date(2025, 9, 10),
+                merchant_name="Test Merchant",
+                currency_original="SEK",
+                amount_original=Decimal("1000.00"),
+                amount_sek=Decimal("1000.00"),
+                gross_amount=Decimal("1000.00"),
+                confidence=0.95,
+                source_text="2025-09-10 Test Merchant 1000,00",
+            )
+            return CreditCardInvoiceExtractionResponse(
+                invoice_id=request.invoice_id,
+                header=header,
+                lines=[line],
+                overall_confidence=0.95,
+            )
+
+    monkeypatch.setattr(tasks_module, "AIService", lambda: StubAIService())
+
+    invoice_id = str(uuid.uuid4())
+    page_id = f"{invoice_id}-page-1"
+    fake.invoice_documents[invoice_id] = {
+        "invoice_type": "credit_card_invoice",
+        "status": "ocr_done",
+        "processing_status": "ocr_done",
+        "metadata_json": json.dumps(
+            {
+                "source_file_id": invoice_id,
+                "page_ids": [page_id],
+                "page_count": 1,
+                "processing_status": "ocr_done",
+            }
+        ),
+        "uploaded_at": datetime.now(),
+    }
+    fake.unified_files[invoice_id] = {
+        "id": invoice_id,
+        "file_type": "invoice",
+        "ai_status": "ocr_done",
+        "other_data": json.dumps({"page_number": 0}),
+        "ocr_raw": "Invoice header text",
+        "content_hash": "hash-parent",
+        "original_file_id": invoice_id,
+    }
+    fake.unified_files[page_id] = {
+        "id": page_id,
+        "file_type": "invoice_page",
+        "ai_status": "ocr_done",
+        "other_data": json.dumps({"page_number": 1}),
+        "ocr_raw": "2025-09-10 Test Merchant 1000,00",
+        "content_hash": "hash-page",
+        "original_file_id": invoice_id,
+    }
+
+    result = tasks_module.process_invoice_document(invoice_id)
+
+    assert result["ok"] is True
+    assert result["status"] == InvoiceProcessingStatus.READY_FOR_MATCHING.value
+    assert result["lines"] == 1
+    assert result["creditcard_main_id"] is not None
+    assert result["confidence"] == 0.95
+
+    assert len(fake.creditcard_invoices_main) == 1
+    main_id, header_row = next(iter(fake.creditcard_invoices_main.items()))
+    assert header_row["invoice_number"] == "FC-2025-09"
+    assert header_row.get("card_holder") == "Test User"
+    assert header_row.get("currency") == "SEK"
+
+    assert len(fake.creditcard_invoice_items) == 1
+    item_row = fake.creditcard_invoice_items[0]
+    assert item_row["main_id"] == main_id
+    assert item_row["merchant_name"] == "Test Merchant"
+    assert Decimal(str(item_row.get("amount_sek"))) == Decimal("1000.00")
+
+    metadata = json.loads(fake.invoice_documents[invoice_id]["metadata_json"])
+    assert metadata["creditcard_main_id"] == main_id
+    assert metadata["invoice_summary"]["card_holder"] == "Test User"
+    assert metadata["overall_confidence"] == 0.95
+    assert metadata["line_counts"]["total"] == 1
+
+    assert any(target == InvoiceProcessingStatus.READY_FOR_MATCHING for _, target in transitions)
+    assert any(target == InvoiceDocumentStatus.MATCHING for _, target in document_transitions)
+
+
 def test_invoice_status_and_lines_endpoint(app: Flask, monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeDB()
     _patch_db(monkeypatch, fake)
@@ -659,6 +841,9 @@ def test_invoice_status_and_lines_endpoint(app: Flask, monkeypatch: pytest.Monke
                 "page_count": 1,
                 "page_ids": [invoice_id],
                 "detected_kind": "image",
+                "overall_confidence": 0.82,
+                "invoice_summary": {"invoice_number": "FC-2025-09", "card_holder": "Tester"},
+                "creditcard_main_id": 77,
             }
         ),
     }
@@ -708,6 +893,9 @@ def test_invoice_status_and_lines_endpoint(app: Flask, monkeypatch: pytest.Monke
     assert status_payload["line_counts"]["total"] == 2
     assert status_payload["line_counts"]["matched"] == 1
     assert status_payload["ai_summary"].startswith("Sample OCR")
+    assert status_payload["overall_confidence"] == 0.82
+    assert status_payload["invoice_summary"]["invoice_number"] == "FC-2025-09"
+    assert status_payload["creditcard_main_id"] == 77
 
     lines_response = client.get(f"/reconciliation/firstcard/invoices/{invoice_id}/lines?limit=1")
     assert lines_response.status_code == 200
@@ -731,6 +919,9 @@ def test_list_statements_includes_processing_metadata(app: Flask, monkeypatch: p
         "period_end": "2025-09-30",
         "line_counts": {"total": 3, "matched": 1},
         "submitted_by": "tester",
+        "overall_confidence": 0.9,
+        "invoice_summary": {"invoice_number": "FC-2025-09", "card_holder": "Tester"},
+        "creditcard_main_id": 42,
     }
     fake.invoice_documents[invoice_id] = {
         "invoice_type": "credit_card_invoice",
@@ -754,6 +945,9 @@ def test_list_statements_includes_processing_metadata(app: Flask, monkeypatch: p
     assert item["line_counts"]["total"] == 3
     assert item["line_counts"]["matched"] == 1
     assert item["line_counts"]["unmatched"] == 2
+    assert item["overall_confidence"] == 0.9
+    assert item["invoice_summary"]["invoice_number"] == "FC-2025-09"
+    assert item["creditcard_main_id"] == 42
 
 
 def test_invoice_detail_includes_matched_receipt(app: Flask, monkeypatch: pytest.MonkeyPatch) -> None:
