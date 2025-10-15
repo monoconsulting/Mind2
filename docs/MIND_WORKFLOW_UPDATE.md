@@ -1,0 +1,252 @@
+# Mind - Workflow update
+
+## 1) Database: add two tables (plus two optional columns)
+
+**Create a new migration** (or run directly in MySQL/Adminer).
+
+### 1.1 `workflow_runs`
+
+```
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  workflow_key VARCHAR(40) NOT NULL COMMENT 'e.g., WF1_RECEIPT, WF2_PDF_SPLIT',
+  source_channel VARCHAR(40) NULL COMMENT 'upload_portal, ftp, api, …',
+  file_id VARCHAR(36) NULL COMMENT 'FK to unified_files.id (root file)',
+  content_hash VARCHAR(64) NULL,
+  current_stage VARCHAR(40) NOT NULL DEFAULT 'queued',
+  status ENUM('queued','running','succeeded','failed','canceled') NOT NULL DEFAULT 'queued',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_wfr_workflow (workflow_key),
+  KEY idx_wfr_file (file_id),
+  KEY idx_wfr_hash (content_hash)
+);
+```
+
+### 1.2 `workflow_stage_runs`
+
+```
+CREATE TABLE IF NOT EXISTS workflow_stage_runs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  workflow_run_id BIGINT NOT NULL,
+  stage_key VARCHAR(40) NOT NULL, -- 'pdf_to_png', 'ocr', 'ai1', 'merge_ocr', etc.
+  status ENUM('queued','running','succeeded','failed','skipped') NOT NULL DEFAULT 'queued',
+  started_at TIMESTAMP NULL,
+  finished_at TIMESTAMP NULL,
+  message TEXT NULL,
+  INDEX idx_wfs_workflow_run (workflow_run_id),
+  CONSTRAINT fk_wfs_wfr FOREIGN KEY (workflow_run_id)
+    REFERENCES workflow_runs(id) ON DELETE CASCADE
+);
+```
+
+### 1.3 (Optional but recommended) mirror fields on `unified_files`
+
+```
+ALTER TABLE unified_files
+  ADD COLUMN ingest_workflow_key VARCHAR(40) NULL AFTER file_type,
+  ADD COLUMN ingest_source_channel VARCHAR(40) NULL AFTER ingest_workflow_key;
+```
+
+### 1.4 Helpful read-only views
+
+```
+CREATE OR REPLACE VIEW v_workflow_overview AS
+SELECT
+  wfr.id AS workflow_run_id,
+  wfr.workflow_key,
+  wfr.source_channel,
+  wfr.file_id,
+  wfr.content_hash,
+  wfr.current_stage,
+  wfr.status,
+  wfr.created_at,
+  wfr.updated_at,
+  uf.original_filename,
+  uf.mime_type,
+  uf.file_suffix
+FROM workflow_runs wfr
+LEFT JOIN unified_files uf ON uf.id = wfr.file_id;
+
+CREATE OR REPLACE VIEW v_workflow_stages AS
+SELECT
+  wfr.id AS workflow_run_id,
+  wfr.workflow_key,
+  wfs.stage_key,
+  wfs.status,
+  wfs.started_at,
+  wfs.finished_at,
+  TIMESTAMPDIFF(SECOND, wfs.started_at, wfs.finished_at) AS duration_s,
+  LEFT(wfs.message, 200) AS message_snippet
+FROM workflow_stage_runs wfs
+JOIN workflow_runs wfr ON wfr.id = wfs.workflow_run_id
+ORDER BY wfr.id DESC, wfs.id ASC;
+```
+
+------
+
+## 2) Celery: define queues and routes
+
+### 2.1 Celery config (e.g., `celery_app.py`)
+
+```
+from celery import Celery
+from kombu import Queue
+
+app = Celery('mind')
+app.config_from_object('django.conf:settings', namespace='CELERY')  # or your settings loader
+
+app.conf.task_queues = (
+    Queue('wf1', routing_key='wf1.#'),
+    Queue('wf2', routing_key='wf2.#'),
+)
+
+app.conf.task_routes = {
+    'wf1.*': {'queue': 'wf1', 'routing_key': 'wf1.default'},
+    'wf2.*': {'queue': 'wf2', 'routing_key': 'wf2.default'},
+}
+```
+
+> Naming rule: **All** WF1 tasks must be named `wf1.*` (e.g., `wf1.pdf_to_png`), and WF2 tasks `wf2.*`. This alone prevents cross-execution.
+
+### 2.2 Start workers
+
+```
+celery -A celery_app worker -Q wf1 -n wf1@%h
+celery -A celery_app worker -Q wf2 -n wf2@%h
+```
+
+------
+
+## 3) A tiny dispatcher that builds the right chain
+
+### 3.1 Minimal DB helpers (pseudo)
+
+```
+def get_workflow_run(db, workflow_run_id):
+    # return dict: {id, workflow_key, status, current_stage, file_id, content_hash, ...}
+    ...
+
+def mark_stage(db, workflow_run_id, stage_key, status, message=None, start=False, end=False):
+    # insert/update workflow_stage_runs and bump workflow_runs.current_stage/status
+    ...
+```
+
+### 3.2 The dispatcher
+
+```
+from celery import chain
+from app.celery_app import app
+from app import db
+
+def dispatch_workflow(workflow_run_id: int):
+    wfr = get_workflow_run(db, workflow_run_id)
+    if wfr['workflow_key'] == 'WF1_RECEIPT':
+        chain(
+            wf1_pdf_to_png.s(workflow_run_id) |
+            wf1_ocr.s() |
+            wf1_store_db.s() |
+            wf1_ai_chain.s() |
+            wf1_finalize.s()
+        ).apply_async()
+    elif wfr['workflow_key'] == 'WF2_PDF_SPLIT':
+        chain(
+            wf2_pdf_to_png.s(workflow_run_id) |
+            wf2_split_pages.s() |
+            wf2_ocr_each_png.s() |
+            wf2_merge_ocr_text.s() |
+            wf2_store_db.s() |
+            wf2_ai_analysis.s() |
+            wf2_match_existing_receipts.s() |
+            wf2_finalize.s()
+        ).apply_async()
+    else:
+        raise ValueError(f"Unknown workflow_key: {wfr['workflow_key']}")
+```
+
+> Each task **must** accept `workflow_run_id` as first arg and return the same (plus any needed payload) to the next task.
+
+------
+
+## 4) One-line guard in every task (critical)
+
+### 4.1 Guard helper
+
+```
+def ensure_workflow(db, workflow_run_id, expected_prefix: str):
+    wfr = get_workflow_run(db, workflow_run_id)
+    if not wfr['workflow_key'].startswith(expected_prefix):
+        # soft-fail with a clear log + stage mark
+        mark_stage(db, workflow_run_id, stage_key='guard', status='skipped',
+                   message=f"Task belongs to {expected_prefix} but workflow_key is {wfr['workflow_key']}")
+        raise RuntimeError("Workflow/task mismatch")
+    return wfr
+```
+
+### 4.2 Use guard at the top of each task
+
+```
+@app.task(name='wf2.pdf_to_png')
+def wf2_pdf_to_png(workflow_run_id: int, *args, **kwargs):
+    ensure_workflow(db, workflow_run_id, expected_prefix='WF2_')
+    mark_stage(db, workflow_run_id, 'pdf_to_png', 'running', start=True)
+
+    # ... do the work ...
+
+    mark_stage(db, workflow_run_id, 'pdf_to_png', 'succeeded', end=True)
+    return workflow_run_id  # keep passing it forward
+```
+
+> Do this for *all* `wf1.*` and `wf2.*` tasks.
+>  Effect: even if something is misrouted, it will refuse to run and leave an audit trail.
+
+------
+
+## 5) Upload endpoints: create a workflow_run first
+
+### 5.1 Intake (simplified)
+
+- When a file arrives, **before** enqueuing any tasks:
+  1. Create `unified_files` row as you already do (with `content_hash`).
+  2. Insert a row in `workflow_runs`:
+     - `workflow_key`:
+       - Classic flow: `WF1_RECEIPT`
+       - Portal PDF split: `WF2_PDF_SPLIT`
+     - `source_channel`: `upload_portal`, `ftp`, or `api`
+     - `file_id`: the `unified_files.id`
+     - `content_hash`: the same hash as the file
+  3. (Optional) Mirror `ingest_workflow_key` and `ingest_source_channel` into `unified_files`.
+  4. Call `dispatch_workflow(workflow_run_id)`.
+
+**Example SQL (insert):**
+
+```
+INSERT INTO workflow_runs (workflow_key, source_channel, file_id, content_hash, current_stage, status)
+VALUES ('WF2_PDF_SPLIT', 'upload_portal', '<unified_files.id>', '<hash>', 'queued', 'queued');
+```
+
+------
+
+## 6) Lightweight idempotence
+
+- If desired, add a UNIQUE index to `workflow_runs(workflow_key, content_hash)` to avoid duplicate runs for the same workflow and file content:
+
+```
+ALTER TABLE workflow_runs
+  ADD UNIQUE KEY uniq_wfkey_contenthash (workflow_key, content_hash);
+```
+
+------
+
+## 7) Pre-checks (nice and tiny)
+
+- At the first task per workflow:
+  - **WF2_PDF_SPLIT**: verify `mime_type='application/pdf'`. If not, fail the stage with a helpful message and stop.
+  - **WF1_RECEIPT**: allow images or pdf; if pdf, proceed with pdf→png.
+
+------
+
+## 8) Logging & observability (minimal)
+
+- On each task transition, call `mark_stage(...)`.
+- Keep messages short and actionable (e.g., “OCR count=7 pages; 0 failed”).

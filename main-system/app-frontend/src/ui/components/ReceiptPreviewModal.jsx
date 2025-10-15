@@ -78,6 +78,85 @@ async function attachLineItemsFallback(payload, receiptId) {
   }
 }
 
+const MOJIBAKE_PATTERN = /[ÃÂâ][\u0080-\u00FF]/;
+let cachedUtf8Decoder = null;
+
+function ensureUtf8Decoder() {
+  if (cachedUtf8Decoder) {
+    return cachedUtf8Decoder;
+  }
+  if (typeof TextDecoder === 'function') {
+    try {
+      cachedUtf8Decoder = new TextDecoder('utf-8', { fatal: false });
+    } catch (err) {
+      cachedUtf8Decoder = null;
+    }
+  }
+  return cachedUtf8Decoder;
+}
+
+function fixMojibakeString(value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return value;
+  }
+  if (!MOJIBAKE_PATTERN.test(value)) {
+    return value;
+  }
+  try {
+    const decoder = ensureUtf8Decoder();
+    if (decoder) {
+      const bytes = new Uint8Array(value.length);
+      for (let index = 0; index < value.length; index += 1) {
+        bytes[index] = value.charCodeAt(index) & 0xff;
+      }
+      const decoded = decoder.decode(bytes);
+      if (decoded && decoded !== value) {
+        return decoded;
+      }
+    }
+  } catch (err) {
+    // Swallow and fall back
+  }
+  if (typeof Buffer !== 'undefined') {
+    try {
+      const decoded = Buffer.from(value, 'latin1').toString('utf8');
+      if (decoded && decoded !== value) {
+        return decoded;
+      }
+    } catch (err) {
+      // Ignore buffer fallback failure
+    }
+  }
+  if (typeof decodeURIComponent === 'function' && typeof escape === 'function') {
+    try {
+      const decoded = decodeURIComponent(escape(value));
+      if (decoded && decoded !== value) {
+        return decoded;
+      }
+    } catch (err) {
+      // ignore
+    }
+  }
+  return value;
+}
+
+function fixEncodingDeep(value) {
+  if (typeof value === 'string') {
+    return fixMojibakeString(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => fixEncodingDeep(entry));
+  }
+  if (value && typeof value === 'object') {
+    const next = {};
+    for (const [key, nested] of Object.entries(value)) {
+      next[key] = fixEncodingDeep(nested);
+    }
+    return next;
+  }
+  return value;
+}
+
 function toNullableNumber(value) {
   if (value === '' || value === null || value === undefined) {
     return null;
@@ -90,7 +169,7 @@ function toOptionalString(value) {
   if (value === null || value === undefined) {
     return '';
   }
-  return String(value);
+  return fixMojibakeString(String(value));
 }
 
 function normaliseItems(payload) {
@@ -396,6 +475,10 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
           throw new Error(`HTTP ${res.status}`);
         }
         let rawPayload = await res.json();
+
+        // KRITISKT: Applicera encoding-fix på ALL data från API INNAN vidare behandling
+        rawPayload = fixEncodingDeep(rawPayload);
+
         rawPayload = await attachLineItemsFallback(rawPayload, receipt.id);
         if (cancelled) {
           return;
@@ -523,6 +606,10 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
       }
       const json = await res.json();
       let refreshedPayload = json.data || {};
+
+      // KRITISKT: Applicera encoding-fix på uppdaterad data
+      refreshedPayload = fixEncodingDeep(refreshedPayload);
+
       refreshedPayload = await attachLineItemsFallback(refreshedPayload, receipt.id);
       const decorated = decorateModalPayload(refreshedPayload);
       const nextPayload = {
@@ -576,13 +663,13 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
   const baseImageSrc = previewImage || `/ai/api/receipts/${receipt.id}/image?size=preview&rotate=portrait`;
 
   return (
-    <div className="modal-backdrop receipt-preview-modal" role="dialog" aria-label={`F├╢rhandsgranskning kvitto ${receipt.id}`} onClick={handleBackdrop}>
+    <div className="modal-backdrop receipt-preview-modal" role="dialog" aria-label={`Förhandsgranskning kvitto ${receipt.id}`} onClick={handleBackdrop}>
       <div className="modal modal-xxl" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>
-            <h3>F├╢rhandsgranska kvitto</h3>
+            <h3>Förhandsgranska kvitto</h3>
             <p className="card-subtitle">
-              {receiptData.merchant || receipt.merchant || 'Kvitto'} ┬╖ {formatDate(receiptData.purchase_datetime)}
+              {receiptData.merchant || receipt.merchant || 'Kvitto'} • {formatDate(receiptData.purchase_datetime)}
             </p>
             {(receipt.credit_card_match || receiptData.credit_card_match) && (
               <span className="status-badge status-passed mt-2 inline-flex items-center gap-2 text-xs">
@@ -591,7 +678,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
               </span>
             )}
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="St├ñng f├╢rhandsgranskning" disabled={saving}>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Stäng förhandsgranskning" disabled={saving}>
             <FiX />
           </button>
         </div>
@@ -608,17 +695,17 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
               <span>{error}</span>
             </div>
           ) : !payload ? (
-            <div className="receipt-modal-loading">Ingen data tillg├ñnglig</div>
+            <div className="receipt-modal-loading">Ingen data tillgänglig</div>
           ) : (
             <div className="receipt-modal-content">
               {/* Left Column - Company & Receipt Data */}
               <div className="receipt-modal-column receipt-modal-left">
                 {/* RP5: Grunddata (Box 1) - Company Information */}
                 <div className="receipt-modal-section">
-                  <h4>Grunddata (F├╢retagsinformation)</h4>
+                  <h4>Grunddata (Företagsinformation)</h4>
                   <div className="receipt-modal-grid">
                     {[
-                      { key: 'name', label: 'F├╢retag', source: 'company' },
+                      { key: 'name', label: 'Företag', source: 'company' },
                       { key: 'orgnr', label: 'Organisationsnummer', source: 'company' },
                       { key: 'address', label: 'Adress', source: 'company' },
                       { key: 'address2', label: 'Adress 2', source: 'company' },
@@ -655,7 +742,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                   <h4>Betalningstyp</h4>
                   <div className="receipt-modal-grid">
                     {[
-                      { key: 'purchase_datetime', label: 'Ink├╢psdatum' },
+                      { key: 'purchase_datetime', label: 'Inköpsdatum' },
                       { key: 'receipt_number', label: 'Kvittonnummer' },
                       { key: 'payment_type', label: 'Betalningstyp' },
                       { key: 'expense_type', label: 'Utgiftstyp' },
@@ -666,7 +753,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                       { key: 'credit_card_brand_short', label: 'Korttyp kort' },
                       { key: 'credit_card_payment_variant', label: 'Betalningsvariant' },
                       { key: 'credit_card_token', label: 'Korttyp token' },
-                      { key: 'credit_card_entering_mode', label: 'Inmatningsl├ñge' },
+                      { key: 'credit_card_entering_mode', label: 'Inmatningsläge' },
                     ].map((field) => (
                       <div key={field.key} className="receipt-modal-field">
                         <label className="field-label">{field.label}</label>
@@ -693,7 +780,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                   <div className="receipt-modal-grid">
                     {[
                       { key: 'currency', label: 'Valuta' },
-                      { key: 'exchange_rate', label: 'V├ñxlingskurs' },
+                      { key: 'exchange_rate', label: 'Växlingskurs' },
                       { key: 'gross_amount', label: 'Originalbelopp ink. moms', format: 'currency' },
                       { key: 'net_amount', label: 'Originalbelopp ex. moms', format: 'currency' },
                       { key: 'gross_amount_sek', label: 'Svenskt totalbelopp ink moms SEK', format: 'currency' },
@@ -723,9 +810,9 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
 
                 {/* RP8: ├ûvrigt (Box 4) - Other Data (Full Width) */}
                 <div className="receipt-modal-section">
-                  <h4>├ûvrigt</h4>
+                  <h4>Övrigt</h4>
                   <div className="receipt-modal-field">
-                    <label className="field-label">├ûvrig data</label>
+                    <label className="field-label">Övrig data</label>
                     {editing ? (
                       <textarea
                         className="dm-input"
@@ -746,7 +833,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                 <div className="receipt-modal-section ocr-section">
                   <h4>OCR-text</h4>
                   <div className="ocr-content" style={{ whiteSpace: 'pre-wrap', maxHeight: '200px', overflowY: 'auto' }}>
-                    {receiptDraft.ocr_raw || 'Ingen OCR-data tillg├ñnglig'}
+                    {receiptDraft.ocr_raw || 'Ingen OCR-data tillgänglig'}
                   </div>
                 </div>
                 )}
@@ -852,7 +939,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                           <div className="proposal-group-new">
                             <div className="proposal-group-header-new">Kontering</div>
                             {itemProposals.length === 0 ? (
-                              <div className="proposal-empty-new">Inga konteringsf├╢rslag</div>
+                              <div className="proposal-empty-new">Inga konteringsförslag</div>
                             ) : (
                               itemProposals.map((proposal) => {
                                 const globalIndex = proposal._globalIndex;
@@ -960,7 +1047,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
           )}
         </div>
         <div className="modal-footer receipt-modal-footer">
-          <div className="footer-hint">Hovra ├╢ver f├ñlt eller bildmarkeringar f├╢r att se kopplingarna.</div>
+          <div className="footer-hint">Hovra över fält eller bildmarkeringar för att se kopplingarna.</div>
           <div className="modal-footer-actions">
             {editing ? (
               <>
@@ -985,7 +1072,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
               </>
             )}
             <button type="button" className="btn btn-text" onClick={onClose} disabled={saving}>
-              St├ñng
+              Stäng
             </button>
           </div>
         </div>

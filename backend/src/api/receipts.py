@@ -1582,11 +1582,14 @@ def get_workflow_status(rid: str) -> Any:
         "filename": None,
         "pdf_convert": "N/A",
         "ocr": {"status": "pending", "data": None},
+        "ocr_merge": {"status": "pending", "data": None},
+        "ocr_raw_updated": {"status": "pending", "data": None},
         "ai1": {"status": "pending", "data": None},
         "ai2": {"status": "pending", "data": None},
         "ai3": {"status": "pending", "data": None},
         "ai4": {"status": "pending", "data": None},
         "ai5": {"status": "pending", "data": None},
+        "ai6": {"status": "pending", "data": None},
         "match": {"status": "pending", "data": None},
     }
 
@@ -1693,10 +1696,20 @@ def get_workflow_status(rid: str) -> Any:
                     stage_key = None
                     if job_type == "ocr":
                         stage_key = "ocr"
+                    elif job_type == "ocr_merge":
+                        stage_key = "ocr_merge"
+                    elif job_type == "ocr_raw_update":
+                        stage_key = "ocr_raw_updated"
                     elif ai_stage_name:
                         # Map AI stage names to workflow phases
                         stage_lower = ai_stage_name.lower()
-                        if "ai1" in stage_lower or "document" in stage_lower and "classif" in stage_lower:
+                        if "ocr-merge" in stage_lower or "ocr_merge" in stage_lower:
+                            stage_key = "ocr_merge"
+                        elif "ocr_raw" in stage_lower or "ocr-raw" in stage_lower:
+                            stage_key = "ocr_raw_updated"
+                        elif "ai6" in stage_lower or "creditcardinvoiceparsing" in stage_lower:
+                            stage_key = "ai6"
+                        elif "ai1" in stage_lower or "document" in stage_lower and "classif" in stage_lower:
                             stage_key = "ai1"
                         elif "ai2" in stage_lower or "expense" in stage_lower and "classif" in stage_lower:
                             stage_key = "ai2"
@@ -1704,7 +1717,7 @@ def get_workflow_status(rid: str) -> Any:
                             stage_key = "ai3"
                         elif "ai4" in stage_lower or "accounting" in stage_lower:
                             stage_key = "ai4"
-                        elif "ai5" in stage_lower or ("credit" in stage_lower and "card" in stage_lower):
+                        elif "ai5" in stage_lower or ("credit" in stage_lower and "card" in stage_lower and "match" in stage_lower):
                             stage_key = "ai5"
                         elif "match" in stage_lower:
                             stage_key = "match"

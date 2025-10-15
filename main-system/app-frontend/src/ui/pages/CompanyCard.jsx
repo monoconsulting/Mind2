@@ -14,6 +14,85 @@ import {
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal'
 import { api } from '../api'
 
+const MOJIBAKE_PATTERN = /[ÃÂâ][\u0080-\u00FF]/;
+let cachedUtf8Decoder = null;
+
+function ensureUtf8Decoder() {
+  if (cachedUtf8Decoder) {
+    return cachedUtf8Decoder;
+  }
+  if (typeof TextDecoder === 'function') {
+    try {
+      cachedUtf8Decoder = new TextDecoder('utf-8', { fatal: false });
+    } catch (err) {
+      cachedUtf8Decoder = null;
+    }
+  }
+  return cachedUtf8Decoder;
+}
+
+function fixMojibakeString(value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return value;
+  }
+  if (!MOJIBAKE_PATTERN.test(value)) {
+    return value;
+  }
+  try {
+    const decoder = ensureUtf8Decoder();
+    if (decoder) {
+      const bytes = new Uint8Array(value.length);
+      for (let index = 0; index < value.length; index += 1) {
+        bytes[index] = value.charCodeAt(index) & 0xff;
+      }
+      const decoded = decoder.decode(bytes);
+      if (decoded && decoded !== value) {
+        return decoded;
+      }
+    }
+  } catch (err) {
+    // Swallow and fall back
+  }
+  if (typeof Buffer !== 'undefined') {
+    try {
+      const decoded = Buffer.from(value, 'latin1').toString('utf8');
+      if (decoded && decoded !== value) {
+        return decoded;
+      }
+    } catch (err) {
+      // Ignore buffer fallback failure
+    }
+  }
+  if (typeof decodeURIComponent === 'function' && typeof escape === 'function') {
+    try {
+      const decoded = decodeURIComponent(escape(value));
+      if (decoded && decoded !== value) {
+        return decoded;
+      }
+    } catch (err) {
+      // ignore
+    }
+  }
+  return value;
+}
+
+function fixEncodingDeep(value) {
+  if (typeof value === 'string') {
+    return fixMojibakeString(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => fixEncodingDeep(entry));
+  }
+  if (value && typeof value === 'object') {
+    const next = {};
+    for (const [key, nested] of Object.entries(value)) {
+      next[key] = fixEncodingDeep(nested);
+    }
+    return next;
+  }
+  return value;
+}
+
 const DOCUMENT_STATUS_MAP = [
   { ids: ['matched', 'matchad', 'completed', 'done', 'success'], label: 'Matchat', tone: 'success' },
   { ids: ['processing', 'matching', 'running', 'ready_for_matching'], label: 'Bearbetas', tone: 'processing' },
@@ -78,6 +157,27 @@ function formatDate(value, withTime = true) {
   }
 }
 
+function describeProcessingStatus(status) {
+  const normalized = normalizeStatus(status)
+  switch (normalized) {
+    case 'ocr_pending':
+      return { label: 'OCR pågår', tone: 'processing' }
+    case 'ocr_done':
+      return { label: 'OCR klar', tone: 'processing' }
+    case 'ai_processing':
+      return { label: 'AI6 bearbetar', tone: 'processing' }
+    case 'ready_for_matching':
+      return { label: 'Redo för matchning', tone: 'success' }
+    case 'matching_completed':
+      return { label: 'Matchning klar', tone: 'success' }
+    case 'failed':
+      return { label: 'Misslyckades', tone: 'failed' }
+    default:
+      return { label: status || 'Okänd', tone: 'processing' }
+  }
+}
+
+
 const currencyFormatter = new Intl.NumberFormat('sv-SE', {
   style: 'currency',
   currency: 'SEK',
@@ -86,13 +186,32 @@ const currencyFormatter = new Intl.NumberFormat('sv-SE', {
 
 function formatAmount(value) {
   if (value === null || value === undefined) {
-    return '–'
+    return '-'
   }
   const num = Number(value)
   if (!Number.isFinite(num)) {
     return String(value)
   }
   return currencyFormatter.format(num)
+}
+
+function formatCurrency(value, currency = 'SEK') {
+  if (value === null || value === undefined) {
+    return '-'
+  }
+  const num = Number(value)
+  if (!Number.isFinite(num)) {
+    return String(value)
+  }
+  try {
+    return new Intl.NumberFormat('sv-SE', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+    }).format(num)
+  } catch (error) {
+    return currencyFormatter.format(num)
+  }
 }
 
 const initialCandidatesState = {
@@ -165,7 +284,8 @@ export default function CompanyCard() {
       if (!res.ok) {
         throw new Error(`Status ${res.status}`)
       }
-      const data = await res.json()
+      let data = await res.json()
+      data = fixEncodingDeep(data)
       const nextItems = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : []
       setItems(nextItems)
       if (!nextItems.length) {
@@ -210,7 +330,8 @@ export default function CompanyCard() {
       if (!res.ok) {
         throw new Error(`Status ${res.status}`)
       }
-      const data = await res.json()
+      let data = await res.json()
+      data = fixEncodingDeep(data)
       const invoice = data?.invoice ?? null
       const lines = Array.isArray(data?.lines) ? data.lines : []
       setSelectedDocument(invoice)
@@ -345,6 +466,35 @@ export default function CompanyCard() {
     }
   }, [loadStatements])
 
+  const detailSummaryCards = React.useMemo(() => {
+    if (!selectedDocument) {
+      return []
+    }
+    const summary = selectedDocument.invoice_summary ?? {}
+    const currency = summary.currency || 'SEK'
+    const amountToPay = summary.amount_to_pay ?? summary.invoice_total
+    const rows = [
+      { label: 'Fakturanummer', value: summary.invoice_number || 'Okänt' },
+      { label: 'Kortinnehavare', value: summary.card_holder || 'Okänd' },
+      { label: 'Kort', value: summary.card_number_masked || 'Okänt' },
+      {
+        label: 'Belopp att betala',
+        value: amountToPay != null ? formatCurrency(amountToPay, currency) : '–',
+      },
+      {
+        label: 'AI-konfidens',
+        value:
+          selectedDocument.overall_confidence != null
+            ? `${Math.round(Number(selectedDocument.overall_confidence) * 100)}%`
+            : '–',
+      },
+    ]
+    if (selectedDocument.creditcard_main_id) {
+      rows.push({ label: 'Invoice-ID', value: selectedDocument.creditcard_main_id })
+    }
+    return rows
+  }, [selectedDocument])
+
   const summary = React.useMemo(() => {
     const base = { matched: 0, pending: 0, failed: 0 }
     for (const item of items) {
@@ -377,49 +527,6 @@ export default function CompanyCard() {
     )
   }
 
-  const renderStatementList = () => (
-    <div className="space-y-3">
-      {items.map((statement) => {
-        const statusDetails = describeDocumentStatus(statement.status)
-        const badgeClass = toneClass[statusDetails.tone] ?? 'status-processing'
-        const lineSummary = statement.line_counts ?? {}
-        const isSelected = statement.id === selectedDocumentId
-        return (
-          <button
-            type="button"
-            key={statement.id}
-            onClick={() => setSelectedDocumentId(statement.id)}
-            className={`w-full text-left rounded-lg border transition-all duration-150 ${
-              isSelected ? 'border-red-500 bg-red-600 bg-opacity-10 shadow-lg' : 'border-gray-700 bg-gray-900 hover:border-red-500'
-            }`}
-          >
-            <div className="p-4 flex items-start justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2 text-sm font-semibold text-gray-100">
-                  <FiChevronRight className={`transition-transform ${isSelected ? 'rotate-90 text-red-400' : 'text-gray-500'}`} />
-                  {statement.period_start && statement.period_end
-                    ? `${formatDate(statement.period_start, false)} – ${formatDate(statement.period_end, false)}`
-                    : `Utdrag ${statement.id}`}
-                </div>
-                <div className="mt-2 text-xs text-gray-400">
-                  Uppladdad {formatDate(statement.created_at || statement.uploaded_at)}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-gray-400 uppercase tracking-wide">
-                  <span>Total: {lineSummary.total ?? '–'}</span>
-                  <span>Matchade: {lineSummary.matched ?? '–'}</span>
-                  <span>Obearbetade: {lineSummary.unmatched ?? '–'}</span>
-                </div>
-              </div>
-              <span className={`status-badge ${badgeClass}`}>
-                {statusDetails.label}
-              </span>
-            </div>
-          </button>
-        )
-      })}
-    </div>
-  )
-
   const renderLineTable = () => {
     if (!selectedDocumentId) {
       return (
@@ -433,7 +540,7 @@ export default function CompanyCard() {
     if (detailLoading) {
       return (
         <div className="flex items-center justify-center gap-3 py-12 text-gray-400">
-          <div className="loading-spinner"></div>
+          <div className="loading-spinner" />
           <span>Laddar detaljer...</span>
         </div>
       )
@@ -466,48 +573,60 @@ export default function CompanyCard() {
               const statusDetails = describeLineStatus(line.match_status)
               const badgeClass = toneClass[statusDetails.tone] ?? 'status-processing'
               const matchedReceipt = line.matched_receipt
+              const isAssigning = assigningLineId === line.id
+
               return (
                 <tr key={line.id} className="border-t border-gray-700">
                   <td className="px-4 py-3 text-gray-200 whitespace-nowrap">{formatDate(line.transaction_date, false)}</td>
-                  <td className="px-4 py-3 text-gray-200">
-                    <div className="font-medium text-gray-100">{line.description || '—'}</div>
+                  <td className="px-4 py-3 text-gray-100">
+                    <div className="font-medium">{line.description || '–'}</div>
                     <div className="text-xs text-gray-400">Rad-ID: {line.id}</div>
                   </td>
                   <td className="px-4 py-3 text-gray-100 whitespace-nowrap">{formatAmount(line.amount)}</td>
                   <td className="px-4 py-3 text-gray-200">
-                    <span className={`status-badge ${badgeClass}`}>
-                      {statusDetails.label}
-                    </span>
+                    <span className={`status-badge ${badgeClass}`}>{statusDetails.label}</span>
                   </td>
                   <td className="px-4 py-3 text-gray-200">
                     {matchedReceipt ? (
                       <div className="flex flex-col gap-1">
                         <span className="font-medium text-gray-100">{matchedReceipt.vendor_name || 'Okänd leverantör'}</span>
-                        <span className="text-xs text-gray-400">{formatAmount(matchedReceipt.gross_amount)}</span>
-                      </div>
-                    ) : (
-                      <span className="text-sm text-gray-500">Ej matchat</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      {matchedReceipt && (
+                        <span className="text-xs text-gray-400">{formatDate(matchedReceipt.purchase_datetime, false)} · {formatAmount(matchedReceipt.gross_amount)}</span>
                         <button
                           type="button"
-                          className="btn btn-secondary btn-xs"
+                          className="btn btn-text btn-xxs self-start"
                           onClick={() => openReceiptPreview(matchedReceipt.file_id, { credit_card_match: matchedReceipt.credit_card_match })}
                         >
-                          <FiEye className="mr-2" />
-                          Visa kvitto
+                          Förhandsgranska
                         </button>
-                      )}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-gray-400">Ingen</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center justify-end gap-2">
                       <button
                         type="button"
-                        className="btn btn-primary btn-xs"
-                        onClick={() => onOpenCandidates(line)}
+                        className="btn btn-secondary btn-sm"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          onOpenCandidates(line)
+                        }}
                       >
-                        <FiLink className="mr-2" />
-                        Visa kandidater
+                        {candidateState.open && candidateState.line?.id === line.id ? 'Stäng kandidater' : 'Visa kandidater'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        disabled={isAssigning || !matchedReceipt}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          if (matchedReceipt) {
+                            openReceiptPreview(matchedReceipt.file_id, { credit_card_match: matchedReceipt.credit_card_match })
+                          }
+                        }}
+                      >
+                        Förhandsgranska
                       </button>
                     </div>
                   </td>
@@ -520,104 +639,223 @@ export default function CompanyCard() {
     )
   }
 
-  const candidatesContent = candidateState.open && (
-    <div className="fixed inset-0 z-40 flex">
-      <div
-        className="flex-1 bg-black bg-opacity-50"
-        onClick={candidateState.loading ? undefined : closeCandidates}
-      />
-      <div className="w-full sm:w-[420px] h-full bg-gray-900 border-l border-gray-700 shadow-2xl overflow-y-auto">
-        <div className="flex items-start justify-between p-5 border-b border-gray-800">
+  const candidatesContent = candidateState.open && candidateState.line ? (
+    <div className="modal-backdrop" onClick={closeCandidates}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
           <div>
-            <div className="text-lg font-semibold text-white">Kandidater</div>
-            {candidateState.line && (
-              <div className="text-xs text-gray-400 mt-1">
-                Rad {candidateState.line.id} &middot; {formatAmount(candidateState.line.amount)} &middot; {candidateState.line.description}
-              </div>
-            )}
+            <h3>Matchningskandidater</h3>
+            <p className="text-sm text-gray-400 mt-1">
+              Rad {candidateState.line.id}: {candidateState.line.description} - {formatAmount(candidateState.line.amount)}
+            </p>
           </div>
-          <button
-            type="button"
-            className="btn btn-ghost btn-xs text-gray-400 hover:text-white"
-            onClick={closeCandidates}
-          >
-            <FiX className="text-lg" />
+          <button type="button" className="icon-button" onClick={closeCandidates} aria-label="Stäng">
+            <FiX />
           </button>
         </div>
-
-        <div className="p-5 space-y-4">
+        <div className="modal-body">
+          {candidateFeedback && (
+            <div className={`alert ${candidateFeedback.type === 'success' ? 'alert-success' : 'alert-error'} mb-4`}>
+              {candidateFeedback.text}
+            </div>
+          )}
           {candidateState.loading ? (
-            <div className="flex items-center justify-center gap-3 py-10 text-gray-400">
-              <div className="loading-spinner"></div>
-              <span>Söker efter kandidater...</span>
+            <div className="flex items-center justify-center gap-3 py-8">
+              <div className="loading-spinner" />
+              <span>Laddar kandidater...</span>
             </div>
           ) : candidateState.candidates.length === 0 ? (
-            <div className="text-sm text-gray-400">
-              Inga kandidater hittades ännu. Kontrollera att kvittot är registrerat eller försök igen efter matchning.
+            <div className="text-center py-8 text-gray-400">
+              <FiFileText className="text-3xl mx-auto mb-2" />
+              <p>Inga matchningskandidater hittades för denna rad.</p>
             </div>
           ) : (
             <div className="space-y-3">
-              {candidateState.candidates.map((candidate) => {
-                const isCurrentMatch = candidate.is_current_match
-                return (
-                  <div
-                    key={candidate.file_id}
-                    className={`rounded-lg border p-4 transition-all ${
-                      isCurrentMatch ? 'border-green-500 bg-green-600 bg-opacity-5' : 'border-gray-700 bg-gray-800'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-semibold text-gray-100">
-                          {candidate.vendor_name || 'Okänd leverantör'}
-                        </div>
-                        <div className="text-xs text-gray-400 mt-1">
-                          {formatDate(candidate.purchase_datetime)} &middot; {formatAmount(candidate.gross_amount)}
-                        </div>
-                        <div className="text-xs text-gray-500 mt-1">
-                          Beloppsdiff: {candidate.amount_difference != null ? formatAmount(candidate.amount_difference) : '–'} &middot; Datumsdiff: {candidate.date_difference_days ?? '–'} dagar
-                        </div>
-                      </div>
-                      <div className="flex flex-col gap-2">
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-xxs"
-                          onClick={() => openReceiptPreview(candidate.file_id, { credit_card_match: candidate.credit_card_match })}
-                        >
-                          <FiEye className="mr-1" />
-                          Visa
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-primary btn-xxs"
-                          disabled={assigningLineId === candidateState.line?.id || isCurrentMatch}
-                          onClick={() => assignCandidate(candidateState.line?.id, candidate.file_id)}
-                        >
-                          {assigningLineId === candidateState.line?.id ? (
-                            <>
-                              <div className="loading-spinner mr-1"></div>
-                              Matchar...
-                            </>
-                          ) : isCurrentMatch ? (
-                            'Redan matchad'
-                          ) : (
-                            <>
-                              <FiLink className="mr-1" />
-                              Matcha
-                            </>
-                          )}
-                        </button>
+              {candidateState.candidates.map((candidate) => (
+                <div key={candidate.file_id} className="border border-gray-700 rounded-lg p-4 bg-gray-800/50">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 space-y-2">
+                      <div className="font-medium text-gray-100">{candidate.vendor_name || 'Okänd leverantör'}</div>
+                      <div className="text-sm text-gray-400 space-y-1">
+                        <div>Datum: {formatDate(candidate.purchase_datetime, false)}</div>
+                        <div>Belopp: {formatAmount(candidate.gross_amount)}</div>
+                        {candidate.match_score != null && (
+                          <div>Match-poäng: {Math.round(candidate.match_score * 100)}%</div>
+                        )}
                       </div>
                     </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        className="btn btn-text btn-sm"
+                        onClick={() => openReceiptPreview(candidate.file_id)}
+                      >
+                        <FiEye className="mr-1" />
+                        Visa
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        onClick={() => assignCandidate(candidateState.line.id, candidate.file_id)}
+                        disabled={assigningLineId === candidateState.line.id}
+                      >
+                        {assigningLineId === candidateState.line.id ? (
+                          <>
+                            <div className="loading-spinner mr-1" />
+                            Matchar...
+                          </>
+                        ) : (
+                          <>
+                            <FiLink className="mr-1" />
+                            Matcha
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
-                )
-              })}
+                </div>
+              ))}
             </div>
           )}
         </div>
+        <div className="modal-footer">
+          <button type="button" className="btn btn-secondary" onClick={closeCandidates}>
+            Stäng
+          </button>
+        </div>
       </div>
     </div>
-  )
+  ) : null
+
+
+const renderStatementTable = () => {
+    if (!items.length) {
+      return (
+        <div className="flex flex-col items-center justify-center gap-2 py-10 text-gray-300">
+          <FiFileText className="text-3xl" />
+          <div>Inga kontoutdrag hittades.</div>
+        </div>
+      )
+    }
+
+    const rows = items.map((statement) => {
+      const statusDetails = describeDocumentStatus(statement.status)
+      const badgeClass = toneClass[statusDetails.tone] ?? 'status-processing'
+      const lineSummary = statement.line_counts ?? {}
+      const isSelected = statement.id === selectedDocumentId
+      const periodLabel = statement.period_start && statement.period_end
+        ? `${formatDate(statement.period_start, false)} – ${formatDate(statement.period_end, false)}`
+        : `Utdrag ${statement.id}`
+      const processingDetails = describeProcessingStatus(statement.processing_status || statement.status)
+      const updatedAt = statement.updated_at || statement.uploaded_at
+      const confidence = typeof statement.overall_confidence === 'number'
+        ? `${Math.round(Number(statement.overall_confidence) * 100)}%`
+        : '–'
+
+      return {
+        statement,
+        statusDetails,
+        badgeClass,
+        lineSummary,
+        isSelected,
+        periodLabel,
+        processingDetails,
+        updatedAt,
+        confidence,
+      }
+    })
+
+    return (
+      <div className="overflow-hidden border border-gray-700 rounded-lg">
+        <table className="min-w-full divide-y divide-gray-700 text-sm">
+          <thead className="bg-gray-900/60 text-gray-300 uppercase tracking-wide text-xs">
+            <tr>
+              <th className="px-4 py-3 text-left">Period</th>
+              <th className="px-4 py-3 text-left">Status</th>
+              <th className="px-4 py-3 text-left">Bearbetning</th>
+              <th className="px-4 py-3 text-left">AI6</th>
+              <th className="px-4 py-3 text-left">Linjer</th>
+              <th className="px-4 py-3 text-left">Senast uppdaterad</th>
+              <th className="px-4 py-3 text-right">Åtgärder</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-800">
+            {rows.map(({ statement, statusDetails, badgeClass, lineSummary, isSelected, periodLabel, processingDetails, updatedAt, confidence }) => {
+              const rowClasses = isSelected ? 'bg-red-600/10 hover:bg-red-600/20' : 'hover:bg-gray-800/40'
+
+              return (
+                <tr
+                  key={statement.id}
+                  onClick={() => setSelectedDocumentId(statement.id)}
+                  className={`cursor-pointer transition-colors ${rowClasses}`}
+                >
+                  <td className="px-4 py-3 text-sm font-medium text-gray-100">
+                    <div className="flex items-center gap-2">
+                      <FiChevronRight className={`transition-transform ${isSelected ? 'rotate-90 text-red-400' : 'text-gray-500'}`} />
+                      {periodLabel}
+                    </div>
+                    <div className="mt-1 text-xs text-gray-400">
+                      Uppladdad {formatDate(statement.created_at || statement.uploaded_at)}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`status-badge ${badgeClass}`}>{statusDetails.label}</span>
+                  </td>
+                  <td className="px-4 py-3 text-gray-200">{processingDetails.label}</td>
+                  <td className="px-4 py-3 text-gray-200">{confidence}</td>
+                  <td className="px-4 py-3 text-gray-200">
+                    <div className="text-xs text-gray-400 leading-relaxed">
+                      <div>Total: {lineSummary.total ?? '–'}</div>
+                      <div>Matchade: {lineSummary.matched ?? '–'}</div>
+                      <div>Obearbetade: {lineSummary.unmatched ?? '–'}</div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-200 whitespace-nowrap">
+                    {formatDate(updatedAt)}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setSelectedDocumentId(statement.id)
+                        }}
+                      >
+                        Visa
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          onMatchDocument(statement.id)
+                        }}
+                        disabled={matchingDocumentId === statement.id}
+                      >
+                        {matchingDocumentId === statement.id ? (
+                          <>
+                            <div className="loading-spinner mr-1" />
+                            Matchar...
+                          </>
+                        ) : (
+                          <>
+                            <FiCheckCircle className="mr-1" />
+                            Auto-matcha
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -650,162 +888,108 @@ export default function CompanyCard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[320px,1fr] gap-6">
-        <aside className="space-y-4">
-          <div className="card">
-            <div className="card-header">
-              <div>
-                <h3 className="card-title">Kontoutdrag</h3>
-                <p className="card-subtitle">Välj ett utdrag för att se detaljerad information.</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  onClick={() => loadStatements()}
-                  disabled={loading}
-                >
-                  {loading ? (
-                    <>
-                      <div className="loading-spinner mr-2"></div>
-                      Uppdaterar...
-                    </>
-                  ) : (
-                    <>
-                      <FiRefreshCw className="mr-2" />
-                      Uppdatera
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  onClick={() => setUploadModalOpen(true)}
-                >
-                  <FiUpload className="mr-2" />
-                  Ladda upp utdrag
-                </button>
-              </div>
-            </div>
-            {renderFeedback()}
-            {loading ? (
-              <div className="flex items-center justify-center gap-3 py-8 text-gray-400">
-                <div className="loading-spinner"></div>
-                <span>Laddar kontoutdrag...</span>
-              </div>
-            ) : items.length === 0 ? (
-              <div className="flex flex-col items-center justify-center gap-2 py-10 text-gray-300">
-                <FiFileText className="text-3xl" />
-                <div className="text-base font-medium">Inga kontoutdrag hittades</div>
-              </div>
-            ) : (
-              renderStatementList()
-            )}
+      <div className="card">
+        <div className="card-header flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="card-title">Kontoutdrag</h3>
+            <p className="card-subtitle">Överblick över importerade kontoutdrag.</p>
           </div>
-        </aside>
-
-        <section className="space-y-4">
-          <div className="card">
-            <div className="card-header flex-wrap gap-3">
-              <div>
-                <h3 className="card-title">Utdragsdetaljer</h3>
-                {selectedDocument ? (
-                  <p className="card-subtitle">
-                    {selectedDocument.period_start && selectedDocument.period_end
-                      ? `Period: ${formatDate(selectedDocument.period_start, false)} – ${formatDate(selectedDocument.period_end, false)}`
-                      : 'Välj ett kontoutdrag för att se detaljer.'}
-                  </p>
-                ) : (
-                  <p className="card-subtitle">Välj ett kontoutdrag för att se detaljer.</p>
-                )}
-              </div>
-              {selectedDocumentId && (
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => loadDocumentDetail(selectedDocumentId)}
-                    disabled={detailLoading}
-                  >
-                    {detailLoading ? (
-                      <>
-                        <div className="loading-spinner mr-2"></div>
-                        Uppdaterar...
-                      </>
-                    ) : (
-                      <>
-                        <FiRefreshCw className="mr-2" />
-                        Uppdatera
-                      </>
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-sm"
-                    onClick={() => onMatchDocument(selectedDocumentId)}
-                    disabled={matchingDocumentId === selectedDocumentId}
-                  >
-                    {matchingDocumentId === selectedDocumentId ? (
-                      <>
-                        <div className="loading-spinner mr-2"></div>
-                        Matchar...
-                      </>
-                    ) : (
-                      <>
-                        <FiCheckCircle className="mr-2" />
-                        Auto-matcha
-                      </>
-                    )}
-                  </button>
-                </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => loadStatements(selectedDocumentIdRef.current)}
+              disabled={loading}
+            >
+              {loading ? (
+                <>
+                  <div className="loading-spinner mr-2" />
+                  Uppdaterar...
+                </>
+              ) : (
+                <>
+                  <FiRefreshCw className="mr-2" />
+                  Uppdatera
+                </>
               )}
-            </div>
-
-            {selectedDocument && (
-              <div className="px-6 pb-6">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-                  <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
-                    <div className="text-xs text-gray-400 uppercase tracking-wide">Status</div>
-                    <div className="mt-2 flex items-center gap-2">
-                      <span className={`status-badge ${toneClass[describeDocumentStatus(selectedDocument.status).tone] || 'status-processing'}`}>
-                        {describeDocumentStatus(selectedDocument.status).label}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
-                    <div className="text-xs text-gray-400 uppercase tracking-wide">Linjer</div>
-                    <div className="mt-2 text-gray-100 text-lg font-semibold">{lineCounts.total}</div>
-                    <div className="text-xs text-gray-400 mt-1">Matchade: {lineCounts.matched} &middot; Obearbetade: {lineCounts.unmatched}</div>
-                  </div>
-                  <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
-                    <div className="text-xs text-gray-400 uppercase tracking-wide">Senast uppdaterad</div>
-                    <div className="mt-2 text-gray-100 text-lg font-semibold">
-                      {formatDate(selectedDocument.updated_at || selectedDocument.uploaded_at)}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="px-6 pb-6">
-              {renderLineTable()}
-            </div>
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => setUploadModalOpen(true)}
+            >
+              <FiUpload className="mr-2" />
+              Ladda upp utdrag
+            </button>
           </div>
-        </section>
+        </div>
+        <div className="px-6 pb-6 space-y-4">
+          {renderFeedback()}
+          {loading ? (
+            <div className="flex items-center justify-center gap-3 py-10 text-gray-400">
+              <div className="loading-spinner" />
+              <span>Laddar kontoutdrag...</span>
+            </div>
+          ) : (
+            renderStatementTable()
+          )}
+        </div>
       </div>
 
       <div className="card">
-        <div className="card-header">
+        <div className="card-header flex-wrap gap-3">
           <div>
-            <h3 className="card-title">Så fungerar matchningen</h3>
-            <p className="card-subtitle">Få en snabb överblick över processen för korttransaktioner.</p>
+            <h3 className="card-title">Utdragsdetaljer</h3>
+            {selectedDocument ? (
+              <p className="card-subtitle">
+                {selectedDocument.period_start && selectedDocument.period_end
+                  ? `Period: ${formatDate(selectedDocument.period_start, false)} – ${formatDate(selectedDocument.period_end, false)}`
+                  : 'Välj ett kontoutdrag för att se detaljer.'}
+              </p>
+            ) : (
+              <p className="card-subtitle">Välj ett kontoutdrag för att se detaljer.</p>
+            )}
           </div>
         </div>
-        <ul className="space-y-3 text-sm text-gray-300 px-6 pb-6">
-          <li><span className="text-white font-medium">1.</span> Ladda upp kontoutdrag från First Card eller annat kortinstitut via integrationssidan.</li>
-          <li><span className="text-white font-medium">2.</span> Kör <em>Auto-matcha</em> för att koppla transaktioner till kvitton baserat på belopp, datum och referenser.</li>
-          <li><span className="text-white font-medium">3.</span> Vid behov kan du manuellt koppla kvitton via kandidatlistan för varje rad.</li>
-        </ul>
+        <div className="px-6 pb-6 space-y-6">
+          {selectedDocument && (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
+                  <div className="text-xs text-gray-400 uppercase tracking-wide">Status</div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className={`status-badge ${toneClass[describeDocumentStatus(selectedDocument.status).tone] || 'status-processing'}`}>
+                      {describeDocumentStatus(selectedDocument.status).label}
+                    </span>
+                  </div>
+                </div>
+                <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
+                  <div className="text-xs text-gray-400 uppercase tracking-wide">Linjer</div>
+                  <div className="mt-2 text-gray-100 text-lg font-semibold">{lineCounts.total}</div>
+                  <div className="text-xs text-gray-400 mt-1">Matchade: {lineCounts.matched} · Obearbetade: {lineCounts.unmatched}</div>
+                </div>
+                <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
+                  <div className="text-xs text-gray-400 uppercase tracking-wide">Senast uppdaterad</div>
+                  <div className="mt-2 text-gray-100 text-lg font-semibold">
+                    {formatDate(selectedDocument.updated_at || selectedDocument.uploaded_at)}
+                  </div>
+                </div>
+              </div>
+              {detailSummaryCards.length > 0 && (
+                <dl className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {detailSummaryCards.map((item) => (
+                    <div key={item.label} className="bg-gray-900 border border-gray-700 rounded-lg px-4 py-3">
+                      <dt className="text-xs uppercase tracking-wide text-gray-400">{item.label}</dt>
+                      <dd className="text-sm font-semibold text-white mt-1 break-words">{item.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+            </>
+          )}
+
+          {renderLineTable()}
+        </div>
       </div>
 
       {candidatesContent}
@@ -826,6 +1010,7 @@ export default function CompanyCard() {
     </div>
   )
 }
+
 
 function InvoiceUploadModal({ open, onClose, onUploaded }) {
   const fileInputRef = React.useRef(null)

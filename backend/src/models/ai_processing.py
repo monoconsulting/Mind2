@@ -1,5 +1,5 @@
 """Pydantic models for AI processing of receipts and documents."""
-from datetime import datetime
+from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, List, Literal
 
@@ -116,6 +116,91 @@ class CreditCardInvoiceItem(BaseModel):
     gross_amount: Decimal18_2
     cost_center_override: Optional[str] = Field(None, max_length=100)
     project_code: Optional[str] = Field(None, max_length=100)
+
+
+class CreditCardInvoiceHeader(BaseModel):
+    """Structured header information extracted from a credit card invoice."""
+
+    invoice_number: Optional[str] = Field(None, max_length=100)
+    invoice_number_long: Optional[str] = Field(None, max_length=150)
+    invoice_print_time: Optional[datetime] = None
+    invoice_date: Optional[date] = None
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
+    due_date: Optional[date] = None
+    payment_due: Optional[date] = None
+    card_type: Optional[str] = Field(None, max_length=50)
+    card_name: Optional[str] = Field(None, max_length=100)
+    card_number_masked: Optional[str] = Field(None, max_length=32)
+    card_holder: Optional[str] = Field(None, max_length=100)
+    customer_name: Optional[str] = Field(None, max_length=150)
+    customer_number: Optional[str] = Field(None, max_length=50)
+    cost_center: Optional[str] = Field(None, max_length=100)
+    co: Optional[str] = Field(None, max_length=150)
+    billing_address: Optional[List[str]] = None
+    bank_name: Optional[str] = Field(None, max_length=100)
+    bank_org_no: Optional[str] = Field(None, max_length=50)
+    bank_vat_no: Optional[str] = Field(None, max_length=50)
+    bank_fi_no: Optional[str] = Field(None, max_length=50)
+    plusgiro: Optional[str] = Field(None, max_length=30)
+    bankgiro: Optional[str] = Field(None, max_length=30)
+    iban: Optional[str] = Field(None, max_length=34)
+    bic: Optional[str] = Field(None, max_length=11)
+    ocr: Optional[str] = Field(None, max_length=50)
+    currency: Optional[str] = Field(None, max_length=3)
+    invoice_total: Optional[Decimal18_2] = None
+    card_total: Optional[Decimal18_2] = None
+    amount_to_pay: Optional[Decimal18_2] = None
+    reported_vat: Optional[Decimal18_2] = None
+    vat_25: Optional[Decimal18_2] = None
+    vat_12: Optional[Decimal18_2] = None
+    vat_6: Optional[Decimal18_2] = None
+    vat_0: Optional[Decimal18_2] = None
+    next_invoice: Optional[date] = None
+    notes: Optional[List[str]] = None
+
+
+class CreditCardInvoiceLine(BaseModel):
+    """Structured line item extracted from a credit card invoice."""
+
+    line_no: int = Field(gt=0)
+    transaction_id: Optional[str] = Field(None, max_length=64)
+    purchase_date: Optional[date] = None
+    posting_date: Optional[date] = None
+    merchant_name: Optional[str] = Field(None, max_length=200)
+    merchant_city: Optional[str] = Field(None, max_length=100)
+    merchant_country: Optional[str] = Field(None, max_length=2)
+    mcc: Optional[str] = Field(None, max_length=4)
+    description: Optional[str] = None
+    currency_original: Optional[str] = Field(None, max_length=3)
+    amount_original: Optional[Decimal18_2] = None
+    exchange_rate: Optional[Decimal12_6] = None
+    amount_sek: Optional[Decimal18_2] = None
+    vat_rate: Optional[Decimal18_2] = None
+    vat_amount: Optional[Decimal18_2] = None
+    net_amount: Optional[Decimal18_2] = None
+    gross_amount: Optional[Decimal18_2] = None
+    cost_center_override: Optional[str] = Field(None, max_length=100)
+    project_code: Optional[str] = Field(None, max_length=100)
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    source_text: Optional[str] = None
+
+
+class CreditCardInvoiceExtractionRequest(BaseModel):
+    """Request payload for AI6 credit card invoice parsing."""
+
+    invoice_id: str
+    ocr_text: str
+    page_ids: List[str] = Field(default_factory=list)
+
+
+class CreditCardInvoiceExtractionResponse(BaseModel):
+    """Response payload for AI6 credit card invoice parsing."""
+
+    invoice_id: str
+    header: CreditCardInvoiceHeader
+    lines: List[CreditCardInvoiceLine]
+    overall_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
 
 
 # AI Processing Request/Response Models

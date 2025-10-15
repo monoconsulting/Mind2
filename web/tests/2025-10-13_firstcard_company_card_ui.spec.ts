@@ -20,10 +20,11 @@ test('Company card dashboard renders summary and detail panels', async ({ page }
   await expect(page.getByRole('heading', { name: 'Utdragsdetaljer' })).toBeVisible();
 
   await expect(page.getByText('Matchade utdrag')).toBeVisible();
-  await expect(page.getByText('Pågående matchningar')).toBeVisible();
-  await expect(page.getByText('Kräver åtgärd')).toBeVisible();
+  await expect(page.getByText('P\\u00E5g\\u00E5ende matchningar')).toBeVisible();
+  await expect(page.getByText('Kr\\u00E4ver \\u00E5tg\\u00E4rd')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Ladda upp utdrag' })).toBeVisible();
 
-  const detailCard = page.getByRole('heading', { name: 'Så fungerar matchningen' });
-  await expect(detailCard).toBeVisible();
+  await expect(page.getByText('Inga kontoutdrag hittades.')).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'Period' })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: '\\u00C5tg\\u00E4rder' })).toBeVisible();
 });
