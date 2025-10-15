@@ -439,7 +439,43 @@ Instructions:
 - Use the **BAS-2025 chart of accounts**, stored in the database table `chart_of_accounts`, as the reference.
 - An entry should be made in ai_accounting_proposals for each accountnumber that is selected according to praxis
 
-### AI5 – Credit Card Invoice Matching (deactivated)
+### AI6 – Credit Card Invoice Parsing
+
+**Information:**
+
+- **Title:** Credit Card Invoice Parser (OCR → creditcard\_invoices\_main/items)
+- **Description:** Aggregates OCR text from every invoice page and extracts structured header metadata together with the transaction list for credit card statements. Results are persisted in `creditcard_invoices_main` and `creditcard_invoice_items`, and a condensed summary plus confidence score is stored in `invoice_documents.metadata_json`.
+- **Input:** Combined `ocr_raw` text for the invoice plus a list of page identifiers.
+- **Output:** 
+  - Upserted header row in `creditcard_invoices_main`.
+  - Replaced transaction rows in `creditcard_invoice_items`.
+  - Refreshed `invoice_lines` table (used by the matching UI and AI5).
+  - Metadata update with `creditcard_main_id`, billing period, payment references, and `overall_confidence`.
+
+**System prompt (excerpt):**
+
+```
+You are an AI assistant that extracts structured data from OCR text belonging to credit card invoices.
+Return strict JSON with two top level keys:
+- "invoice": header metadata (invoice_number, card_holder, payment references, totals, VAT buckets, billing_address[], notes[])
+- "transactions": array of purchase/refund lines (line_no, dates, merchant info, currency, amounts, VAT, cost center overrides, source_text)
+
+Rules:
+- Do not invent data. Use null for values that cannot be located.
+- Normalise numbers to decimal notation with "." and uppercase ISO codes for currency/country.
+- Assign sequential line_no values if not present.
+- Include the original OCR snippet for each transaction in source_text.
+- When totals are repeated, prefer the official summary section of the invoice.
+```
+
+**Database effects:**
+
+- Header data → `creditcard_invoices_main`.
+- Transaction lines → `creditcard_invoice_items`.
+- Invoice summary metadata (`period_start`, `period_end`, `creditcard_main_id`, `invoice_summary`, `overall_confidence`) updated in `invoice_documents.metadata_json`.
+- Stage results logged in `ai_processing_history` under `AI6-CreditCardInvoiceParsing`.
+
+### AI5 - Credit Card Invoice Matching (deactivated)
 
 > **Status:** The automated receipt workflow now stops after **AI4**. AI5 is currently disabled and is not triggered automatically for uploaded receipts. The prompt and instructions below are retained for future use when invoice-level reconciliation is reintroduced.
 

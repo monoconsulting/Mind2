@@ -293,7 +293,7 @@ def upload_invoice() -> Any:
 
             _insert_unified_file(
                 file_id=invoice_id,
-                file_type="invoice",
+                file_type="cc_pdf",
                 content_hash=file_hash,
                 submitted_by=submitted_by,
                 original_filename=safe_name,
@@ -309,8 +309,19 @@ def upload_invoice() -> Any:
                     "source": "invoice_upload",
                 },
             )
+            # HARD ENFORCEMENT: Set workflow_type to enforce credit card invoice pipeline
+            if db_cursor is not None:
+                try:
+                    with db_cursor() as cur:
+                        cur.execute(
+                            "UPDATE unified_files SET workflow_type = 'creditcard_invoice' WHERE id = %s",
+                            (invoice_id,),
+                        )
+                except Exception:
+                    pass  # Best-effort
             fs.save_original(invoice_id, safe_name, data)
 
+            page_file_ids = []
             for page in pages:
                 page_id = str(uuid.uuid4())
                 page_number = int(getattr(page, "index", 0)) + 1
@@ -319,7 +330,7 @@ def upload_invoice() -> Any:
                 original_path = page.path
                 _insert_unified_file(
                     file_id=page_id,
-                    file_type="invoice_page",
+                    file_type="cc_image",
                     content_hash=page_hash,
                     submitted_by=submitted_by,
                     original_filename=f"{safe_name}-page-{page_number:04d}.png",
@@ -339,8 +350,21 @@ def upload_invoice() -> Any:
                 stored_path = fs.adopt(page_id, stored_name, original_path)
                 cleanup_paths.discard(original_path)
                 page.path = stored_path
+                page_file_ids.append(page_id)
                 _queue_ocr(page_id)
                 page_refs.append({"file_id": page_id, "page_number": page_number})
+
+            # HARD ENFORCEMENT: Set workflow_type for all page images in batch
+            if db_cursor is not None and page_file_ids:
+                try:
+                    with db_cursor() as cur:
+                        placeholders = ', '.join(['%s'] * len(page_file_ids))
+                        cur.execute(
+                            f"UPDATE unified_files SET workflow_type = 'creditcard_invoice' WHERE id IN ({placeholders})",
+                            page_file_ids,
+                        )
+                except Exception:
+                    pass  # Best-effort
 
             _update_other_data(
                 invoice_id,
@@ -356,7 +380,7 @@ def upload_invoice() -> Any:
         elif detection.kind == "image":
             _insert_unified_file(
                 file_id=invoice_id,
-                file_type="invoice",
+                file_type="cc_image",
                 content_hash=file_hash,
                 submitted_by=submitted_by,
                 original_filename=safe_name,
@@ -371,6 +395,16 @@ def upload_invoice() -> Any:
                     "source": "invoice_upload",
                 },
             )
+            # HARD ENFORCEMENT: Set workflow_type for single image upload
+            if db_cursor is not None:
+                try:
+                    with db_cursor() as cur:
+                        cur.execute(
+                            "UPDATE unified_files SET workflow_type = 'creditcard_invoice' WHERE id = %s",
+                            (invoice_id,),
+                        )
+                except Exception:
+                    pass  # Best-effort
             fs.save_original(invoice_id, safe_name, data)
             _queue_ocr(invoice_id)
             page_refs.append({"file_id": invoice_id, "page_number": 1})
@@ -494,6 +528,10 @@ def invoice_status(invoice_id: str) -> Any:
 
     total_lines, matched_lines = _count_invoice_lines(invoice_id)
 
+    invoice_summary = metadata.get("invoice_summary")
+    if not isinstance(invoice_summary, dict):
+        invoice_summary = None
+
     response = {
         "invoice_id": invoice_id,
         "status": status,
@@ -511,6 +549,11 @@ def invoice_status(invoice_id: str) -> Any:
             "matched": matched_lines,
             "unmatched": max(total_lines - matched_lines, 0),
         },
+        "overall_confidence": metadata.get("overall_confidence"),
+        "invoice_summary": invoice_summary,
+        "creditcard_main_id": metadata.get("creditcard_main_id"),
+        "period_start": metadata.get("period_start"),
+        "period_end": metadata.get("period_end"),
     }
 
     return jsonify(response), 200
@@ -643,6 +686,8 @@ def invoice_detail(invoice_id: str) -> Any:
             }
         )
 
+    summary_payload = metadata.get("invoice_summary") if isinstance(metadata.get("invoice_summary"), dict) else None
+
     invoice_payload = {
         "id": invoice_id,
         "invoice_type": invoice_type,
@@ -653,6 +698,10 @@ def invoice_detail(invoice_id: str) -> Any:
         "uploaded_at": str(uploaded_at) if uploaded_at else None,
         "submitted_by": metadata.get("submitted_by"),
         "line_counts": line_counts,
+        "invoice_summary": summary_payload,
+        "overall_confidence": metadata.get("overall_confidence"),
+        "creditcard_main_id": metadata.get("creditcard_main_id"),
+        "invoice_number": (summary_payload or {}).get("invoice_number") or metadata.get("invoice_number"),
         "metadata": metadata,
     }
 
@@ -1247,6 +1296,9 @@ def list_statements() -> Any:
                             "source_file_id": metadata.get("source_file_id"),
                             "submitted_by": metadata.get("submitted_by"),
                             "line_counts": line_counts,
+                            "overall_confidence": metadata.get("overall_confidence"),
+                            "invoice_summary": metadata.get("invoice_summary") if isinstance(metadata.get("invoice_summary"), dict) else None,
+                            "creditcard_main_id": metadata.get("creditcard_main_id"),
                         }
                     )
         except Exception:
