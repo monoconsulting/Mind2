@@ -35,6 +35,10 @@ Om du ser någon kod som försöker läsa eller skriva `merchant_name` från/til
 
 **unified_files:**
 - ✅ HAR: `id`, `company_id` (FK till companies), `purchase_datetime`, `gross_amount`, `net_amount`, etc.
+- ✅ HAR: `workflow_type` VARCHAR(32) DEFAULT 'receipt' - KRITISKT för routing till rätt pipeline
+  - `'receipt'` - Normal kvitto-workflow (AI1-AI4)
+  - `'creditcard_invoice'` - FirstCard kreditkortsutdrag-workflow (AI6)
+  - **HARD ENFORCEMENT:** `workflow_type` har ALLTID prioritet över `file_type` vid routing
 - ❌ HAR INTE: `merchant_name` - använd companies.name via JOIN!
 
 **companies:**

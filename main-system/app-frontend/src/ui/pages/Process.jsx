@@ -1015,6 +1015,21 @@ function WorkflowBadges({ receipt, refreshTick, onStageClick }) {
     );
   }
 
+  // Detect if this is a FirstCard invoice workflow based on file properties
+  const isFirstCardFile = () => {
+    const fileType = (receipt.file_type || '').toLowerCase();
+    const submittedBy = (receipt.submitted_by || '').toLowerCase();
+
+    // FirstCard files have file_type that starts with 'cc_' or legacy 'invoice'/'invoice_page'
+    // AND they're uploaded via 'invoice_upload' (from Kortmatchning menu)
+    return (
+      (fileType.startsWith('cc_') || fileType === 'invoice' || fileType === 'invoice_page') &&
+      submittedBy.includes('invoice')
+    );
+  };
+
+  const showFirstCard = isFirstCardFile();
+
   return (
     <div className="flex flex-wrap gap-3 items-start" style={{ minWidth: '800px' }}>
       {renderBadge('Title', workflow.title || `ID: ${workflow.file_id}`)}
@@ -1023,10 +1038,20 @@ function WorkflowBadges({ receipt, refreshTick, onStageClick }) {
       {renderBadge('FileName', workflow.filename || '-')}
       {renderBadge('PDFConvert', workflow.pdf_convert)}
       {renderBadge('OCR', workflow.ocr, workflow.ocr && workflow.ocr.status !== 'pending' ? () => onStageClick({ ...workflow.ocr, title: 'OCR Processing', ocr_raw: workflow.ocr_raw }) : null)}
-      {renderBadge('AI1', workflow.ai1, workflow.ai1 && workflow.ai1.status !== 'pending' ? () => onStageClick({ ...workflow.ai1, title: 'AI1 - Document Classification' }) : null)}
-      {renderBadge('AI2', workflow.ai2, workflow.ai2 && workflow.ai2.status !== 'pending' ? () => onStageClick({ ...workflow.ai2, title: 'AI2 - Expense Classification' }) : null)}
-      {renderBadge('AI3', workflow.ai3, workflow.ai3 && workflow.ai3.status !== 'pending' ? () => onStageClick({ ...workflow.ai3, title: 'AI3 - Data Extraction' }) : null)}
-      {renderBadge('AI4', workflow.ai4, workflow.ai4 && workflow.ai4.status !== 'pending' ? () => onStageClick({ ...workflow.ai4, title: 'AI4 - Accounting Proposal' }) : null)}
+
+      {/* FirstCard-specific stages */}
+      {showFirstCard && renderBadge('OCR-Merge', workflow.ocr_merge, workflow.ocr_merge && workflow.ocr_merge.status !== 'pending' ? () => onStageClick({ ...workflow.ocr_merge, title: 'OCR Merge' }) : null)}
+      {showFirstCard && renderBadge('OCR_RAW', workflow.ocr_raw_updated, workflow.ocr_raw_updated && workflow.ocr_raw_updated.status !== 'pending' ? () => onStageClick({ ...workflow.ocr_raw_updated, title: 'OCR RAW Updated' }) : null)}
+      {showFirstCard && renderBadge('AI6', workflow.ai6, workflow.ai6 && workflow.ai6.status !== 'pending' ? () => onStageClick({ ...workflow.ai6, title: 'AI6 - Credit Card Invoice Parsing' }) : null)}
+
+      {/* Regular receipt stages (hide for FirstCard) */}
+      {!showFirstCard && renderBadge('AI1', workflow.ai1, workflow.ai1 && workflow.ai1.status !== 'pending' ? () => onStageClick({ ...workflow.ai1, title: 'AI1 - Document Classification' }) : null)}
+      {!showFirstCard && renderBadge('AI2', workflow.ai2, workflow.ai2 && workflow.ai2.status !== 'pending' ? () => onStageClick({ ...workflow.ai2, title: 'AI2 - Expense Classification' }) : null)}
+      {!showFirstCard && renderBadge('AI3', workflow.ai3, workflow.ai3 && workflow.ai3.status !== 'pending' ? () => onStageClick({ ...workflow.ai3, title: 'AI3 - Data Extraction' }) : null)}
+      {!showFirstCard && renderBadge('AI4', workflow.ai4, workflow.ai4 && workflow.ai4.status !== 'pending' ? () => onStageClick({ ...workflow.ai4, title: 'AI4 - Accounting Proposal' }) : null)}
+
+      {/* AI5 and Match shown for both workflows */}
+      {renderBadge('AI5', workflow.ai5, workflow.ai5 && workflow.ai5.status !== 'pending' ? () => onStageClick({ ...workflow.ai5, title: 'AI5 - Credit Card Matching' }) : null)}
       {renderBadge('Match', workflow.match, workflow.match && workflow.match.status !== 'pending' ? () => onStageClick({ ...workflow.match, title: 'Match Status' }) : null)}
     </div>
   );
