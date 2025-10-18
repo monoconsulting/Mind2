@@ -13,6 +13,58 @@ Date: 2025-10-12
 * You have **NO PERMISSIONS to use taskkill** to kill a port that someone else is using. This can cause serious damage
 * You **ARE NOT ALLOWED TO EDIT playwright.config.ts** (except playwright.dev.config.ts for development testing)
 
+
+
+## Important paths:
+
+#### **Backend:**
+
+\backend
+
+E:\projects\Mind2\backend\migrations
+
+E:\projects\Mind2\backend\sql
+
+E:\projects\Mind2\backend\src\api
+
+E:\projects\Mind2\backend\src\models
+
+E:\projects\Mind2\backend\src\observability
+
+E:\projects\Mind2\backend\src\services
+
+#### **Frontend:**
+
+E:\projects\Mind2\main-system
+
+E:\projects\Mind2\main-system\app-frontend\dist
+
+E:\projects\Mind2\main-system\app-frontend\src\ui
+
+E:\projects\Mind2\main-system\app-frontend\src\ui\components
+
+E:\projects\Mind2\main-system\app-frontend\src\ui\pages
+
+#### Other:
+
+E:\projects\Mind2\.env
+
+E:\projects\Mind2\main-system\app-frontend\nginx.conf
+
+E:\projects\Mind2\main-system\app-frontend\Dockerfile
+
+E:\projects\Mind2\main-system\app-frontend\Dockerfile.dev
+
+E:\projects\Mind2\main-system\app-frontend\vite.config.js
+
+E:\projects\Mind2\docker-compose.yml
+
+E:\projects\Mind2\playwright.config.ts (change not allowed)
+
+E:\projects\Mind2\playwright.dev.config.ts (change not allowed)
+
+
+
 ## Development & Testing Environment
 
 ### Frontend Development Modes

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from pathlib import Path
 from typing import Iterable
 
@@ -63,9 +65,14 @@ def _split_sql(sql: str) -> list[str]:
     return [p for p in parts if p]
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 def apply_migrations(seed_demo: bool = True) -> None:
     MIGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
     for sql_file in list_migration_files():
+        logger.info(f"Applying migration: {sql_file.name}")
         with open(sql_file, "r", encoding="utf-8") as f:
             sql = f.read()
         if not sql.strip():
@@ -74,14 +81,18 @@ def apply_migrations(seed_demo: bool = True) -> None:
             for statement in _split_sql(sql):
                 try:
                     cur.execute(statement)
+                    cur.fetchall()
                 except Exception as e:  # pragma: no cover
                     msg = str(e)
+                    logger.error(f"Error applying statement from {sql_file.name}: {statement}")
+                    logger.error(f"Error message: {msg}")
                     # Ignore idempotency errors
                     if (
                         "Duplicate column name" in msg
                         or "already exists" in msg
                         or "exists" in msg and "constraint" in msg.lower()
                     ):
+                        logger.warning(f"Ignoring idempotency error: {msg}")
                         continue
                     raise
 

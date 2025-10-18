@@ -41,3 +41,7 @@ nul
 storage/
 /fc
 temp
+
+# Large files
+*.zip
+_dbdumps/

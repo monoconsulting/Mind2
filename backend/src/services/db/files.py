@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Iterable, List, Optional, Tuple
 
 from .connection import db_cursor
+
+
+class DuplicateFileError(Exception):
+    """Raised when attempting to store a duplicate file."""
 
 
 def set_ai_status(file_id: str, status: str) -> bool:
@@ -61,3 +66,74 @@ def get_receipt(file_id: str) -> Optional[dict[str, Any]]:
             "ai_status": ai_status,
             "ai_confidence": ai_confidence,
         }
+
+def insert_unified_file(
+    *,
+    file_id: str,
+    file_type: str,
+    workflow_type: str | None = None,
+    content_hash: str,
+    submitted_by: str,
+    original_filename: str,
+    ai_status: str,
+    mime_type: str | None = None,
+    file_suffix: str | None = None,
+    original_file_id: str | None = None,
+    original_file_name: str | None = None,
+    original_file_size: int | None = None,
+    other_data: dict[str, Any] | None = None,
+) -> None:
+    if db_cursor is None:
+        return
+
+    payload = json.dumps(other_data or {})
+
+    workflow_value = workflow_type or "receipt"
+
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO unified_files (
+                    id, file_type, workflow_type, ocr_raw, other_data, content_hash,
+                    submitted_by, original_filename, ai_status,
+                    mime_type, file_suffix, original_file_id,
+                    original_file_name, original_file_size
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    file_id,
+                    file_type,
+                    workflow_value,
+                    "",
+                    payload,
+                    content_hash,
+                    submitted_by,
+                    original_filename,
+                    ai_status,
+                    mime_type,
+                    file_suffix,
+                    original_file_id or file_id,
+                    original_file_name or original_filename,
+                    original_file_size,
+                ),
+            )
+    except Exception as db_error:
+        msg = str(db_error)
+        if "Duplicate entry" in msg and "idx_content_hash" in msg:
+            raise DuplicateFileError from db_error
+        raise
+
+
+def update_other_data(file_id: str, other_data: dict[str, Any]) -> None:
+    if db_cursor is None:
+        return
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "UPDATE unified_files SET other_data=%s WHERE id=%s",
+                (json.dumps(other_data or {}), file_id),
+            )
+    except Exception:
+        pass
+
