@@ -7,5 +7,20 @@ CREATE TABLE IF NOT EXISTS file_locations (
   acc DOUBLE NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX idx_file_locations_file ON file_locations (file_id);
+DROP PROCEDURE IF EXISTS create_index_if_not_exists;
+CREATE PROCEDURE create_index_if_not_exists()
+BEGIN
+	IF NOT EXISTS (
+		SELECT 1
+		FROM INFORMATION_SCHEMA.STATISTICS
+		WHERE TABLE_SCHEMA = DATABASE()
+		AND TABLE_NAME = 'file_locations'
+		AND INDEX_NAME = 'idx_file_locations_file'
+	) THEN
+		CREATE INDEX idx_file_locations_file ON file_locations (file_id);
+	END IF;
+END;
+
+CALL create_index_if_not_exists();
+DROP PROCEDURE IF EXISTS create_index_if_not_exists;
 

@@ -4,7 +4,7 @@ Notes to agent:
 This must be used to keep track of tasks. As soon as you finished a task you MUST mark it done in this document.
 Add the tasks in english using the following standard:
 
-#### **Phase 1 - Description of the phase**
+#### **TEMPLATE PHASE X- Description of the phase**
 
 - [ ] **Task 1.1 - Task title**
 
@@ -21,18 +21,146 @@ Add the tasks in english using the following standard:
   **Description:** 
 
   **How to verify:**
+  
+  _______
 
-_______________________
+#### **Phase 1 - Issues with the Credit Card workflow**
 
-#### **Phase 1 - Data Fetching for OCR Visualization**
+- [x] **Task 1.1 - Unified files has wrong file_type and workflow_type**
 
-- [x] **Task 1.1 - Fetch OCR Bounding Box Data**
+​	**System prompt for agent:** Update this specific task using information in the MIND_WORKFLOW_REDESIGN.md. For history 	read the worklogs and claude.md.
 
-  **System prompt for agent:** Modify the `main-system/app-frontend/src/ui/pages/Receipts.jsx` file. Create a new state within the `PreviewModal` component to store OCR box data, e.g., `const [ocrBoxes, setOcrBoxes] = React.useState([])`. When the modal is opened and an image is being loaded for a receipt, make an additional asynchronous API call to `/ai/api/receipts/<receipt_id>/ocr/boxes`. Once the data is fetched, update the `ocrBoxes` state with the resulting array. Ensure this is done concurrently with the image fetch.
+​	**Description:** For a First Card - faktura uploaded from "Kortmatchning" the field unified_fields.file_type should be set to  	cc_pdf (if it is the pdf-file that is stored) and cc-image for png-files. It should on all the files have the 	unified_files.workflow_type 	set to 'creditcard_invoice'. This should be shown in the celery-logs for that workflow. 
 
-  **Description:** The backend provides an endpoint with OCR data containing text and coordinates. This task is to fetch this data when a user opens the receipt image preview modal and store it in the component's state.
+​	**How to verify:** Verify by running the workflow again and checking results in db
 
-  **How to verify:** Use the browser's developer tools to inspect network requests when opening a receipt preview. Confirm that a request is made to `/ai/api/receipts/<receipt_id>/ocr/boxes`. Use React Developer Tools to inspect the `PreviewModal` component and verify that its `ocrBoxes` state contains an array of box data.
+-------
+
+- [x] ​	**Task 1.2 - OCR merge missing**
+
+
+​	**System prompt:**
+
+**Description:** In unified_files the ocr_raw is populated from the ocr of th png-files - but this should be merged and inserted into creditcard_invoices_main - this is not done. Also make this visibible in the logs when it happens
+
+**How to verify:**
+
+-------
+
+- [x] **Task 1.3. Add complete log functionality for the cc-invoice import**
+
+  In kortmatchning when clicking on the "visa" - button, a complete log should be shown. This should show all the steps - and all details in each steps. This should include all the reasoning made by the AI, all the conversion steps, all the workflows - everything. Make a log that is perfect for developers.
+
+-------
+
+- [ ] **Task. 1.4. Update the process-page** and remove the flickering that occurs when the page is updated. No need to reload the pictures - just the specific workflow badges and the text fields
+
+-------
+
+- [ ] **Task 1.5. Automatically update Kortmatchning-page**  
+
+  Update Kortmatchning-page in the vite-interval set in the .env file. Should work in the same way as the process page - but remove the flickering that occurs in process
+
+-------
+
+- [ ] **Task 1.6. Errors in import of pdf-receipts with multiple pages**
+
+Any pdf file no matter of content should use the same import strategy for pdfs 
+ 	1. Convert pdf with 1 png for each page. Store in unified_files with file_type png_page (not pdf_page) 
+ 	2. OCR of the png-pages - store the OCR-data for the individual files in ocr_raw for the png
+ 	3. Merge of the OCR to store in the original pdf_page ocr_raw. If its only one page it should still be stored in the original pdf.
+ 	4. Start the AI-pipeline for receipts with the text from ocr_raw from the original pdf.
+
+Analyze the existing workflow for multiple receipt pages and correct this so it follows the standards above
+
+-------
+
+**Task 1.7 - Wrong filetype set** 
+
+1.6.1. If after the OCR is done, this is analyzed as "other" or "invoice" - the file_type should change to other and the ai-workflow should stop. Right now it continues and keeps the same file_type.
+
+-------
+
+- [ ] **Task 1.8 - All card fields empty**
+
+**Description: In the preview modal - all fields on the left column in the section "BETALNINGSTYP" are emtpy. Both in 	**How to verify:** By a new import.
+
+-------
+
+- [ ] **Task 1.9 - Error in OpenAI api call - **
+
+**Description:** celery-worker-1 shows this error message for AI
+
+```
+`0-16 16:09:58`
+
+​    `raise RuntimeError(f"OpenAI API call failed: {exc}")`
+
+`2025-10-16 16:09:58`
+
+`RuntimeError: OpenAI API call failed: HTTPSConnectionPool(host='api.openai.com', port=443): Read timed out. (read timeout=300)`
+
+`2025-10-16 16:09:58`
+
+`[2025-10-16 14:09:58,850: ERROR/ForkPoolWorker-2] Task wf3.firstcard_invoice[edb419e3-9418-4f34-80ac-33f69b9f9eaf] raised unexpected: RuntimeError('Failed to persist credit card invoice header')`
+
+`2025-10-16 16:09:58`
+
+`Traceback (most recent call last):`
+
+`2025-10-16 16:09:58`
+
+  `File "/usr/local/lib/python3.10/dist-packages/celery/app/trace.py", line 453, in trace_task`
+
+`2025-10-16 16:09:58`
+
+​    `R = retval = fun(*args, **kwargs)`
+
+`2025-10-16 16:09:58`
+
+  `File "/usr/local/lib/python3.10/dist-packages/celery/app/trace.py", line 736, in __protected_call__`
+
+`2025-10-16 16:09:58`
+
+​    `return self.run(*args, **kwargs)`
+
+`2025-10-16 16:09:58`
+
+  `File "/app/services/tasks.py", line 2158, in wf3_firstcard_invoice`
+
+`2025-10-16 16:09:58`
+
+​    `raise RuntimeError("Failed to persist credit card invoice header")`
+
+`2025-10-16 16:09:58`
+
+`RuntimeError: Failed to persist credit card invoice header`
+```
+
+**This is most likely a wrong api-address.** The following should be used:
+(`POST https://api.openai.com/v1/responses`) with**GPT-5** as model and `response_format` to either`"json_object"` (enkel JSON-mode) or`"json_schema"` (Structured Outputs with strict validation).
+
+**This is already set in the database - which means that there are most likely a hardcoded value somewhere**
+
+**How to verify:** Check logs after new import
+
+
+
+
+
+
+
+-------
+
+
+
+
+
+
+
+
+
+
 
 #### **Phase 2 - Rendering OCR Overlays**
 
@@ -162,5 +290,39 @@ _______________________
   **Description:** 
 
   **How to verify:**
+
+#### **Phase 6 - Workflow Stabilization**
+
+- [ ] **Task 6.1 - Fix WF1 AI provider fallback**
+
+  **System prompt for agent:** Review `backend/src/services/ai_service.py` and related configuration so that WF1 receipt workflows never call the Ollama endpoint when it is not configured. Ensure the AI pipeline selects an available provider/model (e.g., OpenAI) or degrades gracefully without raising `Ollama API call failed` errors.
+
+  **Description:** WF1 receipts currently fail during `wf1.run_ai_pipeline` because the worker still targets the Ollama gateway that is not running. Update provider resolution and/or environment handling so the workflow completes the AI stages with a supported model.
+
+  **How to verify:** Upload a sample receipt via `/ingest/upload`. Confirm in the Celery logs that `wf1.run_ai_pipeline` succeeds without Ollama exceptions and that the workflow reaches `wf1.finalize`. Check `workflow_stage_runs` for `ai_pipeline` marked `succeeded`.
+
+- [ ] **Task 6.2 - Restore WF2 chord orchestration**
+
+  **System prompt for agent:** Update the WF2 pipeline in `backend/src/services/tasks.py` so that `wf2_prepare_pdf_pages` schedules the page OCR chord (group of `wf2.run_page_ocr` tasks followed by `wf2.merge_ocr_results`) and the remaining stages (`wf2.run_invoice_analysis`, `wf2.finalize`). Ensure each task calls `mark_stage` with the correct stage keys and status transitions.
+
+  **Description:** Currently only `wf2.prepare_pdf_pages` runs; the downstream OCR/merge/analysis/finalize steps never start. Implement the documented workflow so PDF uploads progress through every stage.
+
+  **How to verify:** Upload a multi-page PDF through the Process menu. Inspect Celery logs to verify execution order `prepare_pdf_pages` → `run_page_ocr` (per page) → `merge_ocr_results` → `run_invoice_analysis` → `finalize`. Confirm corresponding entries in `workflow_stage_runs` with statuses `running/succeeded`.
+
+- [ ] **Task 6.3 - Implement WF3 FirstCard processing**
+
+  **System prompt for agent:** Extend `wf3.firstcard_invoice` in `backend/src/services/tasks.py` (and supporting modules) to perform the FirstCard invoice parsing/matching pipeline: aggregate OCR text, call AI6 parsing, persist to `creditcard_invoices_main/creditcard_invoice_items`, and transition workflow/document statuses per design.
+
+  **Description:** WF3 currently marks success without doing any work. Implement the full processing chain so FirstCard uploads trigger AI parsing and populate the matching tables.
+
+  **How to verify:** Upload a FirstCard invoice via the Kortmatchning menu. Confirm `wf3.firstcard_invoice` logs meaningful stage information, the workflow run reaches `succeeded`, and new rows appear in `creditcard_invoices_main`/`creditcard_invoice_items`. Validate entries in `workflow_stage_runs` for WF3.
+
+- [ ] **Task 6.4 - Audit workflow_stage_runs coverage**
+
+  **System prompt for agent:** Review every workflow task (`wf1.*`, `wf2.*`, `wf3.*`) to ensure each significant step calls `mark_stage` with distinct stage keys, including start/end transitions and failure paths. Backfill missing stage writes where needed so `workflow_stage_runs` always reflects the full lifecycle.
+
+  **Description:** We rely on `workflow_stage_runs` as the canonical progress log. Some tasks still skip stage logging; this task standardises the calls so observability matches the redesign spec.
+
+  **How to verify:** Trigger WF1, WF2 and WF3 via their respective upload paths. Query `workflow_stage_runs` for each new `workflow_run_id` and verify all expected stage keys (dispatch, ocr, ai_pipeline, finalize, etc.) are present with appropriate status values (`running`, `succeeded`, `failed`, `skipped`). Cross-check with Celery logs for consistency.
 
   

@@ -17,6 +17,7 @@ except Exception:  # pragma: no cover - optional early
 
 from api.export import export_bp
 from api.receipts import receipts_bp
+
 from api.reconciliation_firstcard import recon_bp
 from api.rules import rules_bp
 from api.auth import auth_bp
@@ -34,6 +35,7 @@ configure_json_logging()
 app = Flask(__name__)
 limiter.init_app(app)
 app.register_blueprint(receipts_bp)
+
 app.register_blueprint(recon_bp)
 app.register_blueprint(export_bp)
 app.register_blueprint(auth_bp)

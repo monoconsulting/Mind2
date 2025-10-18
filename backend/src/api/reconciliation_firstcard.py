@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
@@ -14,17 +15,12 @@ import hashlib
 from flask import Blueprint, jsonify, request
 from werkzeug.utils import secure_filename
 
-from api.ingest import (  # type: ignore
-    DuplicateFileError,
-    _hash_exists,
-    _insert_unified_file,
-    _cleanup_paths,
-    _update_other_data,
-)
+from services.tasks import dispatch_workflow
 from services.file_detection import detect_file
 from services.pdf_conversion import pdf_to_png_pages
 from services.storage import FileStorage
 from services.invoice_parser import parse_credit_card_statement
+from services.db.files import insert_unified_file, DuplicateFileError
 try:
     from observability.metrics import record_invoice_decision  # type: ignore
 except Exception:  # pragma: no cover
@@ -36,10 +32,7 @@ try:
 except Exception:  # pragma: no cover
     db_cursor = None  # type: ignore
 
-try:
-    from services.tasks import process_ocr
-except Exception:  # pragma: no cover
-    process_ocr = None  # type: ignore
+
 from services.invoice_status import (
     InvoiceDocumentStatus,
     InvoiceLineMatchStatus,
@@ -51,6 +44,10 @@ from services.invoice_status import (
 
 
 recon_bp = Blueprint("reconciliation_firstcard", __name__)
+
+logger = logging.getLogger(__name__)
+
+
 
 
 _OCR_COMPLETE_STATUSES = {
@@ -67,19 +64,47 @@ def _storage() -> FileStorage:
     return FileStorage(base_dir)
 
 
-def _queue_ocr(file_id: str) -> None:
-    if not file_id:
-        return
-    if process_ocr is None:  # pragma: no cover - optional runtime dependency
-        return
+def _create_workflow_run(workflow_key: str, source_channel: str, file_id: str, content_hash: str) -> Optional[int]:
+    if db_cursor is None:
+        return None
     try:
-        if hasattr(process_ocr, "delay"):
-            process_ocr.delay(file_id)  # type: ignore[attr-defined]
-        else:
-            process_ocr(file_id)  # type: ignore[misc]
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO workflow_runs (workflow_key, source_channel, file_id, content_hash, current_stage, status)
+                VALUES (%s, %s, %s, %s, 'queued', 'queued')
+                """,
+                (workflow_key, source_channel, file_id, content_hash),
+            )
+            cur.execute("SELECT LAST_INSERT_ID()")
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else None
+    except Exception as exc:
+        logger.error(
+            "Failed to create workflow_run for file %s (workflow=%s, source=%s): %s",
+            file_id,
+            workflow_key,
+            source_channel,
+            exc,
+        )
+        return None
+
+
+def _find_file_id_by_hash(content_hash: str) -> Optional[str]:
+    if db_cursor is None:
+        return None
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT id FROM unified_files WHERE content_hash=%s LIMIT 1",
+                (content_hash,),
+            )
+            row = cur.fetchone()
+            return str(row[0]) if row else None
     except Exception:
-        # Queueing is best-effort – failures should not block uploads.
-        return
+        return None
+
+
 
 
 def _create_invoice_document(
@@ -251,7 +276,7 @@ def _count_invoice_lines(invoice_id: str) -> tuple[int, int]:
 
 @recon_bp.post("/reconciliation/firstcard/upload-invoice")
 def upload_invoice() -> Any:
-    """Upload a FirstCard invoice (PDF or image) and enqueue OCR."""
+    """Upload a FirstCard invoice (PDF or image) and dispatch a workflow."""
 
     file = request.files.get("invoice") or request.files.get("file")
     if not file or not file.filename:
@@ -261,165 +286,71 @@ def upload_invoice() -> Any:
     if not data:
         return jsonify({"error": "empty_file"}), 400
 
-    file_hash = hashlib.sha256(data).hexdigest()
-    if _hash_exists(file_hash):
-        return jsonify({"error": "duplicate_file"}), 409
-
     safe_name = secure_filename(file.filename) or f"invoice_{uuid.uuid4()}"
     detection = detect_file(data, safe_name)
     invoice_id = str(uuid.uuid4())
     submitted_by = request.headers.get("X-User") or "invoice_upload"
+    file_hash = hashlib.sha256(data).hexdigest()
+    file_suffix = Path(safe_name).suffix
+
+    mime_type = detection.mime_type or getattr(file, "mimetype", None)
+    is_pdf = detection.kind == "pdf" or (mime_type == "application/pdf")
+    unified_file_type = "cc_pdf" if is_pdf else "cc_image"
+
+    other_data = {
+        "detected_kind": detection.kind,
+        "source": "kortmatchning_upload",
+        "original_filename": safe_name,
+        "workflow_type": "creditcard_invoice",
+    }
+
     fs = _storage()
+
+    try:
+        insert_unified_file(
+            file_id=invoice_id,
+            file_type=unified_file_type,
+            workflow_type="creditcard_invoice",
+            content_hash=file_hash,
+            submitted_by=submitted_by,
+            original_filename=safe_name,
+            ai_status="uploaded",
+            mime_type=mime_type,
+            file_suffix=file_suffix,
+            original_file_id=invoice_id,
+            original_file_name=safe_name,
+            original_file_size=len(data),
+            other_data=other_data,
+        )
+    except DuplicateFileError:
+        existing_id = _find_file_id_by_hash(file_hash)
+        return (
+            jsonify(
+                {
+                    "error": "duplicate_invoice",
+                    "invoice_id": existing_id,
+                }
+            ),
+            409,
+        )
+
+    fs.save_original(invoice_id, safe_name, data)
+    logger.info(
+        "Stored FirstCard invoice %s with file_type=%s workflow_type=creditcard_invoice (detected_kind=%s, mime_type=%s)",
+        invoice_id,
+        unified_file_type,
+        detection.kind,
+        mime_type,
+    )
 
     metadata: dict[str, Any] = {
         "source_file_id": invoice_id,
-        "processing_status": InvoiceProcessingStatus.OCR_PENDING.value,
+        "processing_status": InvoiceProcessingStatus.UPLOADED.value,
         "submitted_by": submitted_by,
         "original_filename": safe_name,
         "detected_kind": detection.kind,
+        "mime_type": detection.mime_type,
     }
-
-    page_refs: list[dict[str, Any]] = []
-    cleanup_paths: set[Path] = set()
-
-    try:
-        if detection.kind == "pdf":
-            pages = pdf_to_png_pages(data, fs.base / "invoices", invoice_id, dpi=300)
-            cleanup_paths = {page.path for page in pages}
-            if not pages:
-                _cleanup_paths(cleanup_paths)
-                cleanup_paths.clear()
-                return jsonify({"error": "empty_pdf"}), 400
-
-            _insert_unified_file(
-                file_id=invoice_id,
-                file_type="cc_pdf",
-                content_hash=file_hash,
-                submitted_by=submitted_by,
-                original_filename=safe_name,
-                ai_status="uploaded",
-                mime_type="application/pdf",
-                file_suffix=os.path.splitext(safe_name)[1] or ".pdf",
-                original_file_id=invoice_id,
-                original_file_name=safe_name,
-                original_file_size=len(data),
-                other_data={
-                    "detected_kind": "pdf",
-                    "page_count": len(pages),
-                    "source": "invoice_upload",
-                },
-            )
-            # HARD ENFORCEMENT: Set workflow_type to enforce credit card invoice pipeline
-            if db_cursor is not None:
-                try:
-                    with db_cursor() as cur:
-                        cur.execute(
-                            "UPDATE unified_files SET workflow_type = 'creditcard_invoice' WHERE id = %s",
-                            (invoice_id,),
-                        )
-                except Exception:
-                    pass  # Best-effort
-            fs.save_original(invoice_id, safe_name, data)
-
-            page_file_ids = []
-            for page in pages:
-                page_id = str(uuid.uuid4())
-                page_number = int(getattr(page, "index", 0)) + 1
-                page_hash = hashlib.sha256(page.bytes).hexdigest()
-                stored_name = f"page-{page_number:04d}.png"
-                original_path = page.path
-                _insert_unified_file(
-                    file_id=page_id,
-                    file_type="cc_image",
-                    content_hash=page_hash,
-                    submitted_by=submitted_by,
-                    original_filename=f"{safe_name}-page-{page_number:04d}.png",
-                    ai_status="uploaded",
-                    mime_type="image/png",
-                    file_suffix=".png",
-                    original_file_id=invoice_id,
-                    original_file_name=safe_name,
-                    original_file_size=len(page.bytes),
-                    other_data={
-                        "detected_kind": "pdf_page",
-                        "page_number": page_number,
-                        "source_invoice": invoice_id,
-                        "source": "invoice_upload",
-                    },
-                )
-                stored_path = fs.adopt(page_id, stored_name, original_path)
-                cleanup_paths.discard(original_path)
-                page.path = stored_path
-                page_file_ids.append(page_id)
-                _queue_ocr(page_id)
-                page_refs.append({"file_id": page_id, "page_number": page_number})
-
-            # HARD ENFORCEMENT: Set workflow_type for all page images in batch
-            if db_cursor is not None and page_file_ids:
-                try:
-                    with db_cursor() as cur:
-                        placeholders = ', '.join(['%s'] * len(page_file_ids))
-                        cur.execute(
-                            f"UPDATE unified_files SET workflow_type = 'creditcard_invoice' WHERE id IN ({placeholders})",
-                            page_file_ids,
-                        )
-                except Exception:
-                    pass  # Best-effort
-
-            _update_other_data(
-                invoice_id,
-                {
-                    "detected_kind": "pdf",
-                    "page_count": len(page_refs),
-                    "pages": page_refs,
-                    "source": "invoice_upload",
-                },
-            )
-            cleanup_paths.clear()
-
-        elif detection.kind == "image":
-            _insert_unified_file(
-                file_id=invoice_id,
-                file_type="cc_image",
-                content_hash=file_hash,
-                submitted_by=submitted_by,
-                original_filename=safe_name,
-                ai_status="uploaded",
-                mime_type=detection.mime_type or "image/octet-stream",
-                file_suffix=os.path.splitext(safe_name)[1] or ".png",
-                original_file_id=invoice_id,
-                original_file_name=safe_name,
-                original_file_size=len(data),
-                other_data={
-                    "detected_kind": "image",
-                    "source": "invoice_upload",
-                },
-            )
-            # HARD ENFORCEMENT: Set workflow_type for single image upload
-            if db_cursor is not None:
-                try:
-                    with db_cursor() as cur:
-                        cur.execute(
-                            "UPDATE unified_files SET workflow_type = 'creditcard_invoice' WHERE id = %s",
-                            (invoice_id,),
-                        )
-                except Exception:
-                    pass  # Best-effort
-            fs.save_original(invoice_id, safe_name, data)
-            _queue_ocr(invoice_id)
-            page_refs.append({"file_id": invoice_id, "page_number": 1})
-        else:
-            return jsonify({"error": "unsupported_file_type"}), 400
-
-    except DuplicateFileError:
-        _cleanup_paths(cleanup_paths)
-        return jsonify({"error": "duplicate_file"}), 409
-    except Exception as exc:
-        _cleanup_paths(cleanup_paths)
-        return jsonify({"error": "upload_failed", "details": str(exc)}), 500
-
-    metadata["page_ids"] = [ref["file_id"] for ref in page_refs]
-    metadata["page_count"] = len(page_refs)
 
     _create_invoice_document(
         invoice_id=invoice_id,
@@ -428,35 +359,37 @@ def upload_invoice() -> Any:
         metadata=metadata,
     )
 
-    transition_processing_status(
-        invoice_id,
-        InvoiceProcessingStatus.OCR_PENDING,
-        (
-            InvoiceProcessingStatus.UPLOADED,
-            InvoiceProcessingStatus.OCR_PENDING,
-        ),
+    workflow_run_id = _create_workflow_run(
+        workflow_key="WF3_FIRSTCARD_INVOICE",
+        source_channel="kortmatchning_upload",
+        file_id=invoice_id,
+        content_hash=file_hash,
     )
-    transition_document_status(
-        invoice_id,
-        InvoiceDocumentStatus.IMPORTED,
-        (
-            InvoiceDocumentStatus.IMPORTED,
-            InvoiceDocumentStatus.MATCHING,
-            InvoiceDocumentStatus.PARTIALLY_MATCHED,
-            InvoiceDocumentStatus.MATCHED,
-            InvoiceDocumentStatus.COMPLETED,
-            InvoiceDocumentStatus.FAILED,
-        ),
+
+    if not workflow_run_id or not dispatch_workflow(workflow_run_id):
+        logger.error(
+            "Failed to dispatch WF3 workflow for invoice %s (run_id=%s)",
+            invoice_id,
+            workflow_run_id,
+        )
+        return jsonify({"error": "workflow_dispatch_failed"}), 500
+
+    metadata["workflow_run_id"] = workflow_run_id
+    _create_invoice_document(
+        invoice_id=invoice_id,
+        invoice_type="credit_card_invoice",
+        status=InvoiceDocumentStatus.IMPORTED.value,
+        metadata=metadata,
     )
 
     response = {
         "invoice_id": invoice_id,
         "status": "processing",
         "processing_status": metadata["processing_status"],
-        "page_count": len(page_refs),
-        "page_ids": metadata["page_ids"],
+        "workflow_run_id": workflow_run_id,
     }
     return jsonify(response), 201
+
 
 
 @recon_bp.get("/reconciliation/firstcard/invoices/<invoice_id>/status")
@@ -623,6 +556,108 @@ def invoice_detail(invoice_id: str) -> Any:
     }
     metadata["line_counts"] = line_counts
 
+    creditcard_main_id = metadata.get("creditcard_main_id")
+    card_details: Optional[dict[str, Any]] = None
+    items: list[dict[str, Any]] = []
+    if db_cursor is not None and creditcard_main_id:
+        try:
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id,
+                           card_type,
+                           card_name,
+                           card_number_masked,
+                           card_holder
+                      FROM creditcard_invoices_main
+                     WHERE id = %s
+                    """,
+                    (creditcard_main_id,),
+                )
+                row = cur.fetchone()
+        except Exception:
+            row = None
+        if row:
+            (
+                main_id,
+                card_type,
+                card_name,
+                card_number_masked,
+                card_holder,
+            ) = row
+            card_details = {
+                "id": int(main_id),
+                "card_type": card_type,
+                "card_name": card_name,
+                "card_number_masked": card_number_masked,
+                "card_holder": card_holder,
+            }
+            summary_payload = metadata.get("invoice_summary")
+            if not isinstance(summary_payload, dict):
+                summary_payload = {}
+            if card_type:
+                summary_payload.setdefault("card_type", card_type)
+            if card_name:
+                summary_payload.setdefault("card_name", card_name)
+            if card_type and card_name:
+                summary_payload.setdefault("card_label", f"{card_type} - {card_name}")
+            summary_payload.setdefault("card_number_masked", card_number_masked)
+            summary_payload.setdefault("card_holder", card_holder)
+            metadata["invoice_summary"] = summary_payload
+        try:
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT ci.id,
+                           ci.line_no,
+                           ci.purchase_date,
+                           ci.merchant_name,
+                           ci.merchant_city,
+                           ci.amount_original,
+                           ci.net_amount,
+                           ci.vat_rate,
+                           ci.currency_original,
+                           CASE
+                               WHEN crm.invoice_item_id IS NOT NULL THEN 1
+                               ELSE COALESCE(ci.matched, 0)
+                           END AS matched_flag
+                      FROM creditcard_invoice_items AS ci
+                 LEFT JOIN creditcard_receipt_matches AS crm ON crm.invoice_item_id = ci.id
+                     WHERE ci.main_id = %s
+                  ORDER BY ci.line_no ASC, ci.id ASC
+                    """,
+                    (creditcard_main_id,),
+                )
+                item_rows = cur.fetchall() or []
+        except Exception:
+            item_rows = []
+        for (
+            item_id,
+            line_no,
+            purchase_date,
+            merchant_name,
+            merchant_city,
+            amount_original,
+            net_amount,
+            vat_rate,
+            currency_original,
+            matched_flag,
+        ) in item_rows:
+            items.append(
+                {
+                    "id": int(item_id),
+                    "line_no": int(line_no) if line_no is not None else None,
+                    "purchase_date": purchase_date.isoformat() if hasattr(purchase_date, "isoformat") else purchase_date,
+                    "merchant_name": merchant_name,
+                    "merchant_city": merchant_city,
+                    "amount_original": float(amount_original) if amount_original is not None else None,
+                    "net_amount": float(net_amount) if net_amount is not None else None,
+                    "vat_rate": float(vat_rate) if vat_rate is not None else None,
+                    "currency_original": currency_original,
+                    "matched": 1 if matched_flag else 0,
+                }
+            )
+
     lines: list[dict[str, Any]] = []
     try:
         with db_cursor() as cur:
@@ -704,8 +739,266 @@ def invoice_detail(invoice_id: str) -> Any:
         "invoice_number": (summary_payload or {}).get("invoice_number") or metadata.get("invoice_number"),
         "metadata": metadata,
     }
+    if card_details:
+        invoice_payload["creditcard_details"] = card_details
 
-    return jsonify({"invoice": invoice_payload, "lines": lines}), 200
+    return jsonify({"invoice": invoice_payload, "lines": lines, "items": items}), 200
+
+
+@recon_bp.get("/reconciliation/firstcard/invoices/<invoice_id>/log")
+def invoice_log(invoice_id: str) -> Any:
+    """Return detailed workflow and AI logs for a FirstCard invoice."""
+    if db_cursor is None:  # pragma: no cover
+        return jsonify(
+            {
+                "invoice_id": invoice_id,
+                "workflow_runs": [],
+                "ai_history": [],
+                "files": [],
+                "metadata": {},
+            }
+        ), 200
+
+    metadata: dict[str, Any] = {}
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT metadata_json FROM invoice_documents WHERE id=%s",
+                (invoice_id,),
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                try:
+                    metadata = json.loads(row[0])
+                except Exception:
+                    metadata = {}
+    except Exception:
+        metadata = {}
+
+    file_records: list[dict[str, Any]] = []
+    related_file_ids: list[str] = []
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    file_type,
+                    workflow_type,
+                    ai_status,
+                    ai_confidence,
+                    created_at,
+                    updated_at,
+                    ocr_raw,
+                    other_data
+                FROM unified_files
+                WHERE id = %s OR original_file_id = %s
+                ORDER BY created_at ASC, id ASC
+                """,
+                (invoice_id, invoice_id),
+            )
+            rows = cur.fetchall() or []
+    except Exception:
+        rows = []
+
+    file_id_set: set[str] = set()
+    for (
+        file_id,
+        file_type,
+        workflow_type,
+        ai_status,
+        ai_confidence,
+        created_at,
+        updated_at,
+        ocr_raw,
+        other_json,
+    ) in rows:
+        other_payload: dict[str, Any]
+        if other_json:
+            try:
+                other_payload = json.loads(other_json)
+            except Exception:
+                other_payload = {}
+        else:
+            other_payload = {}
+        file_records.append(
+            {
+                "id": str(file_id),
+                "file_type": file_type,
+                "workflow_type": workflow_type,
+                "ai_status": ai_status,
+                "ai_confidence": float(ai_confidence) if ai_confidence is not None else None,
+                "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at),
+                "ocr_raw": ocr_raw or "",
+                "ocr_raw_length": len(ocr_raw or ""),
+                "other_data": other_payload,
+            }
+        )
+        file_id_set.add(str(file_id))
+
+    file_id_set.add(str(invoice_id))
+    related_file_ids = list(sorted(file_id_set))
+
+    workflow_runs: list[dict[str, Any]] = []
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    workflow_key,
+                    status,
+                    current_stage,
+                    source_channel,
+                    created_at,
+                    updated_at
+                FROM workflow_runs
+                WHERE file_id = %s
+                ORDER BY created_at DESC, id DESC
+                """,
+                (invoice_id,),
+            )
+            run_rows = cur.fetchall() or []
+    except Exception:
+        run_rows = []
+
+    for (
+        workflow_run_id,
+        workflow_key,
+        status,
+        current_stage,
+        source_channel,
+        created_at,
+        updated_at,
+    ) in run_rows:
+        stages: list[dict[str, Any]] = []
+        try:
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        stage_key,
+                        status,
+                        started_at,
+                        finished_at,
+                        message
+                    FROM workflow_stage_runs
+                    WHERE workflow_run_id = %s
+                    ORDER BY
+                        COALESCE(started_at, finished_at, NOW()) ASC,
+                        id ASC
+                    """,
+                    (workflow_run_id,),
+                )
+                stage_rows = cur.fetchall() or []
+        except Exception:
+            stage_rows = []
+
+        for (
+            stage_key,
+            stage_status,
+            started_at,
+            finished_at,
+            message,
+        ) in stage_rows:
+            duration_ms: int | None = None
+            if started_at and finished_at:
+                try:
+                    duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+                except Exception:
+                    duration_ms = None
+            stages.append(
+                {
+                    "stage_key": stage_key,
+                    "status": stage_status,
+                    "started_at": started_at.isoformat() if hasattr(started_at, "isoformat") else (str(started_at) if started_at else None),
+                    "finished_at": finished_at.isoformat() if hasattr(finished_at, "isoformat") else (str(finished_at) if finished_at else None),
+                    "duration_ms": duration_ms,
+                    "message": message,
+                }
+            )
+
+        workflow_runs.append(
+            {
+                "id": int(workflow_run_id),
+                "workflow_key": workflow_key,
+                "status": status,
+                "current_stage": current_stage,
+                "source_channel": source_channel,
+                "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at),
+                "stages": stages,
+            }
+        )
+
+    ai_history: list[dict[str, Any]] = []
+    if related_file_ids:
+        placeholders = ", ".join(["%s"] * len(related_file_ids))
+        query = f"""
+            SELECT
+                id,
+                file_id,
+                job_type,
+                status,
+                created_at,
+                ai_stage_name,
+                log_text,
+                error_message,
+                confidence,
+                processing_time_ms,
+                provider,
+                model_name
+            FROM ai_processing_history
+            WHERE file_id IN ({placeholders})
+            ORDER BY created_at ASC, id ASC
+        """
+        try:
+            with db_cursor() as cur:
+                cur.execute(query, tuple(related_file_ids))
+                history_rows = cur.fetchall() or []
+        except Exception:
+            history_rows = []
+
+        for (
+            history_id,
+            file_id,
+            job_type,
+            status,
+            created_at,
+            ai_stage_name,
+            log_text,
+            error_message,
+            confidence,
+            processing_time_ms,
+            provider,
+            model_name,
+        ) in history_rows:
+            ai_history.append(
+                {
+                    "id": int(history_id),
+                    "file_id": file_id,
+                    "job_type": job_type,
+                    "status": status,
+                    "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                    "ai_stage_name": ai_stage_name,
+                    "log_text": log_text,
+                    "error_message": error_message,
+                    "confidence": float(confidence) if confidence is not None else None,
+                    "processing_time_ms": processing_time_ms,
+                    "provider": provider,
+                    "model": model_name,
+                }
+            )
+
+    payload = {
+        "invoice_id": invoice_id,
+        "workflow_runs": workflow_runs,
+        "ai_history": ai_history,
+        "files": file_records,
+        "metadata": metadata,
+    }
+    return jsonify(payload), 200
 
 
 @recon_bp.get("/reconciliation/firstcard/invoices/<invoice_id>/lines")
@@ -1244,6 +1537,9 @@ def firstcard_match() -> Any:
 @recon_bp.get("/reconciliation/firstcard/statements")
 def list_statements() -> Any:
     items: list[dict[str, Any]] = []
+    raw_items: list[dict[str, Any]] = []
+    main_ids: set[int] = set()
+
     if db_cursor is not None:
         try:
             with db_cursor() as cur:
@@ -1255,54 +1551,105 @@ def list_statements() -> Any:
                         "ORDER BY uploaded_at DESC LIMIT 100"
                     )
                 )
-                for sid, invoice_type, uploaded_at, status, processing_status, metadata_raw in cur.fetchall():
-                    metadata: dict[str, Any] = {}
-                    if metadata_raw:
-                        try:
-                            metadata = json.loads(metadata_raw)
-                        except Exception:
-                            metadata = {}
-                    item_processing = processing_status or metadata.get("processing_status") or ""
-                    line_counts = metadata.get("line_counts")
-                    if isinstance(line_counts, dict):
-                        total_lines = int(line_counts.get("total") or 0)
-                        matched_lines = int(line_counts.get("matched") or 0)
-                        unmatched_lines = line_counts.get("unmatched")
-                        if unmatched_lines is None:
-                            unmatched_lines = max(total_lines - matched_lines, 0)
-                        line_counts = {
-                            "total": total_lines,
-                            "matched": matched_lines,
-                            "unmatched": unmatched_lines,
-                        }
-                    else:
-                        total_lines, matched_lines = _count_invoice_lines(str(sid))
-                        line_counts = {
-                            "total": total_lines,
-                            "matched": matched_lines,
-                            "unmatched": max(total_lines - matched_lines, 0),
-                        }
-                    items.append(
-                        {
-                            "id": sid,
-                            "invoice_type": invoice_type,
-                            "uploaded_at": str(uploaded_at),
-                            "created_at": str(uploaded_at),
-                            "status": status,
-                            "processing_status": item_processing,
-                            "period_start": metadata.get("period_start"),
-                            "period_end": metadata.get("period_end"),
-                            "page_count": metadata.get("page_count"),
-                            "source_file_id": metadata.get("source_file_id"),
-                            "submitted_by": metadata.get("submitted_by"),
-                            "line_counts": line_counts,
-                            "overall_confidence": metadata.get("overall_confidence"),
-                            "invoice_summary": metadata.get("invoice_summary") if isinstance(metadata.get("invoice_summary"), dict) else None,
-                            "creditcard_main_id": metadata.get("creditcard_main_id"),
-                        }
-                    )
+                records = cur.fetchall() or []
         except Exception:
-            items = []
+            records = []
+
+        for sid, invoice_type, uploaded_at, status, processing_status, metadata_raw in records:
+            metadata: dict[str, Any] = {}
+            if metadata_raw:
+                try:
+                    metadata = json.loads(metadata_raw)
+                except Exception:
+                    metadata = {}
+
+            if metadata.get("deleted_at"):
+                continue
+
+            item_processing = processing_status or metadata.get("processing_status") or ""
+            line_counts = metadata.get("line_counts")
+            if isinstance(line_counts, dict):
+                total_lines = int(line_counts.get("total") or 0)
+                matched_lines = int(line_counts.get("matched") or 0)
+                unmatched_lines = line_counts.get("unmatched")
+                if unmatched_lines is None:
+                    unmatched_lines = max(total_lines - matched_lines, 0)
+                line_counts = {
+                    "total": total_lines,
+                    "matched": matched_lines,
+                    "unmatched": unmatched_lines,
+                }
+            else:
+                total_lines, matched_lines = _count_invoice_lines(str(sid))
+                line_counts = {
+                    "total": total_lines,
+                    "matched": matched_lines,
+                    "unmatched": max(total_lines - matched_lines, 0),
+                }
+
+            creditcard_main_id = metadata.get("creditcard_main_id")
+            if creditcard_main_id is not None:
+                try:
+                    main_ids.add(int(creditcard_main_id))
+                except (TypeError, ValueError):
+                    pass
+
+            raw_items.append(
+                {
+                    "id": sid,
+                    "invoice_type": invoice_type,
+                    "uploaded_at": str(uploaded_at),
+                    "created_at": str(uploaded_at),
+                    "status": status,
+                    "processing_status": item_processing,
+                    "period_start": metadata.get("period_start"),
+                    "period_end": metadata.get("period_end"),
+                    "page_count": metadata.get("page_count"),
+                    "source_file_id": metadata.get("source_file_id"),
+                    "submitted_by": metadata.get("submitted_by"),
+                    "line_counts": line_counts,
+                    "overall_confidence": metadata.get("overall_confidence"),
+                    "invoice_summary": metadata.get("invoice_summary") if isinstance(metadata.get("invoice_summary"), dict) else None,
+                    "creditcard_main_id": creditcard_main_id,
+                }
+            )
+
+    card_map: dict[int, dict[str, Any]] = {}
+    if main_ids and db_cursor is not None:
+        try:
+            with db_cursor() as cur:
+                placeholders = ", ".join(["%s"] * len(main_ids))
+                cur.execute(
+                    f"SELECT id, card_name, invoice_date FROM creditcard_invoices_main WHERE id IN ({placeholders})",
+                    tuple(main_ids),
+                )
+                for cid, card_name, invoice_date in cur.fetchall() or []:
+                    card_map[int(cid)] = {
+                        "card_name": card_name,
+                        "invoice_date": invoice_date.isoformat() if hasattr(invoice_date, "isoformat") else None,
+                    }
+        except Exception:
+            card_map = {}
+
+    for entry in raw_items:
+        creditcard_main_id = entry.get("creditcard_main_id")
+        if creditcard_main_id is not None:
+            try:
+                card_info = card_map.get(int(creditcard_main_id))
+            except (TypeError, ValueError):
+                card_info = None
+        else:
+            card_info = None
+
+        if card_info:
+            entry["card_name"] = card_info.get("card_name")
+            entry["invoice_date"] = card_info.get("invoice_date")
+        else:
+            entry["card_name"] = None
+            entry["invoice_date"] = None
+
+        items.append(entry)
+
     return jsonify({"items": items, "total": len(items)}), 200
 
 
@@ -1347,6 +1694,45 @@ def reject_statement(sid: str) -> Any:
         ),
     )
     return jsonify({"id": sid, "status": "rejected"}), 200
+
+
+@recon_bp.delete("/reconciliation/firstcard/statements/<sid>")
+def delete_statement(sid: str) -> Any:
+    if db_cursor is None:  # pragma: no cover
+        return jsonify({"error": "service_unavailable"}), 503
+
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT metadata_json FROM invoice_documents WHERE id=%s", (sid,))
+            row = cur.fetchone()
+    except Exception:
+        row = None
+
+    if not row:
+        return jsonify({"error": "not_found"}), 404
+
+    metadata_raw = row[0]
+    metadata: dict[str, Any]
+    if metadata_raw:
+        try:
+            metadata = json.loads(metadata_raw)
+        except Exception:
+            metadata = {}
+    else:
+        metadata = {}
+
+    metadata["deleted_at"] = datetime.utcnow().isoformat()
+
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "UPDATE invoice_documents SET metadata_json=%s WHERE id=%s",
+                (json.dumps(metadata), sid),
+            )
+    except Exception:
+        return jsonify({"error": "failed_to_delete"}), 500
+
+    return jsonify({"id": sid, "deleted": True}), 200
 
 
 @recon_bp.put("/reconciliation/firstcard/lines/<int:line_id>")

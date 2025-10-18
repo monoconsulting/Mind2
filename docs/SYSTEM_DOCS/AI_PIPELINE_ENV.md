@@ -16,11 +16,11 @@ Additional runtime settings used by the AI service:
 
 | Variable | Description | Default |
 | -------- | ----------- | ------- |
-| `AI_PROVIDER` | Optional LLM provider (`openai`, `azure_openai`). | unset |
-| `OPENAI_API_KEY` | API key when `AI_PROVIDER=openai`. | unset |
-| `AZURE_OPENAI_API_KEY` | API key when `AI_PROVIDER=azure_openai`. | unset |
-| `AZURE_OPENAI_ENDPOINT` | Endpoint URL for Azure OpenAI deployments. | unset |
-| `AI_MODEL_NAME` | Overrides the active model selected from DB tables. | unset |
+| `OPENAI_API_KEY` | API key used if the OpenAI provider entry in `ai_llm` does not supply one. | unset |
+| `AZURE_OPENAI_API_KEY` | API key used if the Azure provider entry in `ai_llm` does not supply one. | unset |
+| `AZURE_OPENAI_ENDPOINT` | Endpoint URL fallback for Azure OpenAI deployments. | unset |
 
-If provider-specific variables are missing, the AI service automatically falls
-back to deterministic rule-based parsing while logging the degraded mode.
+All provider, model, and endpoint selections are sourced from the database
+tables `ai_llm`, `ai_llm_model`, and `ai_system_prompts`. Missing provider
+configuration causes the workflow to fall back to deterministic rule-based
+parsing while logging the degraded mode.

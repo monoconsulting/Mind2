@@ -34,6 +34,9 @@ services:
       - FTP_ALLOWED_EXT=${FTP_ALLOWED_EXT}
       - FTP_DELETE_AFTER=${FTP_DELETE_AFTER}
       - DB_AUTO_MIGRATE=0
+    depends_on:
+      mysql:
+        condition: service_healthy
     networks: [main]
     profiles: [main]
 
@@ -42,7 +45,7 @@ services:
       context: .
       dockerfile: ./backend/Dockerfile
     image: mind2-ai-api:dev # Use the same image as the api
-    command: ["celery", "-A", "services.tasks.celery_app", "worker", "--loglevel=INFO", "--concurrency=4", "--soft-time-limit=480", "--time-limit=600"]
+    command: ["celery", "-A", "services.tasks.celery_app", "worker", "-Q", "default", "-n", "default@%h", "--loglevel=INFO", "--concurrency=2", "--soft-time-limit=1800", "--time-limit=1900"]
     entrypoint: []
     volumes:
       - ./storage:/data/storage
@@ -65,6 +68,64 @@ services:
     networks: [main]
     profiles: [main]
 
+  celery-worker-wf1:
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
+    image: mind2-ai-api:dev
+    command: ["celery", "-A", "services.tasks.celery_app", "worker", "-Q", "wf1", "-n", "wf1@%h", "--loglevel=INFO", "--concurrency=2", "--soft-time-limit=1800", "--time-limit=1900"]
+    entrypoint: []
+    volumes:
+      - ./storage:/data/storage
+      - G:\Dropbox\MINDUPLOAD:/data/upload
+    environment:
+      - PYTHONPATH=/app
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - STORAGE_DIR=/data/storage
+      - ENABLE_REAL_OCR=${ENABLE_REAL_OCR}
+      - OCR_LANG=${OCR_LANG}
+      - OCR_USE_ANGLE_CLS=${OCR_USE_ANGLE_CLS}
+      - OCR_SHOW_LOG=${OCR_SHOW_LOG}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on: [redis]
+    networks: [main]
+    profiles: [main]
+
+  celery-worker-wf2:
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
+    image: mind2-ai-api:dev
+    command: ["celery", "-A", "services.tasks.celery_app", "worker", "-Q", "wf2", "-n", "wf2@%h", "--loglevel=INFO", "--concurrency=2", "--soft-time-limit=480", "--time-limit=600"]
+    entrypoint: []
+    volumes:
+      - ./storage:/data/storage
+      - G:\Dropbox\MINDUPLOAD:/data/upload
+    environment:
+      - PYTHONPATH=/app
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - STORAGE_DIR=/data/storage
+      - ENABLE_REAL_OCR=${ENABLE_REAL_OCR}
+      - OCR_LANG=${OCR_LANG}
+      - OCR_USE_ANGLE_CLS=${OCR_USE_ANGLE_CLS}
+      - OCR_SHOW_LOG=${OCR_SHOW_LOG}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on: [redis]
+    networks: [main]
+    profiles: [main]
+
   redis:
     image: redis:7
     ports:
@@ -74,6 +135,11 @@ services:
 
   mysql:
     image: mysql:8
+    healthcheck:
+      test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: ${DB_NAME}

@@ -10,6 +10,7 @@ import {
   FiX,
   FiChevronRight,
   FiAlertCircle,
+  FiTrash2,
 } from 'react-icons/fi'
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal'
 import { api } from '../api'
@@ -214,11 +215,45 @@ function formatCurrency(value, currency = 'SEK') {
   }
 }
 
+function formatDurationMs(durationMs) {
+  if (durationMs === null || durationMs === undefined) {
+    return null
+  }
+  const value = Number(durationMs)
+  if (!Number.isFinite(value) || value < 0) {
+    return null
+  }
+  if (value < 1000) {
+    return `${Math.round(value)} ms`
+  }
+  const seconds = value / 1000
+  if (seconds < 60) {
+    const rounded = seconds < 10 ? seconds.toFixed(2) : seconds.toFixed(1)
+    return `${rounded.replace(/\.0+$/, '')} s`
+  }
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = Math.round(seconds - minutes * 60)
+  if (minutes < 60) {
+    return `${minutes}m ${remainingSeconds}s`
+  }
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return `${hours}h ${remainingMinutes}m`
+}
+
 const initialCandidatesState = {
   open: false,
   line: null,
   candidates: [],
   loading: false,
+}
+
+const INITIAL_LOG_STATE = {
+  open: false,
+  loading: false,
+  error: null,
+  data: null,
+  invoiceId: null,
 }
 
 function buildUploadErrorMessage(status, payload) {
@@ -263,15 +298,18 @@ export default function CompanyCard() {
   const selectedDocumentIdRef = React.useRef(null)
   const [selectedDocument, setSelectedDocument] = React.useState(null)
   const [documentLines, setDocumentLines] = React.useState([])
+  const [documentItems, setDocumentItems] = React.useState([])
   const [detailLoading, setDetailLoading] = React.useState(false)
 
   const [candidateState, setCandidateState] = React.useState(initialCandidatesState)
   const [assigningLineId, setAssigningLineId] = React.useState(null)
   const [candidateFeedback, setCandidateFeedback] = React.useState(null)
+  const [deletingDocumentId, setDeletingDocumentId] = React.useState(null)
 
   const [previewReceipt, setPreviewReceipt] = React.useState(null)
   const [previewImage, setPreviewImage] = React.useState(null)
   const [uploadModalOpen, setUploadModalOpen] = React.useState(false)
+  const [logState, setLogState] = React.useState(INITIAL_LOG_STATE)
 
   React.useEffect(() => {
     selectedDocumentIdRef.current = selectedDocumentId
@@ -292,6 +330,7 @@ export default function CompanyCard() {
         setSelectedDocumentId(null)
         setSelectedDocument(null)
         setDocumentLines([])
+        setDocumentItems([])
         setDocumentFeedback({
           type: 'info',
           text: 'Inga kontoutdrag hittades. Ladda upp ett utdrag för att börja matcha kvitton.',
@@ -301,18 +340,22 @@ export default function CompanyCard() {
           ? preferredId
           : nextItems[0].id
         setSelectedDocumentId(targetId)
+        setDocumentItems([])
         setDocumentFeedback(null)
       }
+      return nextItems
     } catch (error) {
       console.error('Failed to load statements', error)
       setItems([])
       setSelectedDocumentId(null)
       setSelectedDocument(null)
       setDocumentLines([])
+      setDocumentItems([])
       setDocumentFeedback({
         type: 'error',
         text: `Fel vid hämtning av kontoutdrag: ${error instanceof Error ? error.message : error}`,
       })
+      return []
     } finally {
       setLoading(false)
     }
@@ -322,6 +365,7 @@ export default function CompanyCard() {
     if (!invoiceId) {
       setSelectedDocument(null)
       setDocumentLines([])
+      setDocumentItems([])
       return
     }
     setDetailLoading(true)
@@ -334,12 +378,15 @@ export default function CompanyCard() {
       data = fixEncodingDeep(data)
       const invoice = data?.invoice ?? null
       const lines = Array.isArray(data?.lines) ? data.lines : []
+      const items = Array.isArray(data?.items) ? data.items : []
       setSelectedDocument(invoice)
       setDocumentLines(lines)
+      setDocumentItems(items)
     } catch (error) {
       console.error('Failed to load invoice detail', error)
       setSelectedDocument(null)
       setDocumentLines([])
+      setDocumentItems([])
       setDocumentFeedback({
         type: 'error',
         text: `Kunde inte hämta detaljer för utdraget (${invoiceId}): ${error instanceof Error ? error.message : error}`,
@@ -358,6 +405,47 @@ export default function CompanyCard() {
       loadDocumentDetail(selectedDocumentId)
     }
   }, [selectedDocumentId, loadDocumentDetail])
+
+  const fetchInvoiceLog = React.useCallback(async (invoiceId) => {
+    if (!invoiceId) {
+      return
+    }
+    setLogState((prev) => ({
+      open: true,
+      loading: true,
+      error: null,
+      data: prev.invoiceId === invoiceId ? prev.data : null,
+      invoiceId,
+    }))
+    try {
+      const res = await api.fetch(`/ai/api/reconciliation/firstcard/invoices/${invoiceId}/log`)
+      if (!res.ok) {
+        throw new Error(`Status ${res.status}`)
+      }
+      const payloadRaw = await res.json()
+      const payload = fixEncodingDeep(payloadRaw)
+      setLogState({
+        open: true,
+        loading: false,
+        error: null,
+        data: payload,
+        invoiceId,
+      })
+    } catch (error) {
+      console.error('Failed to fetch invoice log', error)
+      setLogState({
+        open: true,
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+        data: null,
+        invoiceId,
+      })
+    }
+  }, [])
+
+  const closeLogViewer = React.useCallback(() => {
+    setLogState(INITIAL_LOG_STATE)
+  }, [])
 
   const onMatchDocument = React.useCallback(async (statementId) => {
     if (!statementId) return
@@ -385,6 +473,57 @@ export default function CompanyCard() {
       setMatchingDocumentId(null)
     }
   }, [loadStatements, loadDocumentDetail])
+
+  const handleDeleteStatement = React.useCallback(
+    async (statementId) => {
+      if (!statementId) return
+      if (typeof window !== 'undefined') {
+        const confirmed = window.confirm('Är du säker på att du vill ta bort utdraget?')
+        if (!confirmed) {
+          return
+        }
+      }
+      setDeletingDocumentId(statementId)
+      try {
+        const res = await api.fetch(`/ai/api/reconciliation/firstcard/statements/${statementId}`, {
+          method: 'DELETE',
+        })
+        if (!res.ok) {
+          let message = `Status ${res.status}`
+          try {
+            const payload = await res.json()
+            if (payload?.error) {
+              message = payload.error
+            }
+          } catch (error) {
+            // ignore json parse errors
+          }
+          throw new Error(message)
+        }
+        if (selectedDocumentId === statementId) {
+          setSelectedDocumentId(null)
+          setSelectedDocument(null)
+          setDocumentLines([])
+          setDocumentItems([])
+        }
+        const refreshed = await loadStatements()
+        if (Array.isArray(refreshed) && refreshed.length > 0) {
+          setDocumentFeedback({
+            type: 'success',
+            text: 'Utdraget har tagits bort.',
+          })
+        }
+      } catch (error) {
+        setDocumentFeedback({
+          type: 'error',
+          text: `Kunde inte ta bort utdraget: ${error instanceof Error ? error.message : error}`,
+        })
+      } finally {
+        setDeletingDocumentId(null)
+      }
+    },
+    [loadStatements, selectedDocumentId],
+  )
 
   const onOpenCandidates = React.useCallback(async (line) => {
     if (!line) return
@@ -471,15 +610,21 @@ export default function CompanyCard() {
       return []
     }
     const summary = selectedDocument.invoice_summary ?? {}
+    const details = selectedDocument.creditcard_details ?? {}
     const currency = summary.currency || 'SEK'
     const amountToPay = summary.amount_to_pay ?? summary.invoice_total
+    const cardHolder = summary.card_holder || details.card_holder || 'Okänd'
+    const cardType = summary.card_type || details.card_type
+    const cardName = summary.card_name || details.card_name
+    const cardNumberMasked = summary.card_number_masked || details.card_number_masked
+    const cardDescriptor = [cardType, cardName].filter(Boolean).join(' - ') || cardNumberMasked || 'Okänt'
     const rows = [
       { label: 'Fakturanummer', value: summary.invoice_number || 'Okänt' },
-      { label: 'Kortinnehavare', value: summary.card_holder || 'Okänd' },
-      { label: 'Kort', value: summary.card_number_masked || 'Okänt' },
+      { label: 'Kortinnehavare', value: cardHolder },
+      { label: 'Kort', value: cardDescriptor },
       {
         label: 'Belopp att betala',
-        value: amountToPay != null ? formatCurrency(amountToPay, currency) : '–',
+        value: amountToPay != null ? formatCurrency(amountToPay, currency) : '-',
       },
       {
         label: 'AI-konfidens',
@@ -546,15 +691,6 @@ export default function CompanyCard() {
       )
     }
 
-    if (!documentLines.length) {
-      return (
-        <div className="flex flex-col items-center justify-center gap-2 py-12 text-gray-400">
-          <FiFileText className="text-3xl" />
-          <div>Inga rader hittades i detta utdrag.</div>
-        </div>
-      )
-    }
-
     return (
       <div className="overflow-hidden border border-gray-700 rounded-lg">
         <table className="w-full text-sm">
@@ -569,7 +705,7 @@ export default function CompanyCard() {
             </tr>
           </thead>
           <tbody>
-            {documentLines.map((line) => {
+            {documentLines.length > 0 ? documentLines.map((line) => {
               const statusDetails = describeLineStatus(line.match_status)
               const badgeClass = toneClass[statusDetails.tone] ?? 'status-processing'
               const matchedReceipt = line.matched_receipt
@@ -632,7 +768,74 @@ export default function CompanyCard() {
                   </td>
                 </tr>
               )
-            })}
+            }) : (
+              <tr className="border-t border-gray-700">
+                <td colSpan={6} className="px-4 py-8 text-center text-gray-500">-</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
+
+  const renderItemTable = () => {
+    if (detailLoading && !documentItems.length) {
+      return (
+        <div className="flex items-center justify-center gap-3 py-12 text-gray-400">
+          <div className="loading-spinner" />
+          <span>Laddar transaktioner...</span>
+        </div>
+      )
+    }
+
+    const rows = documentItems.length ? documentItems : []
+
+    return (
+      <div className="overflow-hidden border border-gray-700 rounded-lg">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-800 text-left text-gray-300 uppercase text-xs tracking-wide">
+            <tr>
+              <th className="px-4 py-3">Köpdatum</th>
+              <th className="px-4 py-3">Butik</th>
+              <th className="px-4 py-3">Stad</th>
+              <th className="px-4 py-3">Belopp</th>
+              <th className="px-4 py-3">Nettobelopp</th>
+              <th className="px-4 py-3">Moms %</th>
+              <th className="px-4 py-3">Valuta</th>
+              <th className="px-4 py-3 text-center">Matchad</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map((item, index) => {
+              const matched = Number(item.matched) === 1
+              const currency = item.currency_original || 'SEK'
+              const amountOriginal = item.amount_original != null ? formatCurrency(item.amount_original, currency) : '-'
+              const netAmount = item.net_amount != null ? formatCurrency(item.net_amount, currency) : '-'
+              const vatDisplay = item.vat_rate != null ? `${Number(item.vat_rate).toFixed(2)}%` : '-'
+              return (
+                <tr key={item.id ?? `item-${index}`} className="border-t border-gray-700">
+                  <td className="px-4 py-3 text-gray-200 whitespace-nowrap">{formatDate(item.purchase_date, false)}</td>
+                  <td className="px-4 py-3 text-gray-100">{item.merchant_name || '-'}</td>
+                  <td className="px-4 py-3 text-gray-200">{item.merchant_city || '-'}</td>
+                  <td className="px-4 py-3 text-gray-100 whitespace-nowrap">{amountOriginal}</td>
+                  <td className="px-4 py-3 text-gray-100 whitespace-nowrap">{netAmount}</td>
+                  <td className="px-4 py-3 text-gray-200">{vatDisplay}</td>
+                  <td className="px-4 py-3 text-gray-200">{item.currency_original || currency}</td>
+                  <td className="px-4 py-3 text-center">
+                    {matched ? (
+                      <FiCheckCircle className="inline text-green-400" aria-label="Matchad" />
+                    ) : (
+                      <FiX className="inline text-red-400" aria-label="Ej matchad" />
+                    )}
+                  </td>
+                </tr>
+              )
+            }) : (
+              <tr className="border-t border-gray-700">
+                <td colSpan={8} className="px-4 py-8 text-center text-gray-500">-</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -727,6 +930,279 @@ export default function CompanyCard() {
     </div>
   ) : null
 
+  const renderLogModal = () => {
+    if (!logState.open) {
+      return null
+    }
+
+    const logData = logState.data ?? {}
+    const workflowRuns = Array.isArray(logData?.workflow_runs) ? logData.workflow_runs : []
+    const aiHistory = Array.isArray(logData?.ai_history) ? logData.ai_history : []
+    const files = Array.isArray(logData?.files) ? logData.files : []
+    const metadataPayload = logData?.metadata && typeof logData.metadata === 'object' ? logData.metadata : {}
+    const invoiceIdForModal = logData?.invoice_id || logState.invoiceId
+
+    const handleBackdrop = (event) => {
+      if (event.target === event.currentTarget) {
+        closeLogViewer()
+      }
+    }
+
+    return (
+      <div className="modal-backdrop" role="dialog" aria-label="Importlogg" onClick={handleBackdrop}>
+        <div
+          className="modal"
+          onClick={(event) => event.stopPropagation()}
+          style={{ maxWidth: '960px' }}
+        >
+          <div className="modal-header">
+            <div>
+              <h3>Importlogg</h3>
+              <p className="text-xs text-gray-400 mt-1">
+                Kontoutdrag: {invoiceIdForModal || 'okänd'}
+              </p>
+            </div>
+            <button type="button" className="icon-button" onClick={closeLogViewer} aria-label="Stäng logg">
+              <FiX />
+            </button>
+          </div>
+
+          <div className="modal-body space-y-6 max-h-[70vh] overflow-y-auto">
+            {logState.loading ? (
+              <div className="flex items-center justify-center gap-3 py-10 text-gray-200">
+                <div className="loading-spinner" />
+                <span>Hämtar logg...</span>
+              </div>
+            ) : logState.error ? (
+              <div className="alert alert-error">
+                <FiAlertCircle className="mr-2" />
+                <span>{`Misslyckades att hämta logg: ${logState.error}`}</span>
+              </div>
+            ) : (
+              <>
+                <section>
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-semibold text-gray-200 uppercase tracking-wide">
+                      Workflowkörningar
+                    </h4>
+                    <span className="text-xs text-gray-500">
+                      {workflowRuns.length ? `${workflowRuns.length} st` : 'Inga loggar'}
+                    </span>
+                  </div>
+                  {workflowRuns.length === 0 ? (
+                    <p className="text-xs text-gray-400 mt-2">Inga workflow-loggar hittades för detta utdrag.</p>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      {workflowRuns.map((run) => (
+                        <div key={run.id} className="bg-gray-900 border border-gray-700 rounded-lg p-4 space-y-3">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <div className="text-sm font-semibold text-gray-100">
+                                {run.workflow_key} · {run.status}
+                              </div>
+                              <div className="text-xs text-gray-400">
+                                Run-ID: {run.id} · Källa: {run.source_channel || 'okänd'}
+                              </div>
+                            </div>
+                            <div className="text-xs text-gray-400 text-right">
+                              <div>Start: {formatDate(run.created_at)}</div>
+                              <div>Senast: {formatDate(run.updated_at)}</div>
+                            </div>
+                          </div>
+                          {Array.isArray(run.stages) && run.stages.length > 0 ? (
+                            <div className="space-y-2">
+                              {run.stages.map((stage, index) => (
+                                <div
+                                  key={`${run.id}-${stage.stage_key}-${stage.started_at || stage.finished_at || index}`}
+                                  className="bg-gray-800/70 border border-gray-700/70 rounded-md px-3 py-2 space-y-1"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between text-sm font-medium text-gray-100">
+                                    <span>{stage.stage_key}</span>
+                                    <span>{stage.status}</span>
+                                  </div>
+                                  <div className="flex flex-wrap items-center justify-between text-xs text-gray-400">
+                                    <span>
+                                      {formatDate(stage.started_at)}{stage.finished_at ? ` → ${formatDate(stage.finished_at)}` : ''}
+                                    </span>
+                                    {stage.duration_ms != null && (
+                                      <span>{formatDurationMs(stage.duration_ms)}</span>
+                                    )}
+                                  </div>
+                                  {stage.message && (
+                                    <pre className="mt-2 text-xs text-gray-300 whitespace-pre-wrap font-mono">
+                                      {stage.message}
+                                    </pre>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-500">Inga steg registrerade.</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section>
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-semibold text-gray-200 uppercase tracking-wide">
+                      AI-historik
+                    </h4>
+                    <span className="text-xs text-gray-500">
+                      {aiHistory.length ? `${aiHistory.length} poster` : 'Inga AI-loggar'}
+                    </span>
+                  </div>
+                  {aiHistory.length === 0 ? (
+                    <p className="text-xs text-gray-400 mt-2">
+                      Ingen AI-historik registrerad för detta utdrag eller dess sidor.
+                    </p>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      {aiHistory.map((entry) => (
+                        <div key={entry.id} className="bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <div className="text-sm font-semibold text-gray-100">
+                                {(entry.ai_stage_name || entry.job_type || 'Okänt steg')} · {entry.status}
+                              </div>
+                              <div className="text-xs text-gray-400">
+                                Fil: {entry.file_id} · {formatDate(entry.created_at)}
+                              </div>
+                            </div>
+                            <div className="text-xs text-gray-400 text-right space-y-1">
+                              {(entry.provider || entry.model) && (
+                                <div>
+                                  {entry.provider || 'okänd'}{entry.model ? ` · ${entry.model}` : ''}
+                                </div>
+                              )}
+                              {entry.processing_time_ms != null && (
+                                <div>Tid: {formatDurationMs(entry.processing_time_ms)}</div>
+                              )}
+                              {entry.confidence != null && (
+                                <div>Konfidens: {Math.round(entry.confidence * 100)}%</div>
+                              )}
+                            </div>
+                          </div>
+                          {entry.log_text && (
+                            <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono bg-gray-800/70 border border-gray-700/70 rounded-md p-2">
+                              {entry.log_text}
+                            </pre>
+                          )}
+                          {entry.error_message && (
+                            <div className="text-xs text-red-300 bg-red-900/30 border border-red-800/40 rounded-md p-2 whitespace-pre-wrap font-mono">
+                              {entry.error_message}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section>
+                  <h4 className="text-sm font-semibold text-gray-200 uppercase tracking-wide">
+                    Filer
+                  </h4>
+                  {files.length === 0 ? (
+                    <p className="text-xs text-gray-400 mt-2">
+                      Inga relaterade filer hittades i unified_files.
+                    </p>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      {files.map((file) => (
+                        <div key={file.id} className="bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-gray-100">
+                            <span className="font-semibold">{file.id}</span>
+                            <span className="text-xs text-gray-400">
+                              Skapad: {formatDate(file.created_at)}
+                              {file.updated_at ? ` · Uppdaterad: ${formatDate(file.updated_at)}` : ''}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-300">
+                            <div>Filtyp: {file.file_type || '–'}</div>
+                            <div>Workflow-typ: {file.workflow_type || '–'}</div>
+                            <div>Status: {file.ai_status || '–'}</div>
+                            <div>
+                              Konfidens: {file.ai_confidence != null ? `${Math.round(file.ai_confidence * 100)}%` : '–'}
+                            </div>
+                            <div>OCR-tecken: {file.ocr_raw_length ?? 0}</div>
+                          </div>
+                          {file.ocr_raw_length > 0 && (
+                            <details className="bg-gray-800/60 border border-gray-700/60 rounded-md p-2">
+                              <summary className="text-xs text-gray-300 cursor-pointer">
+                                Visa OCR-text ({file.ocr_raw_length} tecken)
+                              </summary>
+                              <pre className="mt-2 text-xs text-gray-200 whitespace-pre-wrap font-mono max-h-48 overflow-y-auto">
+                                {file.ocr_raw}
+                              </pre>
+                            </details>
+                          )}
+                          {file.other_data && Object.keys(file.other_data).length > 0 && (
+                            <details className="bg-gray-800/50 border border-gray-700/60 rounded-md p-2">
+                              <summary className="text-xs text-gray-300 cursor-pointer">
+                                Visa other_data
+                              </summary>
+                              <pre className="mt-2 text-xs text-gray-200 whitespace-pre-wrap font-mono overflow-x-auto">
+                                {JSON.stringify(file.other_data, null, 2)}
+                              </pre>
+                            </details>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section>
+                  <h4 className="text-sm font-semibold text-gray-200 uppercase tracking-wide">
+                    Metadata (invoice_documents)
+                  </h4>
+                  {metadataPayload && Object.keys(metadataPayload).length > 0 ? (
+                    <div className="mt-3 bg-gray-900 border border-gray-700 rounded-lg p-3">
+                      <pre className="text-xs text-gray-200 whitespace-pre-wrap font-mono overflow-x-auto">
+                        {JSON.stringify(metadataPayload, null, 2)}
+                      </pre>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-400 mt-2">
+                      Ingen metadata sparad för detta utdrag.
+                    </p>
+                  )}
+                </section>
+              </>
+            )}
+          </div>
+
+          <div className="modal-footer">
+            <button type="button" className="btn btn-text" onClick={closeLogViewer}>
+              Stäng
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => logState.invoiceId && fetchInvoiceLog(logState.invoiceId)}
+              disabled={logState.loading || !logState.invoiceId}
+            >
+              {logState.loading ? (
+                <>
+                  <div className="loading-spinner mr-2" />
+                  Hämtar...
+                </>
+              ) : (
+                <>
+                  <FiRefreshCw className="mr-2" />
+                  Ladda om
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
 
 const renderStatementTable = () => {
     if (!items.length) {
@@ -743,14 +1219,20 @@ const renderStatementTable = () => {
       const badgeClass = toneClass[statusDetails.tone] ?? 'status-processing'
       const lineSummary = statement.line_counts ?? {}
       const isSelected = statement.id === selectedDocumentId
-      const periodLabel = statement.period_start && statement.period_end
-        ? `${formatDate(statement.period_start, false)} – ${formatDate(statement.period_end, false)}`
-        : `Utdrag ${statement.id}`
+      const cardLabel = statement.card_name
+        || statement.invoice_summary?.card_name
+        || statement.invoice_summary?.card_holder
+        || `Utdrag ${statement.id}`
+      const invoiceNumber = statement.invoice_summary?.invoice_number || statement.invoice_number || statement.id
+      const periodRange = statement.period_start && statement.period_end
+        ? `${formatDate(statement.period_start, false)} - ${formatDate(statement.period_end, false)}`
+        : null
       const processingDetails = describeProcessingStatus(statement.processing_status || statement.status)
       const updatedAt = statement.updated_at || statement.uploaded_at
       const confidence = typeof statement.overall_confidence === 'number'
         ? `${Math.round(Number(statement.overall_confidence) * 100)}%`
-        : '–'
+        : '-'
+      const invoiceDateLabel = statement.invoice_date ? formatDate(statement.invoice_date, false) : '-'
 
       return {
         statement,
@@ -758,10 +1240,13 @@ const renderStatementTable = () => {
         badgeClass,
         lineSummary,
         isSelected,
-        periodLabel,
+        cardLabel,
+        invoiceNumber,
+        periodRange,
         processingDetails,
         updatedAt,
         confidence,
+        invoiceDateLabel,
       }
     })
 
@@ -770,17 +1255,19 @@ const renderStatementTable = () => {
         <table className="min-w-full divide-y divide-gray-700 text-sm">
           <thead className="bg-gray-900/60 text-gray-300 uppercase tracking-wide text-xs">
             <tr>
-              <th className="px-4 py-3 text-left">Period</th>
+              <th className="px-4 py-3 text-left">Kort</th>
+              <th className="px-4 py-3 text-left">Fakturadatum</th>
               <th className="px-4 py-3 text-left">Status</th>
               <th className="px-4 py-3 text-left">Bearbetning</th>
               <th className="px-4 py-3 text-left">AI6</th>
               <th className="px-4 py-3 text-left">Linjer</th>
               <th className="px-4 py-3 text-left">Senast uppdaterad</th>
               <th className="px-4 py-3 text-right">Åtgärder</th>
+              <th className="px-3 py-3 text-right">Ta bort</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800">
-            {rows.map(({ statement, statusDetails, badgeClass, lineSummary, isSelected, periodLabel, processingDetails, updatedAt, confidence }) => {
+            {rows.map(({ statement, statusDetails, badgeClass, lineSummary, isSelected, cardLabel, invoiceNumber, periodRange, processingDetails, updatedAt, confidence, invoiceDateLabel }) => {
               const rowClasses = isSelected ? 'bg-red-600/10 hover:bg-red-600/20' : 'hover:bg-gray-800/40'
 
               return (
@@ -792,12 +1279,15 @@ const renderStatementTable = () => {
                   <td className="px-4 py-3 text-sm font-medium text-gray-100">
                     <div className="flex items-center gap-2">
                       <FiChevronRight className={`transition-transform ${isSelected ? 'rotate-90 text-red-400' : 'text-gray-500'}`} />
-                      {periodLabel}
+                      {cardLabel}
                     </div>
+                    <div className="mt-1 text-xs text-gray-400">Fakturanummer: {invoiceNumber}</div>
+                    {periodRange && <div className="text-xs text-gray-400">Period: {periodRange}</div>}
                     <div className="mt-1 text-xs text-gray-400">
                       Uppladdad {formatDate(statement.created_at || statement.uploaded_at)}
                     </div>
                   </td>
+                  <td className="px-4 py-3 text-gray-200">{invoiceDateLabel}</td>
                   <td className="px-4 py-3">
                     <span className={`status-badge ${badgeClass}`}>{statusDetails.label}</span>
                   </td>
@@ -821,9 +1311,10 @@ const renderStatementTable = () => {
                         onClick={(event) => {
                           event.stopPropagation()
                           setSelectedDocumentId(statement.id)
+                          fetchInvoiceLog(statement.id)
                         }}
                       >
-                        Visa
+                        Visa logg
                       </button>
                       <button
                         type="button"
@@ -847,6 +1338,20 @@ const renderStatementTable = () => {
                         )}
                       </button>
                     </div>
+                  </td>
+                  <td className="px-3 py-3 text-right">
+                    <button
+                      type="button"
+                      className={`icon-button ${deletingDocumentId === statement.id ? 'opacity-60 cursor-wait' : 'text-gray-500 hover:text-red-400'}`}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        handleDeleteStatement(statement.id)
+                      }}
+                      disabled={deletingDocumentId === statement.id}
+                      aria-label="Ta bort utdrag"
+                    >
+                      {deletingDocumentId === statement.id ? <div className="loading-spinner w-4 h-4" /> : <FiTrash2 />}
+                    </button>
                   </td>
                 </tr>
               )
@@ -988,11 +1493,13 @@ const renderStatementTable = () => {
             </>
           )}
 
+          {renderItemTable()}
           {renderLineTable()}
         </div>
       </div>
 
       {candidatesContent}
+      {renderLogModal()}
 
       <InvoiceUploadModal
         open={uploadModalOpen}

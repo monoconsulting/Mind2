@@ -16,6 +16,7 @@
 			".prompts": true
 		},
 		"chatgpt.openOnStartup": true,
-		"chatgpt.commentCodeLensEnabled": true
+		"chatgpt.commentCodeLensEnabled": true,
+		"python.terminal.useEnvFile": true
 	}
 }

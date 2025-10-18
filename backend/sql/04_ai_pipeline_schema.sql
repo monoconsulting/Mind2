@@ -15,7 +15,8 @@ ALTER TABLE unified_files
     ADD COLUMN IF NOT EXISTS company_id INT NULL AFTER ocr_raw,
     ADD COLUMN IF NOT EXISTS receipt_number VARCHAR(255) NULL AFTER company_id,
     ADD COLUMN IF NOT EXISTS other_data LONGTEXT NULL AFTER receipt_number,
-    ADD COLUMN IF NOT EXISTS credit_card_match TINYINT(1) NOT NULL DEFAULT 0 AFTER other_data;
+    ADD COLUMN IF NOT EXISTS credit_card_match TINYINT(1) NOT NULL DEFAULT 0 AFTER other_data,
+    ADD COLUMN IF NOT EXISTS matched TINYINT(1) NOT NULL DEFAULT 0 AFTER credit_card_match;
 
 CREATE TABLE IF NOT EXISTS companies (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -88,6 +89,7 @@ CREATE TABLE IF NOT EXISTS creditcard_invoice_items (
     gross_amount DECIMAL(13,2) NULL,
     cost_center_override VARCHAR(100) NULL,
     project_code VARCHAR(100) NULL,
+    matched TINYINT(1) NOT NULL DEFAULT 0,
     created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_invoice_items_purchase_date (purchase_date),

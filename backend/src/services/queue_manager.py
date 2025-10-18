@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 try:  # Optional dependency in unit-test context
     from celery import Celery as _Celery
+    from kombu import Queue
 except Exception:  # pragma: no cover
     _Celery = None
+    Queue = None
 
 
 class _StubConf:
@@ -48,6 +50,19 @@ BACKEND_URL = BROKER_URL
 CeleryClass = _Celery or _StubCelery
 celery_app = CeleryClass("mind", broker=BROKER_URL, backend=BACKEND_URL)
 
+# Define workflow-specific queues for hard workflow separation
+# WF1: Receipt workflow (AI1-AI4 pipeline)
+# WF2: Credit card invoice workflow (AI6 pipeline, PDF splitting)
+if Queue is not None:
+    _task_queues = (
+        Queue('default', routing_key='default'),
+        Queue('wf1', routing_key='wf1.#'),
+        Queue('wf2', routing_key='wf2.#'),
+    )
+else:
+    # Stub for testing
+    _task_queues = {}
+
 # Basic configuration; can be extended per environment
 celery_app.conf.update(
     task_acks_late=True,
@@ -56,8 +71,12 @@ celery_app.conf.update(
         "visibility_timeout": 3600,  # 1 hour
     },
     task_default_queue="default",
-    task_queues={
-        # Default queue; additional queues could be added (ocr, classification, matching)
+    task_queues=_task_queues,
+    task_routes={
+        # Workflow 1: Receipt processing (AI1-AI4)
+        'wf1.*': {'queue': 'wf1', 'routing_key': 'wf1.default'},
+        # Workflow 2: Credit card invoice processing (AI6, PDF split)
+        'wf2.*': {'queue': 'wf2', 'routing_key': 'wf2.default'},
     },
     task_default_retry_delay=5,  # seconds
     task_time_limit=300,  # seconds
