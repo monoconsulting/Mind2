@@ -15,7 +15,7 @@ class UnifiedFileBase(BaseModel):
 
     file_type: Literal["receipt", "invoice", "other", "Manual Review"]
     orgnr: Optional[str] = Field(None, max_length=32, description="Company Organization Number")
-    payment_type: Optional[Literal["cash", "card"]] = Field(
+    payment_type: Optional[Literal["cash", "card", "swish"]] = Field(
         None, description='Cash vs corporate card purchase classification'
     )
     purchase_datetime: Optional[datetime] = None
@@ -43,6 +43,14 @@ class UnifiedFileBase(BaseModel):
     approved_by: Optional[int] = None
     other_data: Optional[str] = Field(None, description="Additional data from receipt")
     credit_card_match: bool = False
+    credit_card_number: Optional[str] = Field(None, max_length=44)
+    credit_card_last_4_digits: Optional[int] = None
+    credit_card_brand_full: Optional[str] = Field(None, max_length=32)
+    credit_card_brand_short: Optional[str] = Field(None, max_length=16)
+    credit_card_payment_variant: Optional[str] = Field(None, max_length=64)
+    credit_card_type: Optional[str] = Field(None, max_length=64)
+    credit_card_token: Optional[str] = Field(None, max_length=64)
+    credit_card_entering_mode: Optional[str] = Field(None, max_length=32)
 
 
 class UnifiedFileAIStatus(BaseModel):
