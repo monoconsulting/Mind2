@@ -7,13 +7,19 @@ import os
 import re
 import requests
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from pydantic import ValidationError
 
 from models.ai_processing import (
     DocumentClassificationRequest,
     DocumentClassificationResponse,
+    CreditCardInvoiceExtractionRequest,
+    CreditCardInvoiceExtractionResponse,
+    CreditCardInvoiceHeader,
+    CreditCardInvoiceLine,
     ExpenseClassificationRequest,
     ExpenseClassificationResponse,
     DataExtractionRequest,
@@ -28,6 +34,7 @@ from models.ai_processing import (
     AccountingProposal,
 )
 from services.db.connection import db_cursor
+from services.invoice_parser import parse_credit_card_statement
 
 
 @dataclass
@@ -68,10 +75,9 @@ class OpenAIProvider(BaseLLMProvider):
 
         url = "https://api.openai.com/v1/chat/completions"
 
-        # Build the request payload
         messages = [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
 
         request_payload = {
@@ -86,11 +92,12 @@ class OpenAIProvider(BaseLLMProvider):
         }
 
         try:
-            response = requests.post(url, json=request_payload, headers=headers, timeout=300)
+            timeout_seconds = int(os.getenv("OPENAI_TIMEOUT", "600"))
+            response = requests.post(url, json=request_payload, headers=headers, timeout=timeout_seconds)
             response.raise_for_status()
 
             result = response.json()
-            content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            content = result["choices"][0]["message"]["content"]
 
             if not content:
                 return ProviderResponse(raw="", parsed=None)
@@ -110,8 +117,116 @@ class OpenAIProvider(BaseLLMProvider):
                 parsed = json.loads(cleaned)
                 return ProviderResponse(raw=content, parsed=parsed)
             except json.JSONDecodeError as exc:
-                # If not JSON, treat as raw text response (for simple prompts like AI1/AI2)
-                # Don't log as error - some prompts expect text responses
+                logger.debug(f"Response is text, not JSON: {content[:100]}")
+                return ProviderResponse(raw=content, parsed=None)
+
+        except requests.exceptions.RequestException as exc:
+            error_detail = str(exc)
+            try:
+                if hasattr(exc, 'response') and exc.response is not None:
+                    error_body = exc.response.json()
+                    error_detail = f"{exc} - Response: {error_body}"
+            except:
+                pass
+            logger.error(f"OpenAI API error: {error_detail}")
+            raise RuntimeError(f"OpenAI API call failed: {exc}")
+
+
+class ResponsesApiOpenAIProvider(OpenAIProvider):
+    """Adapter for OpenAI's new /v1/responses API."""
+
+    def generate(self, prompt: str, payload: Dict[str, Any]) -> ProviderResponse:
+        if not self.api_key:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+
+        if not self.model_name:
+            raise RuntimeError("OpenAI model name is not configured")
+
+        url = "https://api.openai.com/v1/responses"
+
+        input_messages = [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": prompt,
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": json.dumps(payload, ensure_ascii=False),
+                    }
+                ],
+            },
+        ]
+
+        request_payload = {
+            "model": self.model_name,
+            "input": input_messages,
+            "text": {
+                "format": { "type": "json_object" }
+            },
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            timeout_seconds = int(os.getenv("OPENAI_TIMEOUT", "600"))
+            response = requests.post(url, json=request_payload, headers=headers, timeout=timeout_seconds)
+            response.raise_for_status()
+
+            result = response.json()
+            content = ""
+
+            # Prefer Responses API `output` field
+            output_blocks = result.get("output") or []
+            if output_blocks:
+                first_block = output_blocks[0] or {}
+                if first_block.get("type") == "message":
+                    parts = first_block.get("content") or []
+                    text_parts = [
+                        part.get("text", "")
+                        for part in parts
+                        if isinstance(part, dict) and part.get("type") in ("output_text", "text")
+                    ]
+                    content = "\n".join(part for part in text_parts if part)
+
+            if not content:
+                ot = result.get("output_text")
+                if isinstance(ot, str):
+                    content = ot
+                elif isinstance(ot, list):
+                    content = "\n".join(part for part in ot if part)
+
+            if not content:
+                choices = result.get("choices", [])
+                if choices:
+                    content = choices[0].get("message", {}).get("content", "")
+
+            if not content:
+                return ProviderResponse(raw="", parsed=None)
+
+            try:
+                cleaned = content.strip()
+                if cleaned.startswith("```json"):
+                    cleaned = cleaned[7:]
+                if cleaned.startswith("```"):
+                    cleaned = cleaned[3:]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3]
+                cleaned = cleaned.strip()
+
+                parsed = json.loads(cleaned)
+                return ProviderResponse(raw=content, parsed=parsed)
+            except json.JSONDecodeError as exc:
                 logger.debug(f"Response is text, not JSON: {content[:100]}")
                 return ProviderResponse(raw=content, parsed=None)
 
@@ -513,6 +628,7 @@ class AIService:
         self.prompt_providers: Dict[str, Optional[BaseLLMProvider]] = {}
         self.prompt_provider_names: Dict[str, str] = {}
         self.prompt_model_names: Dict[str, str] = {}
+        self.last_raw_response: Optional[str] = None
         self._load_prompts_and_providers()
 
     # ------------------------------------------------------------------
@@ -537,11 +653,26 @@ class AIService:
                     # Initialize provider for this prompt if model is selected
                     if model_id and provider_name and model_name:
                         try:
-                            provider_adapter = self._init_provider(provider_name, model_name, api_key, endpoint_url)
+                            provider_adapter, resolved_name, resolved_model = self._init_provider(
+                                provider_name,
+                                model_name,
+                                api_key,
+                                endpoint_url,
+                            )
                             self.prompt_providers[key] = provider_adapter
-                            self.prompt_provider_names[key] = provider_name
-                            self.prompt_model_names[key] = model_name
-                            logger.info(f"Loaded model for {key}: {provider_name}/{model_name}")
+                            provider_label = resolved_name or provider_name or "none"
+                            model_label = resolved_model or model_name or "none"
+                            self.prompt_provider_names[key] = provider_label
+                            self.prompt_model_names[key] = model_label
+                            if provider_adapter:
+                                logger.info(
+                                    f"Loaded model for {key}: {provider_label}/{model_label}"
+                                )
+                            else:
+                                logger.warning(
+                                    f"No provider instance initialised for {key}; resolved provider/model="
+                                    f"{provider_label}/{model_label}"
+                                )
                         except Exception as exc:
                             logger.warning(f"Failed to init provider for {key}: {exc}")
                             self.prompt_providers[key] = None
@@ -572,29 +703,52 @@ class AIService:
 
 
     def _init_provider(
-        self, provider_from_db: Optional[str], model_from_db: Optional[str],
-        api_key_from_db: Optional[str] = None, endpoint_from_db: Optional[str] = None
-    ) -> Optional[BaseLLMProvider]:
-        configured = os.getenv("AI_PROVIDER") or (provider_from_db or "")
-        configured = configured.lower().strip()
-        model = os.getenv("AI_MODEL_NAME") or model_from_db
+        self,
+        provider_from_db: Optional[str],
+        model_from_db: Optional[str],
+        api_key_from_db: Optional[str] = None,
+        endpoint_from_db: Optional[str] = None,
+    ) -> tuple[Optional[BaseLLMProvider], str, str]:
+        """Resolve the provider/model for a prompt using database configuration only.
 
-        if not configured:
-            return None
+        Returns a tuple of (provider_instance, resolved_provider_name, resolved_model_name).
+        """
+        resolved_provider_name = (provider_from_db or "").strip()
+        resolved_model_name = (model_from_db or "").strip()
+        endpoint = (endpoint_from_db or "").strip()
+
+        if not resolved_provider_name:
+            logger.error("No provider configured in database for selected model.")
+            return None, "", resolved_model_name
+
+        provider_key = resolved_provider_name.lower()
+
+        if not resolved_model_name:
+            logger.error("No model name configured in database for provider '%s'.", resolved_provider_name)
+            return None, resolved_provider_name, ""
 
         try:
-            if configured == "openai":
-                return OpenAIProvider(model, api_key_from_db)
-            if configured in {"azure", "azure_openai", "azure-openai"}:
-                return AzureOpenAIProvider(model, api_key_from_db, endpoint_from_db)
-            if configured == "ollama":
-                return OllamaProvider(model, endpoint_from_db)
+            if provider_key == "openai":
+                return OpenAIProvider(resolved_model_name, api_key_from_db), resolved_provider_name, resolved_model_name
+            if provider_key == "openai-responses-api":
+                return ResponsesApiOpenAIProvider(resolved_model_name, api_key_from_db), resolved_provider_name, resolved_model_name
+            if provider_key in {"azure", "azure_openai", "azure-openai"}:
+                return (
+                    AzureOpenAIProvider(resolved_model_name, api_key_from_db, endpoint or None),
+                    resolved_provider_name,
+                    resolved_model_name,
+                )
+            if provider_key == "ollama":
+                if not endpoint:
+                    logger.error("Ollama provider '%s' missing endpoint_url in ai_llm.", resolved_provider_name)
+                    return None, resolved_provider_name, resolved_model_name
+                return OllamaProvider(resolved_model_name, endpoint), resolved_provider_name, resolved_model_name
         except Exception as exc:  # pragma: no cover - configuration errors
-            logger.warning("Failed to initialise LLM provider %s: %s", configured, exc)
-            return None
+            logger.warning("Failed to initialise LLM provider %s: %s", resolved_provider_name, exc)
+            return None, resolved_provider_name, resolved_model_name
 
-        logger.warning("Unknown AI provider '%s'; falling back to rule-based mode", configured)
-        return None
+        logger.warning("Unknown AI provider '%s'; falling back to rule-based mode", resolved_provider_name)
+        return None, resolved_provider_name, resolved_model_name
 
     def _provider_generate(
         self, stage_key: str, payload: Dict[str, Any]
@@ -616,6 +770,7 @@ class AIService:
         try:
             logger.debug(f"Calling {stage_key} with provider={provider_name}, model={model_name}")
             response = provider.generate(prompt=prompt, payload=payload)
+            self.last_raw_response = response.raw
 
             # Log raw response for AI4 debugging
             if stage_key == "accounting_classification":
@@ -1092,3 +1247,118 @@ class AIService:
             confidence=0.45,
             match_details={"reason": "No transaction met the criteria"},
         )
+
+    # ------------------------------------------------------------------
+    # AI6 - Credit card invoice parsing
+    # ------------------------------------------------------------------
+    def parse_credit_card_invoice(
+        self, request: CreditCardInvoiceExtractionRequest
+    ) -> CreditCardInvoiceExtractionResponse:
+        """Parse OCR text for a credit card invoice into structured data."""
+
+        payload = {
+            "invoice_id": request.invoice_id,
+            "ocr_text": request.ocr_text,
+            "page_ids": request.page_ids,
+        }
+
+        llm_result = self._provider_generate("credit_card_invoice_parsing", payload)
+        if llm_result:
+            try:
+                header_payload = llm_result.get("header") or {}
+                header_model = CreditCardInvoiceHeader(**header_payload)
+
+                lines_payload = llm_result.get("lines") or []
+                normalised_lines: List[CreditCardInvoiceLine] = []
+                for idx, raw_line in enumerate(lines_payload, 1):
+                    line_data = dict(raw_line or {})
+                    line_data.setdefault("line_no", idx)
+                    normalised_lines.append(CreditCardInvoiceLine(**line_data))
+
+                response = CreditCardInvoiceExtractionResponse(
+                    invoice_id=request.invoice_id,
+                    header=header_model,
+                    lines=normalised_lines,
+                    overall_confidence=llm_result.get("overall_confidence"),
+                )
+                return response
+            except ValidationError as exc:
+                logger.error(
+                    "AI6 response validation failed for %s: %s",
+                    request.invoice_id,
+                    exc,
+                )
+            except Exception as exc:
+                logger.error(
+                    "AI6 parsing raised unexpected error for %s: %s",
+                    request.invoice_id,
+                    exc,
+                )
+
+        logger.info(
+            "Falling back to rule-based credit card parsing for invoice %s",
+            request.invoice_id,
+        )
+        return self._fallback_credit_card_invoice_parse(request)
+
+    def _fallback_credit_card_invoice_parse(
+        self, request: CreditCardInvoiceExtractionRequest
+    ) -> CreditCardInvoiceExtractionResponse:
+        parsed = parse_credit_card_statement(request.ocr_text)
+
+        header = CreditCardInvoiceHeader(
+            invoice_number=request.invoice_id,
+            period_start=self._safe_parse_date(parsed.get("period_start")),
+            period_end=self._safe_parse_date(parsed.get("period_end")),
+            currency="SEK",
+        )
+
+        lines: List[CreditCardInvoiceLine] = []
+        total_amount = Decimal("0.00")
+        confidences: List[float] = []
+
+        for idx, raw_line in enumerate(parsed.get("lines") or [], 1):
+            amount = Decimal(str(raw_line.get("amount") or 0))
+            total_amount += amount
+            confidence = float(raw_line.get("confidence") or 0.75)
+            confidences.append(confidence)
+            line = CreditCardInvoiceLine(
+                line_no=idx,
+                purchase_date=self._safe_parse_date(raw_line.get("transaction_date")),
+                merchant_name=raw_line.get("merchant_name"),
+                description=raw_line.get("description"),
+                currency_original="SEK",
+                amount_original=amount,
+                amount_sek=amount,
+                gross_amount=amount,
+                confidence=confidence,
+                source_text=raw_line.get("raw_text"),
+            )
+            lines.append(line)
+
+        header.invoice_total = total_amount if lines else None
+        header.amount_to_pay = total_amount if lines else None
+        header.card_total = total_amount if lines else None
+
+        overall_confidence = None
+        if confidences:
+            overall_confidence = sum(confidences) / len(confidences)
+
+        return CreditCardInvoiceExtractionResponse(
+            invoice_id=request.invoice_id,
+            header=header,
+            lines=lines,
+            overall_confidence=overall_confidence,
+        )
+
+    @staticmethod
+    def _safe_parse_date(value: Any) -> Optional[date]:
+        if not value:
+            return None
+        if isinstance(value, date):
+            return value
+        try:
+            parsed = datetime.fromisoformat(str(value))
+            return parsed.date()
+        except Exception:
+            return None

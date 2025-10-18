@@ -386,6 +386,11 @@ def _persist_credit_card_match(
     try:
         if owns_connection:
             conn.start_transaction()
+        if invoice_item_id is not None:
+            cursor.execute(
+                "UPDATE creditcard_invoice_items SET matched = %s, updated_at = NOW() WHERE id = %s",
+                (1 if matched else 0, invoice_item_id),
+            )
         if matched and invoice_item_id is not None:
             cursor.execute(
                 """
@@ -395,9 +400,14 @@ def _persist_credit_card_match(
                 """,
                 (file_id, invoice_item_id, matched_amount),
             )
+        elif invoice_item_id is not None:
+            cursor.execute(
+                "DELETE FROM creditcard_receipt_matches WHERE invoice_item_id = %s",
+                (invoice_item_id,),
+            )
         cursor.execute(
-            "UPDATE unified_files SET credit_card_match = %s, updated_at = NOW() WHERE id = %s",
-            (1 if matched else 0, file_id),
+            "UPDATE unified_files SET credit_card_match = %s, matched = %s, updated_at = NOW() WHERE id = %s",
+            (1 if matched else 0, 1 if matched else 0, file_id),
         )
         _set_ai_stage(cursor, file_id, "AI5", confidence, matched=matched)
         if owns_connection:

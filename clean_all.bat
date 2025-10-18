@@ -19,7 +19,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [1/4] Cleaning local inbox...
+echo [1/5] Cleaning local inbox...
 del /F /Q "inbox\*.jpg" 2>nul
 del /F /Q "inbox\*.jpeg" 2>nul
 del /F /Q "inbox\*.png" 2>nul
@@ -30,7 +30,7 @@ del /F /Q "inbox\*.json" 2>nul
 echo      Local inbox cleaned!
 
 echo.
-echo [2/4] Cleaning Docker container inbox...
+echo [2/5] Cleaning Docker container inbox...
 docker-compose exec -T ai-api rm -rf /data/inbox/* 2>nul
 if %errorlevel% equ 0 (
     echo      Container inbox cleaned!
@@ -39,7 +39,7 @@ if %errorlevel% equ 0 (
 )
 
 echo.
-echo [3/4] Cleaning storage folder...
+echo [3/5] Cleaning storage folder...
 rmdir /S /Q "storage" 2>nul
 mkdir "storage" 2>nul
 mkdir "storage\line_items" 2>nul
@@ -57,7 +57,7 @@ if %errorlevel% equ 0 (
 
 echo.
 echo [5/5] Cleaning database...
-docker-compose exec -T mysql mysql -u root -proot mono_se_db_9 -e "SET FOREIGN_KEY_CHECKS = 0; TRUNCATE TABLE file_tags; TRUNCATE TABLE file_locations; TRUNCATE TABLE ai_processing_history; TRUNCATE TABLE ai_processing_queue; TRUNCATE TABLE ai_accounting_proposals; TRUNCATE TABLE receipt_items; TRUNCATE TABLE invoice_line_history; TRUNCATE TABLE invoice_lines; TRUNCATE TABLE invoice_documents; TRUNCATE TABLE unified_files; SET FOREIGN_KEY_CHECKS = 1;" 2>nul
+docker-compose exec -T mysql mysql -u root -proot mono_se_db_9 -e "SET FOREIGN_KEY_CHECKS = 0; TRUNCATE TABLE file_tags; TRUNCATE TABLE file_locations; TRUNCATE TABLE ai_processing_history; TRUNCATE TABLE ai_processing_queue; TRUNCATE TABLE ai_accounting_proposals; TRUNCATE TABLE receipt_items; TRUNCATE TABLE invoice_line_history; TRUNCATE TABLE invoice_lines; TRUNCATE TABLE invoice_documents; TRUNCATE TABLE unified_files; TRUNCATE TABLE workflow_runs; TRUNCATE TABLE workflow_stage_runs; TRUNCATE TABLE creditcard_invoices_main; TRUNCATE TABLE creditcard_invoice_items; SET FOREIGN_KEY_CHECKS = 1;" 2>nul
 if %errorlevel% equ 0 (
     echo      Database tables cleaned!
 ) else (

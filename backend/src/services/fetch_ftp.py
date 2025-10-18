@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
 from services.storage import FileStorage
+from services.tasks import dispatch_workflow
+from services.workflow_runs import create_workflow_run
 
 logger = logging.getLogger(__name__)
 try:
@@ -204,6 +206,34 @@ def _insert_unified_file(
         raise
 
 
+def _dispatch_receipt_workflow(file_id: str, content_hash: str, source_channel: str) -> None:
+    """Create and dispatch a WF1 workflow for the fetched file."""
+    workflow_run_id = create_workflow_run(
+        workflow_key="WF1_RECEIPT",
+        source_channel=source_channel,
+        file_id=file_id,
+        content_hash=content_hash,
+    )
+    if not workflow_run_id:
+        logger.error("Failed to create workflow run for FTP file %s", file_id)
+        return
+
+    if not dispatch_workflow(workflow_run_id):
+        logger.error(
+            "Dispatch of workflow_run %s failed for file %s",
+            workflow_run_id,
+            file_id,
+        )
+        return
+
+    set_ai_status(file_id, "processing")
+    logger.info(
+        "Dispatched WF1 workflow (run_id=%s) for FTP file %s",
+        workflow_run_id,
+        file_id,
+    )
+
+
 def _insert_file_location(file_id: str, location: Dict[str, Any]) -> None:
     """Insert file location data"""
     if db_cursor is None or not location:
@@ -330,8 +360,8 @@ def fetch_from_local_inbox() -> FetchResult:
             if 'tags' in metadata:
                 _insert_file_tags(file_id, metadata['tags'])
 
-            # Set AI status
-            set_ai_status(file_id, "new")
+            # Create workflow run for receipts uploaded via local inbox
+            _dispatch_receipt_workflow(file_id, content_hash, "ftp_local")
 
             downloaded.append((file_id, p.name))
             logger.info(f"Local: Successfully processed {p.name} as {file_id}")
@@ -505,8 +535,8 @@ def fetch_from_ftp() -> FetchResult:
                 if 'tags' in metadata:
                     _insert_file_tags(file_id, metadata['tags'])
 
-                # Set AI status
-                set_ai_status(file_id, "new")
+                # Create workflow run for receipts delivered via FTP
+                _dispatch_receipt_workflow(file_id, content_hash, "ftp")
 
                 downloaded.append((file_id, name))
                 logger.info(f"FTP DEBUG: Successfully saved {name} as {file_id}")

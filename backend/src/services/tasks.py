@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 try:
     from services.db.connection import db_cursor
@@ -14,6 +15,18 @@ except Exception:  # pragma: no cover
 
 
 from services.queue_manager import get_celery
+from celery import chain, group, chord
+import uuid
+import hashlib
+from services.storage import FileStorage
+from services.pdf_conversion import pdf_to_png_pages
+try:
+    from services.db.files import insert_unified_file, update_other_data, DuplicateFileError
+except ImportError:
+    # Stub for linting if the file is not yet created
+    insert_unified_file = lambda **kwargs: None
+    update_other_data = lambda **kwargs: None
+    class DuplicateFileError(Exception): pass
 from observability.metrics import record_invoice_decision, track_task
 from services.ocr import run_ocr
 from services.enrichment import enrich_receipt, provider_from_env
@@ -32,6 +45,10 @@ from services.invoice_parser import parse_credit_card_statement
 from models.accounting import AccountingRule
 from models.ai_processing import (
     AccountingClassificationRequest,
+    CreditCardInvoiceExtractionRequest,
+    CreditCardInvoiceExtractionResponse,
+    CreditCardInvoiceHeader,
+    CreditCardInvoiceLine,
     CreditCardMatchRequest,
     DataExtractionRequest,
     DocumentClassificationRequest,
@@ -47,6 +64,8 @@ from api.ai_processing import (
     match_credit_card_internal,
 )
 
+
+logger = logging.getLogger(__name__)
 
 _INVOICE_PAGE_COMPLETE_STATUSES = {
     "ocr_done",
@@ -158,13 +177,48 @@ def _update_file_fields(
         return False
 
 
+def _enforce_file_metadata(
+    file_id: str,
+    *,
+    file_type: str | None = None,
+    workflow_type: str | None = None,
+) -> None:
+    """Best-effort update of file_type/workflow_type for a file record."""
+    if db_cursor is None:
+        return
+    updates: list[str] = []
+    params: list[Any] = []
+    if file_type is not None:
+        updates.append("file_type=%s")
+        params.append(file_type)
+    if workflow_type is not None:
+        updates.append("workflow_type=%s")
+        params.append(workflow_type)
+    if not updates:
+        return
+    updates.append("updated_at=NOW()")
+    params.append(file_id)
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                f"UPDATE unified_files SET {', '.join(updates)} WHERE id=%s",
+                tuple(params),
+            )
+    except Exception:
+        logger.warning("Failed to enforce metadata for file %s", file_id, exc_info=True)
+
+
 def _load_unified_file_info(file_id: str) -> dict[str, Any] | None:
     if db_cursor is None:
         return None
     try:
         with db_cursor() as cur:
             cur.execute(
-                "SELECT id, file_type, original_file_id, other_data FROM unified_files WHERE id=%s",
+                (
+                    "SELECT id, file_type, workflow_type, original_file_id, other_data, mime_type, "
+                    "original_filename, original_file_name "
+                    "FROM unified_files WHERE id=%s"
+                ),
                 (file_id,),
             )
             row = cur.fetchone()
@@ -172,7 +226,16 @@ def _load_unified_file_info(file_id: str) -> dict[str, Any] | None:
         return None
     if not row:
         return None
-    raw_other = row[3]
+    (
+        uid,
+        file_type,
+        workflow_type,
+        original_file_id,
+        raw_other,
+        mime_type,
+        original_filename,
+        original_file_name,
+    ) = row
     other_data: dict[str, Any]
     if raw_other:
         try:
@@ -182,10 +245,14 @@ def _load_unified_file_info(file_id: str) -> dict[str, Any] | None:
     else:
         other_data = {}
     return {
-        "id": row[0],
-        "file_type": row[1] or "",
-        "original_file_id": row[2],
+        "id": uid,
+        "file_type": file_type or "",
+        "workflow_type": workflow_type or "",
+        "original_file_id": original_file_id,
         "other_data": other_data,
+        "mime_type": mime_type,
+        "original_filename": original_filename,
+        "original_file_name": original_file_name,
     }
 
 
@@ -194,10 +261,10 @@ def _get_invoice_parent_id(file_id: str) -> Optional[str]:
     if not info:
         return None
     file_type = str(info.get("file_type") or "").lower()
-    if file_type == "invoice_page":
+    if file_type in {"invoice_page", "cc_image"}:
         parent = info.get("original_file_id")
         return str(parent) if isinstance(parent, str) and parent else None
-    if file_type == "invoice":
+    if file_type in {"invoice", "cc_pdf"}:
         identifier = info.get("id")
         return str(identifier) if isinstance(identifier, str) and identifier else None
     return None
@@ -371,6 +438,512 @@ def _persist_invoice_lines(invoice_id: str, parsed_lines: list[dict[str, Any]]) 
     except Exception:
         return inserted
     return inserted
+
+
+def _to_decimal(value: Any) -> Optional[Decimal]:
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def _format_date_for_db(value: Any) -> Optional[str]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        # Support ``date`` objects without importing separately
+        return value.strftime("%Y-%m-%d")  # type: ignore[attr-defined]
+    except Exception:
+        try:
+            return str(value)
+        except Exception:
+            return None
+
+
+def _persist_creditcard_invoice_ocr(
+    invoice_id: str,
+    ocr_text: str,
+    metadata: dict[str, Any] | None = None,
+) -> Optional[int]:
+    """Persist merged OCR text into creditcard_invoices_main."""
+    if db_cursor is None or not ocr_text:
+        return None
+
+    metadata = metadata or {}
+    fallback_number = f"INV-{invoice_id}"
+
+    meta_main_id = metadata.get("creditcard_main_id")
+    meta_main_id_int: Optional[int]
+    try:
+        meta_main_id_int = int(meta_main_id) if meta_main_id is not None else None
+    except (TypeError, ValueError):
+        meta_main_id_int = None
+
+    candidate_numbers: list[str] = []
+    summary = metadata.get("invoice_summary")
+    if isinstance(summary, dict):
+        summary_number = summary.get("invoice_number")
+        if summary_number:
+            candidate_numbers.append(str(summary_number))
+    stored_number = metadata.get("creditcard_invoice_number")
+    if stored_number:
+        candidate_numbers.append(str(stored_number))
+    candidate_numbers.append(fallback_number)
+
+    ordered_numbers: list[str] = []
+    seen_numbers: set[str] = set()
+    for number in candidate_numbers:
+        if number and number not in seen_numbers:
+            seen_numbers.add(number)
+            ordered_numbers.append(number)
+
+    try:
+        with db_cursor() as cur:
+            if meta_main_id_int:
+                cur.execute(
+                    "UPDATE creditcard_invoices_main SET ocr_raw=%s WHERE id=%s",
+                    (ocr_text, meta_main_id_int),
+                )
+                if cur.rowcount > 0:
+                    return meta_main_id_int
+
+            for invoice_number in ordered_numbers:
+                cur.execute(
+                    "SELECT id FROM creditcard_invoices_main WHERE invoice_number=%s",
+                    (invoice_number,),
+                )
+                row = cur.fetchone()
+                if row:
+                    main_id = int(row[0])
+                    cur.execute(
+                        "UPDATE creditcard_invoices_main SET ocr_raw=%s WHERE id=%s",
+                        (ocr_text, main_id),
+                    )
+                    return main_id
+
+            cur.execute(
+                """
+                INSERT INTO creditcard_invoices_main (invoice_number, ocr_raw)
+                VALUES (%s, %s)
+                ON DUPLICATE KEY UPDATE ocr_raw=VALUES(ocr_raw)
+                """,
+                (fallback_number, ocr_text),
+            )
+            main_id = cur.lastrowid
+            if not main_id:
+                cur.execute(
+                    "SELECT id FROM creditcard_invoices_main WHERE invoice_number=%s",
+                    (fallback_number,),
+                )
+                row = cur.fetchone()
+                if row:
+                    main_id = int(row[0])
+            return int(main_id) if main_id else None
+    except Exception as exc:
+        logger.warning(
+            "Failed to persist merged OCR text for invoice %s: %s",
+            invoice_id,
+            exc,
+        )
+        return None
+
+
+def _persist_creditcard_invoice_main(
+    invoice_id: str,
+    header: CreditCardInvoiceHeader,
+    ocr_text: str,
+) -> int:
+    """Insert or update creditcard_invoices_main and return the row id."""
+    if db_cursor is None:
+        return 0
+
+    try:
+        with db_cursor() as cur:
+            fallback_invoice_number = f"INV-{invoice_id}"
+            invoice_number = header.invoice_number or fallback_invoice_number
+            if invoice_number != fallback_invoice_number:
+                try:
+                    cur.execute(
+                        "UPDATE creditcard_invoices_main SET invoice_number=%s WHERE invoice_number=%s",
+                        (invoice_number, fallback_invoice_number),
+                    )
+                except Exception as exc:  # pragma: no cover - protective logging
+                    if "Duplicate entry" not in str(exc):
+                        raise
+
+            address = "\n".join(header.billing_address) if header.billing_address else None
+            notes = list(header.notes or [])
+            while len(notes) < 5:
+                notes.append(None)
+
+            sum_value = header.card_total or header.invoice_total
+            columns = [
+                "invoice_number",
+                "ocr_raw",
+                "invoice_print_time",
+                "card_type",
+                "card_name",
+                "card_number_masked",
+                "card_holder",
+                "cost_center",
+                "customer_name",
+                "co",
+                "address",
+                "bank_name",
+                "bank_org_no",
+                "bank_vat_no",
+                "bank_fi_no",
+                "invoice_date",
+                "customer_number",
+                "invoice_number_long",
+                "due_date",
+                "invoice_total",
+                "payment_plusgiro",
+                "payment_bankgiro",
+                "payment_iban",
+                "payment_bic",
+                "payment_ocr",
+                "payment_due",
+                "card_total",
+                "sum",
+                "vat_25",
+                "vat_12",
+                "vat_6",
+                "vat_0",
+                "amount_to_pay",
+                "reported_vat",
+                "next_invoice",
+                "note_1",
+                "note_2",
+                "note_3",
+                "note_4",
+                "note_5",
+                "currency",
+            ]
+            values = [
+                invoice_number,
+                ocr_text,
+                _format_date_for_db(header.invoice_print_time),
+                header.card_type,
+                header.card_name,
+                header.card_number_masked,
+                header.card_holder,
+                header.cost_center,
+                header.customer_name,
+                header.co,
+                address,
+                header.bank_name,
+                header.bank_org_no,
+                header.bank_vat_no,
+                header.bank_fi_no,
+                _format_date_for_db(header.invoice_date),
+                header.customer_number,
+                header.invoice_number_long,
+                _format_date_for_db(header.due_date),
+                _to_decimal(header.invoice_total),
+                header.plusgiro,
+                header.bankgiro,
+                header.iban,
+                header.bic,
+                header.ocr,
+                _format_date_for_db(header.payment_due),
+                _to_decimal(header.card_total),
+                _to_decimal(sum_value),
+                _to_decimal(header.vat_25),
+                _to_decimal(header.vat_12),
+                _to_decimal(header.vat_6),
+                _to_decimal(header.vat_0),
+                _to_decimal(header.amount_to_pay),
+                _to_decimal(header.reported_vat),
+                _format_date_for_db(header.next_invoice),
+                notes[0],
+                notes[1],
+                notes[2],
+                notes[3],
+                notes[4],
+                header.currency,
+            ]
+
+            def _quote(column: str) -> str:
+                return f"`{column}`" if column.lower() in {"sum"} else column
+
+            column_sql = ", ".join(_quote(col) for col in columns)
+            placeholders = ", ".join(["%s"] * len(columns))
+            update_sql = ", ".join(
+                f"{_quote(col)}=VALUES({_quote(col)})"
+                for col in columns
+                if col != "invoice_number"
+            )
+
+            cur.execute(
+                f"""
+                INSERT INTO creditcard_invoices_main ({column_sql})
+                VALUES ({placeholders})
+                ON DUPLICATE KEY UPDATE
+                {update_sql}
+                """,
+                values,
+            )
+            main_id = cur.lastrowid
+            if not main_id:
+                cur.execute(
+                    "SELECT id FROM creditcard_invoices_main WHERE invoice_number=%s",
+                    (invoice_number,),
+                )
+                row = cur.fetchone()
+                if row:
+                    main_id = int(row[0])
+            return int(main_id or 0)
+    except Exception:
+        logger.exception(
+            "Failed to persist credit card invoice main for invoice %s", invoice_id
+        )
+        return 0
+
+
+def _persist_creditcard_invoice_items(
+    main_id: int,
+    lines: list[CreditCardInvoiceLine],
+) -> int:
+    if db_cursor is None or not main_id:
+        return 0
+
+    inserted = 0
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "DELETE FROM creditcard_invoice_items WHERE main_id=%s",
+                (main_id,),
+            )
+            for line in lines:
+                line_no = line.line_no if line.line_no and line.line_no > 0 else inserted + 1
+                matched_flag = 1 if getattr(line, "matched", False) else 0
+                cur.execute(
+                    """
+                    INSERT INTO creditcard_invoice_items (
+                        main_id,
+                        line_no,
+                        transaction_id,
+                        purchase_date,
+                        posting_date,
+                        merchant_name,
+                        merchant_city,
+                        merchant_country,
+                        mcc,
+                        description,
+                        currency_original,
+                        amount_original,
+                        exchange_rate,
+                        amount_sek,
+                        vat_rate,
+                        vat_amount,
+                        net_amount,
+                        gross_amount,
+                        cost_center_override,
+                        project_code,
+                        matched
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s
+                    )
+                    """,
+                    (
+                        main_id,
+                        line_no,
+                        line.transaction_id,
+                        _format_date_for_db(line.purchase_date),
+                        _format_date_for_db(line.posting_date),
+                        line.merchant_name,
+                        line.merchant_city,
+                        line.merchant_country,
+                        line.mcc,
+                        line.description,
+                        line.currency_original,
+                        _to_decimal(line.amount_original),
+                        _to_decimal(line.exchange_rate),
+                        _to_decimal(line.amount_sek),
+                        _to_decimal(line.vat_rate),
+                        _to_decimal(line.vat_amount),
+                        _to_decimal(line.net_amount),
+                        _to_decimal(line.gross_amount),
+                        line.cost_center_override,
+                        line.project_code,
+                        matched_flag,
+                    ),
+                )
+                inserted += 1
+    except Exception:
+        return inserted
+    return inserted
+
+
+def _ensure_creditcard_pages_and_ocr(
+    file_id: str,
+    parent_info: dict[str, Any],
+) -> Tuple[str, dict[str, Any]]:
+    """Ensure credit card invoice pages exist and OCR text is available."""
+    other_data = dict(parent_info.get("other_data", {}) or {})
+    existing_combined = other_data.get("combined_ocr_text")
+    if existing_combined:
+        return existing_combined, other_data
+
+    storage_dir = os.getenv("STORAGE_DIR", "/data/storage")
+    fs = FileStorage(storage_dir)
+
+    mime_type = str(parent_info.get("mime_type") or "").lower()
+    file_type = str(parent_info.get("file_type") or "").lower()
+    workflow_type = str(parent_info.get("workflow_type") or "").lower()
+    detected_kind = (other_data.get("detected_kind") or file_type or "").lower()
+    is_pdf_source = mime_type == "application/pdf" or detected_kind == "pdf" or file_type == "cc_pdf"
+    expected_parent_type = "cc_pdf" if is_pdf_source else "cc_image"
+
+    if file_type != expected_parent_type or workflow_type != "creditcard_invoice":
+        _enforce_file_metadata(
+            file_id,
+            file_type=expected_parent_type,
+            workflow_type="creditcard_invoice",
+        )
+    parent_info["file_type"] = expected_parent_type
+    parent_info["workflow_type"] = "creditcard_invoice"
+
+    page_refs = []
+    for page in list(other_data.get("pages") or []):
+        if not isinstance(page, dict):
+            continue
+        page_id = page.get("file_id")
+        if not page_id:
+            continue
+        _enforce_file_metadata(
+            page_id,
+            file_type="cc_image",
+            workflow_type="creditcard_invoice",
+        )
+        page["file_type"] = "cc_image"
+        page_refs.append(page)
+
+    # Convert PDF to pages if not already done
+    if is_pdf_source and not page_refs:
+        originals_root = (fs.base / "originals").resolve()
+        original_filename = str(
+            parent_info.get("original_file_name")
+            or parent_info.get("original_filename")
+            or ""
+        )
+        suffix = Path(original_filename).suffix or ".pdf"
+        stored_original_name = f"{file_id}{suffix if suffix.startswith('.') else f'.{suffix}'}"
+        original_path = (originals_root / stored_original_name).resolve()
+        if not original_path.exists():
+            raise FileNotFoundError(f"Original file not found in storage for {file_id}")
+
+        data = original_path.read_bytes()
+        converted_root = (fs.base / "converted" / file_id).resolve()
+        converted_root.mkdir(parents=True, exist_ok=True)
+
+        pages = pdf_to_png_pages(data, converted_root, file_id, dpi=300)
+        if not pages:
+            raise RuntimeError("PDF conversion resulted in no pages.")
+
+        safe_filename = original_filename or original_path.name
+        page_refs = []
+        for page in pages:
+            page_number = page.index + 1
+            page_id = str(uuid.uuid4())
+            page_hash = hashlib.sha256(page.bytes).hexdigest()
+            try:
+                insert_unified_file(
+                    file_id=page_id,
+                    file_type="cc_image",
+                    workflow_type="creditcard_invoice",
+                    content_hash=page_hash,
+                    submitted_by="workflow",
+                    original_filename=f"{safe_filename}-page-{page_number:04d}.png",
+                    ai_status="uploaded",
+                    mime_type="image/png",
+                    file_suffix=".png",
+                    original_file_id=file_id,
+                    original_file_name=safe_filename,
+                    original_file_size=len(page.bytes),
+                    other_data={
+                        "detected_kind": "invoice_page",
+                        "page_number": page_number,
+                        "source_pdf": file_id,
+                    },
+                )
+            except DuplicateFileError:
+                # If a page already exists, reuse it by locating the ID
+                with db_cursor() as cur:
+                    cur.execute(
+                        "SELECT id, other_data FROM unified_files WHERE original_file_id=%s AND other_data LIKE %s",
+                        (file_id, f'%\"page_number\": {page_number}%'),
+                    )
+                    row = cur.fetchone()
+                if row:
+                    page_id = row[0]
+
+            stored_page_name = f"page-{page_number:04d}.png"
+            fs.adopt(page_id, stored_page_name, page.path)
+            _enforce_file_metadata(
+                page_id,
+                file_type="cc_image",
+                workflow_type="creditcard_invoice",
+            )
+            page_refs.append(
+                {"file_id": page_id, "page_number": page_number, "file_type": "cc_image"}
+            )
+
+        logger.info(
+            "WF3 creditcard invoice %s generated %d page image(s): %s",
+            file_id,
+            len(page_refs),
+            ", ".join(page.get("file_id", "?") for page in page_refs),
+        )
+    elif not is_pdf_source:
+        logger.info(
+            "WF3 creditcard invoice %s stored as single image (file_type=%s, workflow_type=creditcard_invoice)",
+            file_id,
+            expected_parent_type,
+        )
+    else:
+        logger.info(
+            "WF3 creditcard invoice %s reusing %d existing page image(s).",
+            file_id,
+            len(page_refs),
+        )
+    other_data["pages"] = page_refs
+    update_other_data(file_id, other_data)
+
+    # Run OCR on pages (or directly on the file if not a PDF)
+    texts: list[str] = []
+    if page_refs:
+        for page in page_refs:
+            page_id = page.get("file_id")
+            if not page_id:
+                continue
+            result = run_ocr(page_id, storage_dir)
+            text = (result or {}).get("text") or ""
+            if text:
+                texts.append(text)
+                _update_file_fields(page_id, ocr_raw=text)
+                _update_file_status(page_id, "ocr_done")
+    else:
+        result = run_ocr(file_id, storage_dir)
+        text = (result or {}).get("text") or ""
+        if text:
+            texts.append(text)
+            _update_file_fields(file_id, ocr_raw=text)
+
+    combined_text = "\n\n--- PAGE BREAK ---\n\n".join(texts).strip()
+    if not combined_text:
+        logger.warning("Credit card invoice %s produced no OCR text.", file_id)
+    other_data["combined_ocr_text"] = combined_text
+    update_other_data(file_id, other_data)
+    _update_file_status(file_id, "ocr_done")
+
+    return combined_text, other_data
 
 def _auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
     if db_cursor is None:
@@ -871,6 +1444,1089 @@ def _load_receipt_items(file_id: str):
         return []
 
 
+########################################
+# Workflow Tracking & Dispatcher
+########################################
+
+
+def get_workflow_run(workflow_run_id: int) -> dict[str, Any] | None:
+    """Load workflow_run by ID.
+
+    Returns:
+        Dict with keys: id, workflow_key, status, current_stage, file_id, content_hash, ...
+        None if not found or db unavailable
+    """
+    if db_cursor is None:
+        return None
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, workflow_key, source_channel, file_id, content_hash,
+                       current_stage, status, created_at, updated_at
+                FROM workflow_runs
+                WHERE id = %s
+                """,
+                (workflow_run_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "workflow_key": row[1],
+            "source_channel": row[2],
+            "file_id": row[3],
+            "content_hash": row[4],
+            "current_stage": row[5],
+            "status": row[6],
+            "created_at": row[7],
+            "updated_at": row[8],
+        }
+    except Exception:
+        return None
+
+
+def get_workflow_stage(workflow_run_id: int, stage_key: str) -> dict[str, Any] | None:
+    """Load a specific workflow_stage_run by workflow_run_id and stage_key."""
+    if db_cursor is None:
+        return None
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT id, stage_key, status, started_at, finished_at, message FROM workflow_stage_runs WHERE workflow_run_id = %s AND stage_key = %s",
+                (workflow_run_id, stage_key),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "stage_key": row[1],
+            "status": row[2],
+            "started_at": row[3],
+            "finished_at": row[4],
+            "message": row[5],
+        }
+    except Exception:
+        return None
+
+
+def mark_stage(
+    workflow_run_id: int,
+    stage_key: str,
+    status: str,
+    message: str | None = None,
+    start: bool = False,
+    end: bool = False,
+    update_workflow_status: bool = True,
+    workflow_status_override: str | None = None,
+) -> bool:
+    """Insert/update workflow_stage_runs and bump workflow_runs.current_stage/status.
+
+    Args:
+        workflow_run_id: The workflow run being processed
+        stage_key: Stage identifier (e.g., 'pdf_to_png', 'ocr', 'ai1', etc.)
+        status: Stage status ('queued', 'running', 'succeeded', 'failed', 'skipped')
+        message: Optional short message (max 200 chars recommended)
+        start: If True, set started_at to NOW()
+        end: If True, set finished_at to NOW()
+        update_workflow_status: When False, skip updating workflow_runs.status/current_stage
+        workflow_status_override: Optional explicit status to persist on workflow_runs
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if db_cursor is None:
+        return False
+
+    try:
+        with db_cursor() as cur:
+            # Insert or update workflow_stage_runs
+            # First check if stage already exists
+            cur.execute(
+                "SELECT id FROM workflow_stage_runs WHERE workflow_run_id=%s AND stage_key=%s",
+                (workflow_run_id, stage_key),
+            )
+            existing = cur.fetchone()
+
+            if existing:
+                # Update existing stage
+                stage_id = existing[0]
+                updates = ["status=%s"]
+                params: list[Any] = [status]
+
+                if message is not None:
+                    updates.append("message=%s")
+                    params.append(message[:200] if message else None)
+                if start:
+                    updates.append("started_at=NOW()")
+                if end:
+                    updates.append("finished_at=NOW()")
+
+                params.extend([stage_id])
+                cur.execute(
+                    f"UPDATE workflow_stage_runs SET {', '.join(updates)} WHERE id=%s",
+                    tuple(params),
+                )
+            else:
+                # Insert new stage
+                started_at_val = "NOW()" if start else "NULL"
+                finished_at_val = "NOW()" if end else "NULL"
+                cur.execute(
+                    f"""
+                    INSERT INTO workflow_stage_runs
+                    (workflow_run_id, stage_key, status, started_at, finished_at, message)
+                    VALUES (%s, %s, %s, {started_at_val}, {finished_at_val}, %s)
+                    """,
+                    (workflow_run_id, stage_key, status, message[:200] if message else None),
+                )
+
+            # Update workflow_runs.current_stage and status
+            # Map stage status to workflow status
+            workflow_status = workflow_status_override
+            if workflow_status is None:
+                workflow_status = "running"
+                if status == "failed":
+                    workflow_status = "failed"
+                elif status == "skipped":
+                    workflow_status = "skipped"
+
+            if update_workflow_status:
+                cur.execute(
+                    """
+                    UPDATE workflow_runs
+                    SET current_stage=%s, status=%s, updated_at=NOW()
+                    WHERE id=%s
+                    """,
+                    (stage_key, workflow_status, workflow_run_id),
+                )
+
+        return True
+    except Exception:
+        return False
+
+
+def dispatch_workflow(workflow_run_id: int) -> bool:
+    """Dispatch workflow based on workflow_key.
+
+    Builds the correct Celery chain based on workflow_key:
+    - WF1_RECEIPT → receipt processing chain (AI1-AI4 pipeline)
+    - WF2_PDF_SPLIT → PDF split + credit card invoice processing chain (AI6 pipeline)
+
+    Args:
+        workflow_run_id: ID of the workflow_run to dispatch
+
+    Returns:
+        True if dispatched successfully, False otherwise
+    """
+    wfr = get_workflow_run(workflow_run_id)
+    if not wfr:
+        return False
+
+    workflow_key = wfr.get("workflow_key")
+
+    if not workflow_key:
+        mark_stage(workflow_run_id, "dispatch", "failed", message="Workflow key is missing.")
+        return False
+
+    try:
+        if workflow_key == "WF1_RECEIPT":
+            # WF1: Build the new, separated task chain
+            mark_stage(workflow_run_id, "dispatch", "succeeded", message="WF1 dispatched to new wf1.* chain.")
+            (wf1_run_ocr.s(workflow_run_id) | wf1_run_ai_pipeline.s() | wf1_finalize.s()).apply_async()
+            return True
+
+        elif workflow_key == "WF2_PDF_SPLIT":
+            # WF2: Start the PDF processing chain
+            mark_stage(workflow_run_id, "dispatch", "succeeded", message="WF2 dispatched to new wf2.* chain.")
+            wf2_prepare_pdf_pages.s(workflow_run_id).apply_async()
+            return True
+
+        elif workflow_key == "WF3_FIRSTCARD_INVOICE":
+            # WF3: Start the FirstCard invoice processing chain
+            mark_stage(workflow_run_id, "dispatch", "succeeded", message="WF3 dispatched to new wf3.* chain.")
+            wf3_firstcard_invoice.s(workflow_run_id).apply_async()
+            return True
+
+        else:
+            # Unknown workflow_key
+            mark_stage(
+                workflow_run_id,
+                "dispatch",
+                "failed",
+                message=f"Unknown workflow_key: {workflow_key}",
+            )
+            return False
+
+    except Exception as e:
+        mark_stage(workflow_run_id, "dispatch", "failed", message=f"Dispatch exception: {e}")
+        return False
+
+
+def ensure_workflow(workflow_run_id: int, expected_prefix: str) -> dict[str, Any]:
+    """
+    Guard to ensure a task is running in the correct workflow.
+
+    Fetches the workflow_run and verifies its workflow_key starts with the
+    expected prefix. If it mismatches, it logs a 'skipped' stage and raises
+    an error to stop the task.
+
+    Args:
+        workflow_run_id: The ID of the current workflow run.
+        expected_prefix: The required prefix for the workflow_key (e.g., "WF1_").
+
+    Returns:
+        The workflow run dictionary if validation passes.
+
+    Raises:
+        RuntimeError: If the workflow_key does not match the expected prefix.
+    """
+    wfr = get_workflow_run(workflow_run_id)
+    if not wfr:
+        # This case is unlikely if the dispatcher is correct, but it's a safeguard.
+        raise ValueError(f"Workflow run {workflow_run_id} not found.")
+
+    workflow_key = wfr.get("workflow_key", "")
+    if not workflow_key.startswith(expected_prefix):
+        task_name = "unknown_task"
+        try:
+            # Try to get the current task's name for better logging
+            from celery import current_task
+            if current_task:
+                task_name = current_task.name
+        except Exception:
+            pass
+
+        message = (
+            f"Task '{task_name}' belongs to '{expected_prefix}' "
+            f"but was triggered by workflow '{workflow_key}' ({workflow_run_id})."
+        )
+        mark_stage(
+            workflow_run_id=workflow_run_id,
+            stage_key="guard",
+            status="skipped",
+            message=message,
+        )
+        raise RuntimeError("Workflow/task mismatch.")
+
+    return wfr
+
+
+########################################
+# Workflow Tasks
+########################################
+
+
+@celery_app.task(name="wf1.run_ocr")
+def wf1_run_ocr(workflow_run_id: int) -> int:
+    """
+    Workflow 1: OCR Task.
+
+    - Ensures the task is part of a WF1 workflow.
+    - Marks the 'ocr' stage as running.
+    - Executes OCR on the file associated with the workflow.
+    - Marks the 'ocr' stage as 'succeeded' or 'failed'.
+    - Returns the workflow_run_id for the next task in the chain.
+    """
+    import time
+    wfr = ensure_workflow(workflow_run_id, expected_prefix="WF1_")
+    file_id = wfr.get("file_id")
+    if not file_id:
+        mark_stage(workflow_run_id, "ocr", "failed", message="File ID missing in workflow run.")
+        raise ValueError("File ID is missing.")
+
+    mark_stage(workflow_run_id, "ocr", "running", start=True)
+    start_time = time.time()
+
+    result: dict[str, Any] | None = None
+    error_msg: str | None = None
+
+    try:
+        result = run_ocr(file_id, os.getenv("STORAGE_DIR", "/data/storage"))
+    except Exception as exc:
+        result = None
+        error_msg = f"{type(exc).__name__}: {str(exc)}"
+
+    elapsed = int((time.time() - start_time) * 1000)
+
+    if result:
+        _update_file_fields(file_id, ocr_raw=result.get("text"))
+        text_len = len(result.get("text", ""))
+        message = f"OCR succeeded, extracted {text_len} chars in {elapsed}ms."
+        mark_stage(workflow_run_id, "ocr", "succeeded", message=message, end=True)
+    else:
+        message = f"OCR failed: {error_msg or 'OCR returned no results'}"
+        mark_stage(workflow_run_id, "ocr", "failed", message=message, end=True)
+        # Do not raise an exception, allow the workflow to be inspected.
+        # A failed stage will already halt the workflow chain by default.
+
+    return workflow_run_id
+
+
+@celery_app.task(name="wf1.run_ai_pipeline")
+def wf1_run_ai_pipeline(workflow_run_id: int) -> int:
+    """
+    Workflow 1: AI Pipeline Task (AI1-AI4).
+
+    - Ensures the task is part of a WF1 workflow.
+    - Marks the 'ai_pipeline' stage as running.
+    - Executes the AI pipeline (_run_ai_pipeline).
+    - Marks the 'ai_pipeline' stage as 'succeeded' or 'failed'.
+    - Returns the workflow_run_id for the next task.
+    """
+    import time
+    wfr = ensure_workflow(workflow_run_id, expected_prefix="WF1_")
+    file_id = wfr.get("file_id")
+    if not file_id:
+        mark_stage(workflow_run_id, "ai_pipeline", "failed", message="File ID missing in workflow run.")
+        raise ValueError("File ID is missing.")
+
+    # Check if previous stage succeeded
+    ocr_stage = get_workflow_stage(workflow_run_id, "ocr")
+    if not ocr_stage or ocr_stage.get('status') != 'succeeded':
+        mark_stage(workflow_run_id, "ai_pipeline", "skipped", message="Skipping AI pipeline because OCR stage did not succeed.")
+        return workflow_run_id
+
+    mark_stage(workflow_run_id, "ai_pipeline", "running", start=True)
+    start_time = time.time()
+
+    try:
+        steps = _run_ai_pipeline(file_id)
+        elapsed = int((time.time() - start_time) * 1000)
+        message = f"AI pipeline completed {len(steps)} stages in {elapsed}ms: {', '.join(steps)}"
+        mark_stage(workflow_run_id, "ai_pipeline", "succeeded", message=message, end=True)
+    except Exception as exc:
+        elapsed = int((time.time() - start_time) * 1000)
+        error_msg = f"{type(exc).__name__}: {str(exc)}"
+        message = f"AI pipeline failed after {elapsed}ms: {error_msg}"
+        mark_stage(workflow_run_id, "ai_pipeline", "failed", message=message, end=True)
+        # Do not re-raise, let the workflow system handle the failed state.
+
+    return workflow_run_id
+
+
+@celery_app.task(name="wf1.finalize")
+def wf1_finalize(workflow_run_id: int) -> int:
+    """
+    Workflow 1: Finalize Task.
+
+    - Ensures the task is part of a WF1 workflow.
+    - Marks the 'finalize' stage as running.
+    - Checks the status of previous stages.
+    - Marks the entire workflow run as 'succeeded' or 'failed'.
+    - Returns the workflow_run_id.
+    """
+    wfr = ensure_workflow(workflow_run_id, expected_prefix="WF1_")
+
+    mark_stage(workflow_run_id, "finalize", "running", start=True)
+
+    # Check status of the AI pipeline stage
+    ai_stage = get_workflow_stage(workflow_run_id, "ai_pipeline")
+    
+    final_status = "succeeded"
+    message = "Workflow completed successfully."
+
+    if not ai_stage or ai_stage.get('status') != 'succeeded':
+        final_status = "failed"
+        message = "Workflow failed because a critical stage (ai_pipeline) did not succeed."
+
+    # Update the main workflow_run status
+    if db_cursor:
+        try:
+            with db_cursor() as cur:
+                cur.execute(
+                    "UPDATE workflow_runs SET status=%s, updated_at=NOW() WHERE id=%s",
+                    (final_status, workflow_run_id),
+                )
+        except Exception as e:
+            message = f"Finalize failed to update workflow status: {e}"
+            final_status = "failed"
+
+
+    mark_stage(
+        workflow_run_id,
+        "finalize",
+        final_status,
+        message=message,
+        end=True,
+        workflow_status_override=final_status,
+    )
+
+    return workflow_run_id
+
+
+@celery_app.task(name="wf2.prepare_pdf_pages")
+def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
+    """
+    Workflow 2: Prepare PDF Pages Task.
+    - Splits the source PDF into individual PNG pages.
+    - Creates a unified_file record for each page.
+    - Triggers the parallel OCR tasks for each page.
+    """
+    wfr = ensure_workflow(workflow_run_id, expected_prefix="WF2_")
+    file_id = wfr.get("file_id")
+    if not file_id:
+        mark_stage(workflow_run_id, "prepare_pages", "failed", message="File ID missing.")
+        raise ValueError("File ID is missing.")
+
+    mark_stage(workflow_run_id, "prepare_pages", "running", start=True)
+
+    parent_info = _load_unified_file_info(file_id) or {}
+    mime_type = str(parent_info.get("mime_type") or "").lower()
+    file_type = str(parent_info.get("file_type") or "").lower()
+    if mime_type and mime_type != "application/pdf":
+        message = f"Unsupported mime_type for WF2: {mime_type}"
+        mark_stage(workflow_run_id, "prepare_pages", "failed", message=message, end=True)
+        raise ValueError(message)
+    if not mime_type and file_type not in {"pdf", "invoice"}:
+        message = f"Unsupported file_type for WF2: {file_type or 'unknown'}"
+        mark_stage(workflow_run_id, "prepare_pages", "failed", message=message, end=True)
+        raise ValueError(message)
+
+    storage_dir = os.getenv("STORAGE_DIR", "/data/storage")
+    fs = FileStorage(storage_dir)
+
+    try:
+        originals_root = (fs.base / "originals").resolve()
+        original_filename = str(
+            parent_info.get("original_file_name")
+            or parent_info.get("original_filename")
+            or ""
+        )
+        suffix = Path(original_filename).suffix or ".pdf"
+        stored_original_name = f"{file_id}{suffix if suffix.startswith('.') else f'.{suffix}'}"
+        original_path = (originals_root / stored_original_name).resolve()
+
+        if not str(original_path).startswith(str(originals_root)):
+            raise ValueError("Original file path resolved outside storage root.")
+        if not original_path.exists():
+            raise FileNotFoundError(f"Original file not found in storage for {file_id}")
+
+        data = original_path.read_bytes()
+        safe_filename = original_filename or original_path.name
+
+        converted_root = (fs.base / "converted" / file_id).resolve()
+        converted_root.mkdir(parents=True, exist_ok=True)
+
+        # Convert PDF to PNG pages
+        pages = pdf_to_png_pages(data, converted_root, file_id, dpi=300)
+        if not pages:
+            raise RuntimeError("PDF conversion resulted in no pages.")
+
+        page_refs = []
+        for page in pages:
+            page_number = page.index + 1
+            page_id = str(uuid.uuid4())
+            page_hash = hashlib.sha256(page.bytes).hexdigest()
+
+            insert_unified_file(
+                file_id=page_id,
+                file_type="pdf_page",
+                content_hash=page_hash,
+                submitted_by="workflow",
+                original_filename=f"{safe_filename}-page-{page_number:04d}.png",
+                ai_status="uploaded",
+                mime_type="image/png",
+                file_suffix=".png",
+                original_file_id=file_id,
+                original_file_name=safe_filename,
+                original_file_size=len(page.bytes),
+                other_data={
+                    "detected_kind": "pdf_page",
+                    "page_number": page_number,
+                    "source_pdf": file_id,
+                },
+            )
+
+            stored_page_name = f"page-{page_number:04d}.png"
+            fs.adopt(page_id, stored_page_name, page.path)
+            page_refs.append({"file_id": page_id, "page_number": page_number})
+
+        # Update the parent PDF unified_file with page info
+        other_data = dict(parent_info.get("other_data", {}) or {})
+        other_data.update({"page_count": len(page_refs), "pages": page_refs})
+        update_other_data(file_id, other_data)
+
+        mark_stage(
+            workflow_run_id,
+            "prepare_pages",
+            "succeeded",
+            message=f"Split PDF into {len(page_refs)} pages.",
+            end=True,
+        )
+
+        # Now, trigger the parallel OCR
+        if page_refs:
+            ocr_tasks = group(
+                wf2_run_page_ocr.s(workflow_run_id, page["file_id"]) for page in page_refs
+            )
+            callback = wf2_merge_ocr_results.s(workflow_run_id)
+            chord(ocr_tasks)(callback)
+
+    except DuplicateFileError as dup_exc:
+        mark_stage(
+            workflow_run_id,
+            "prepare_pages",
+            "failed",
+            message=f"Duplicate page detected: {dup_exc}",
+            end=True,
+        )
+        raise
+    except Exception as e:
+        mark_stage(workflow_run_id, "prepare_pages", "failed", message=str(e), end=True)
+        raise
+
+    return workflow_run_id
+
+
+@celery_app.task(name="wf2.run_page_ocr")
+def wf2_run_page_ocr(workflow_run_id: int, page_file_id: str) -> tuple[int, str, str]:
+    """
+    Workflow 2: OCR Task for a single page.
+    - Runs OCR and returns the text.
+    """
+    import time
+    ensure_workflow(workflow_run_id, expected_prefix="WF2_")
+
+    page_info = _load_unified_file_info(page_file_id)
+    page_number = page_info.get("other_data", {}).get("page_number", "unknown") if page_info else "unknown"
+    stage_key = f"ocr_page_{page_number}"
+
+    mark_stage(workflow_run_id, stage_key, "running", start=True)
+    start_time = time.time()
+
+    result: dict[str, Any] | None = None
+    error_msg: str | None = None
+    text = ""
+
+    try:
+        result = run_ocr(page_file_id, os.getenv("STORAGE_DIR", "/data/storage"))
+    except Exception as exc:
+        result = None
+        error_msg = f"{type(exc).__name__}: {str(exc)}"
+
+    elapsed = int((time.time() - start_time) * 1000)
+
+    if result:
+        text = result.get("text", "")
+        _update_file_fields(page_file_id, ocr_raw=text)
+        message = f"OCR succeeded for page {page_number}, extracted {len(text)} chars in {elapsed}ms."
+        mark_stage(workflow_run_id, stage_key, "succeeded", message=message, end=True)
+    else:
+        message = f"OCR failed for page {page_number}: {error_msg or 'OCR returned no results'}"
+        mark_stage(workflow_run_id, stage_key, "failed", message=message, end=True)
+
+    return (workflow_run_id, page_file_id, text)
+
+
+@celery_app.task(name="wf2.merge_ocr_results")
+def wf2_merge_ocr_results(results: list[tuple[int, str, str]], workflow_run_id: int):
+    """
+    Workflow 2: Merge OCR Results Task.
+    - Collects OCR text from all page tasks.
+    - Saves the combined text.
+    - Triggers the next step in the workflow.
+    """
+    wfr = ensure_workflow(workflow_run_id, expected_prefix="WF2_")
+    file_id = wfr.get("file_id") # This is the parent PDF file_id
+    if not file_id:
+        mark_stage(workflow_run_id, "merge_ocr", "failed", message="File ID missing.")
+        raise ValueError("File ID is missing.")
+
+    mark_stage(workflow_run_id, "merge_ocr", "running", start=True)
+
+    all_text = []
+    failed_pages = []
+    for result in results:
+        if result and len(result) == 3:
+            _, page_id, text = result
+            if text:
+                all_text.append(text)
+            else:
+                failed_pages.append(page_id)
+    
+    combined_text = "\n\n--- PAGE BREAK ---\n\n".join(all_text)
+    
+    # Save the combined text to the parent PDF's other_data
+    parent_file_info = _load_unified_file_info(file_id) or {}
+    other_data = dict(parent_file_info.get("other_data", {}) or {})
+    other_data["combined_ocr_text"] = combined_text
+    if failed_pages:
+        other_data["failed_ocr_pages"] = failed_pages
+    update_other_data(file_id, other_data)
+
+    message = f"Merged OCR text from {len(all_text)} pages. {len(failed_pages)} pages failed."
+    status = "succeeded"
+    if failed_pages:
+        status = "failed"
+        message += f" Failed pages: {', '.join(failed_pages)}"
+    elif not combined_text:
+        status = "failed"
+        message = "OCR merge produced no text."
+
+    mark_stage(workflow_run_id, "merge_ocr", status, message=message, end=True)
+
+    if status != "succeeded":
+        return workflow_run_id
+
+    # Trigger the next step
+    wf2_run_invoice_analysis.s(workflow_run_id).apply_async()
+
+    return workflow_run_id
+
+
+@celery_app.task(name="wf2.run_invoice_analysis")
+def wf2_run_invoice_analysis(workflow_run_id: int) -> int:
+    """
+    Workflow 2: Invoice Analysis Task.
+    - Parses the combined OCR text.
+    - Creates invoice line items.
+    """
+    wfr = ensure_workflow(workflow_run_id, expected_prefix="WF2_")
+    file_id = wfr.get("file_id")
+    if not file_id:
+        mark_stage(workflow_run_id, "invoice_analysis", "failed", message="File ID missing.")
+        raise ValueError("File ID is missing.")
+
+    mark_stage(workflow_run_id, "invoice_analysis", "running", start=True)
+
+    parent_info = _load_unified_file_info(file_id) or {}
+
+    try:
+        other_data = dict(parent_info.get("other_data", {}) or {})
+        combined_text = other_data.get("combined_ocr_text", "")
+
+        if not combined_text:
+            raise ValueError("Combined OCR text is missing.")
+
+        # This logic is from the old `process_invoice_document`
+        parsed = parse_credit_card_statement(combined_text)
+        lines = parsed.get("lines") or []
+        inserted = _persist_invoice_lines(file_id, lines)
+
+        other_data["invoice_line_count"] = inserted
+        update_other_data(file_id, other_data)
+
+        message = f"Invoice analysis complete. Inserted {inserted} lines."
+        mark_stage(workflow_run_id, "invoice_analysis", "succeeded", message=message, end=True)
+
+        # Trigger finalization
+        wf2_finalize.s(workflow_run_id).apply_async()
+
+    except Exception as e:
+        mark_stage(workflow_run_id, "invoice_analysis", "failed", message=str(e), end=True)
+        raise
+
+    return workflow_run_id
+
+
+@celery_app.task(name="wf2.finalize")
+def wf2_finalize(workflow_run_id: int) -> int:
+    """
+    Workflow 2: Finalize Task.
+    """
+    wfr = ensure_workflow(workflow_run_id, expected_prefix="WF2_")
+    mark_stage(workflow_run_id, "finalize", "running", start=True)
+
+    analysis_stage = get_workflow_stage(workflow_run_id, "invoice_analysis")
+    
+    final_status = "succeeded"
+    message = "Workflow completed successfully."
+
+    if not analysis_stage or analysis_stage.get('status') != 'succeeded':
+        final_status = "failed"
+        message = "Workflow failed because a critical stage (invoice_analysis) did not succeed."
+
+    if db_cursor:
+        try:
+            with db_cursor() as cur:
+                cur.execute(
+                    "UPDATE workflow_runs SET status=%s, updated_at=NOW() WHERE id=%s",
+                    (final_status, workflow_run_id),
+                )
+        except Exception as e:
+            message = f"Finalize failed to update workflow status: {e}"
+            final_status = "failed"
+
+    mark_stage(
+        workflow_run_id,
+        "finalize",
+        final_status,
+        message=message,
+        end=True,
+        workflow_status_override=final_status,
+    )
+
+    return workflow_run_id
+
+
+@celery_app.task(name="wf3.firstcard_invoice")
+def wf3_firstcard_invoice(workflow_run_id: int) -> int:
+    """
+    Workflow 3: FirstCard Invoice Processing.
+    """
+    wfr = ensure_workflow(workflow_run_id, expected_prefix="WF3_")
+    mark_stage(workflow_run_id, "firstcard_invoice", "running", start=True)
+
+    file_id = wfr.get("file_id")
+    if not file_id:
+        mark_stage(
+            workflow_run_id,
+            "firstcard_invoice",
+            "failed",
+            message="Workflow run missing file_id.",
+            end=True,
+            workflow_status_override="failed",
+        )
+        raise ValueError("Workflow run missing file_id")
+
+    metadata = _load_invoice_metadata(file_id) or {}
+
+    try:
+        transition_processing_status(
+            file_id,
+            InvoiceProcessingStatus.OCR_PENDING,
+            (
+                InvoiceProcessingStatus.UPLOADED,
+                InvoiceProcessingStatus.OCR_PENDING,
+            ),
+        )
+    except Exception:
+        pass
+
+    parent_info = _load_unified_file_info(file_id) or {}
+
+    try:
+        combined_text, other_data = _ensure_creditcard_pages_and_ocr(file_id, parent_info)
+        parent_file_type = parent_info.get("file_type") or "unknown"
+        parent_workflow_type = parent_info.get("workflow_type") or "unknown"
+        page_count = len(other_data.get("pages") or [])
+        logger.info(
+            "WF3 run %s prepared invoice %s (file_type=%s, workflow_type=%s, pages=%d)",
+            workflow_run_id,
+            file_id,
+            parent_file_type,
+            parent_workflow_type,
+            page_count,
+        )
+        mark_stage(
+            workflow_run_id,
+            "firstcard_invoice",
+            "running",
+            message=f"file_type={parent_file_type}; workflow_type={parent_workflow_type}; pages={page_count}",
+        )
+        mark_stage(
+            workflow_run_id,
+            "ocr_merge",
+            "running",
+            start=True,
+            update_workflow_status=False,
+        )
+
+        merged_main_id: Optional[int] = None
+        if combined_text:
+            merged_main_id = _persist_creditcard_invoice_ocr(file_id, combined_text, metadata)
+
+        ocr_length = len(combined_text or "")
+        if merged_main_id:
+            if not metadata.get("creditcard_main_id"):
+                metadata["creditcard_main_id"] = merged_main_id
+            metadata.setdefault("creditcard_invoice_number", f"INV-{file_id}")
+            mark_stage(
+                workflow_run_id,
+                "ocr_merge",
+                "succeeded",
+                message=f"Persisted merged OCR ({ocr_length} chars) to creditcard_invoices_main id={merged_main_id}",
+                end=True,
+                update_workflow_status=False,
+            )
+            logger.info(
+                "WF3 run %s persisted %d merged OCR chars for invoice %s (main_id=%s)",
+                workflow_run_id,
+                ocr_length,
+                file_id,
+                merged_main_id,
+            )
+        else:
+            if not combined_text:
+                mark_stage(
+                    workflow_run_id,
+                    "ocr_merge",
+                    "skipped",
+                    message="No OCR text available to persist",
+                    end=True,
+                    update_workflow_status=False,
+                )
+            else:
+                mark_stage(
+                    workflow_run_id,
+                    "ocr_merge",
+                    "failed",
+                    message="Failed to persist merged OCR text to creditcard_invoices_main",
+                    end=True,
+                    update_workflow_status=False,
+                )
+                logger.error(
+                    "WF3 run %s could not persist merged OCR text for invoice %s",
+                    workflow_run_id,
+                    file_id,
+                )
+                raise RuntimeError("Unable to persist merged OCR text to creditcard_invoices_main")
+
+        metadata.update(
+            {
+                "page_count": page_count,
+                "processing_status": InvoiceProcessingStatus.OCR_DONE.value,
+                "combined_ocr_text": combined_text,
+                "merged_ocr_length": ocr_length,
+            }
+        )
+        _update_invoice_metadata(file_id, metadata)
+        transition_processing_status(
+            file_id,
+            InvoiceProcessingStatus.OCR_DONE,
+            (
+                InvoiceProcessingStatus.OCR_PENDING,
+                InvoiceProcessingStatus.OCR_DONE,
+            ),
+        )
+    except Exception as exc:
+        transition_processing_status(
+            file_id,
+            InvoiceProcessingStatus.FAILED,
+            (
+                InvoiceProcessingStatus.OCR_PENDING,
+                InvoiceProcessingStatus.OCR_DONE,
+                InvoiceProcessingStatus.UPLOADED,
+            ),
+        )
+        transition_document_status(
+            file_id,
+            InvoiceDocumentStatus.FAILED,
+            (
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.MATCHING,
+            ),
+        )
+        mark_stage(
+            workflow_run_id,
+            "firstcard_invoice",
+            "failed",
+            message=f"OCR preparation failed: {exc}",
+            end=True,
+            workflow_status_override="failed",
+        )
+        raise
+
+    try:
+        transition_processing_status(
+            file_id,
+            InvoiceProcessingStatus.AI_PROCESSING,
+            (
+                InvoiceProcessingStatus.OCR_DONE,
+                InvoiceProcessingStatus.AI_PROCESSING,
+            ),
+        )
+    except Exception:
+        pass
+
+    page_ids = [page.get("file_id") for page in (other_data.get("pages") or []) if page.get("file_id")]
+
+    from services.ai_service import AIService
+
+    ai_service = AIService()
+    request = CreditCardInvoiceExtractionRequest(
+        invoice_id=file_id,
+        ocr_text=combined_text,
+        page_ids=page_ids,
+    )
+
+    import time
+    start_time = time.time()
+    ai6_provider = ai_service.prompt_provider_names.get("credit_card_invoice_parsing", "unknown")
+    ai6_model = ai_service.prompt_model_names.get("credit_card_invoice_parsing", "unknown")
+
+    try:
+        extraction = ai_service.parse_credit_card_invoice(request)
+        elapsed = int((time.time() - start_time) * 1000)
+
+        ai6_prompt = ai_service.prompts.get("credit_card_invoice_parsing", "")
+        raw_response = ai_service.last_raw_response or ""
+        log_parts = [
+            f"Successfully parsed credit card invoice.",
+            f"--- PROMPT ---\n{ai6_prompt}",
+            f"--- RAW RESPONSE ---\n{raw_response}",
+        ]
+
+        _history(
+            file_id,
+            "ai6",
+            "success",
+            ai_stage_name="AI6-CreditCardInvoiceParsing",
+            log_text="; ".join(log_parts),
+            confidence=extraction.overall_confidence,
+            processing_time_ms=elapsed,
+            provider=ai6_provider,
+            model_name=ai6_model,
+        )
+    except Exception as exc:
+        elapsed = int((time.time() - start_time) * 1000)
+        error_msg = f"{type(exc).__name__}: {exc}"
+
+        _history(
+            file_id,
+            "ai6",
+            "error",
+            ai_stage_name="AI6-CreditCardInvoiceParsing",
+            log_text="Failed to parse credit card invoice.",
+            error_message=error_msg,
+            processing_time_ms=elapsed,
+            provider=ai6_provider,
+            model_name=ai6_model,
+        )
+        transition_processing_status(
+            file_id,
+            InvoiceProcessingStatus.FAILED,
+            (
+                InvoiceProcessingStatus.AI_PROCESSING,
+                InvoiceProcessingStatus.OCR_DONE,
+                InvoiceProcessingStatus.OCR_PENDING,
+            ),
+        )
+        transition_document_status(
+            file_id,
+            InvoiceDocumentStatus.FAILED,
+            (
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.MATCHING,
+            ),
+        )
+        mark_stage(
+            workflow_run_id,
+            "firstcard_invoice",
+            "failed",
+            message=f"AI6 parsing failed: {type(exc).__name__}: {exc}",
+            end=True,
+            workflow_status_override="failed",
+        )
+        raise
+
+    main_id = _persist_creditcard_invoice_main(file_id, extraction.header, combined_text)
+    if not main_id:
+        transition_processing_status(
+            file_id,
+            InvoiceProcessingStatus.FAILED,
+            (
+                InvoiceProcessingStatus.AI_PROCESSING,
+                InvoiceProcessingStatus.OCR_DONE,
+            ),
+        )
+        transition_document_status(
+            file_id,
+            InvoiceDocumentStatus.FAILED,
+            (
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.MATCHING,
+            ),
+        )
+        mark_stage(
+            workflow_run_id,
+            "firstcard_invoice",
+            "failed",
+            message="Failed to persist credit card invoice header.",
+            end=True,
+            workflow_status_override="failed",
+        )
+        raise RuntimeError("Failed to persist credit card invoice header")
+
+    items_inserted = _persist_creditcard_invoice_items(main_id, extraction.lines)
+
+    invoice_line_payloads: list[dict[str, Any]] = []
+    for line in extraction.lines:
+        amount_candidate = (
+            line.amount_sek
+            or line.gross_amount
+            or line.amount_original
+            or Decimal("0.00")
+        )
+        amount_float = float(amount_candidate) if amount_candidate is not None else 0.0
+        invoice_line_payloads.append(
+            {
+                "transaction_date": line.purchase_date.isoformat() if hasattr(line.purchase_date, "isoformat") else None,
+                "merchant_name": line.merchant_name or "",
+                "description": line.description or (line.merchant_name or ""),
+                "amount": amount_float,
+                "confidence": line.confidence,
+                "raw_text": line.source_text or "",
+            }
+        )
+
+    inserted_invoice_lines = _persist_invoice_lines(file_id, invoice_line_payloads)
+
+    metadata = _load_invoice_metadata(file_id) or {}
+    metadata.setdefault("processing_status", InvoiceProcessingStatus.AI_PROCESSING.value)
+    metadata["creditcard_main_id"] = main_id
+    metadata["overall_confidence"] = extraction.overall_confidence
+    metadata["invoice_summary"] = {
+        "invoice_number": extraction.header.invoice_number,
+        "card_holder": extraction.header.card_holder,
+        "currency": extraction.header.currency,
+        "amount_to_pay": float(extraction.header.amount_to_pay)
+        if extraction.header.amount_to_pay is not None
+        else None,
+    }
+    actual_invoice_number = (
+        extraction.header.invoice_number
+        or metadata.get("creditcard_invoice_number")
+        or f"INV-{file_id}"
+    )
+    metadata["creditcard_invoice_number"] = actual_invoice_number
+    if extraction.header.period_start:
+        metadata["period_start"] = extraction.header.period_start.isoformat()
+    if extraction.header.period_end:
+        metadata["period_end"] = extraction.header.period_end.isoformat()
+    metadata["line_counts"] = {
+        "total": len(extraction.lines),
+        "matched": 0,
+        "unmatched": len(extraction.lines),
+    }
+    metadata["processing_status"] = InvoiceProcessingStatus.READY_FOR_MATCHING.value
+    _update_invoice_metadata(file_id, metadata)
+
+    transition_processing_status(
+        file_id,
+        InvoiceProcessingStatus.READY_FOR_MATCHING,
+        (
+            InvoiceProcessingStatus.AI_PROCESSING,
+            InvoiceProcessingStatus.OCR_DONE,
+        ),
+    )
+    transition_document_status(
+        file_id,
+        InvoiceDocumentStatus.MATCHING,
+        (
+            InvoiceDocumentStatus.IMPORTED,
+            InvoiceDocumentStatus.MATCHING,
+        ),
+    )
+
+    mark_stage(
+        workflow_run_id,
+        "firstcard_invoice",
+        "succeeded",
+        message=f"Parsed credit card invoice: main_id={main_id}, lines={items_inserted}/{inserted_invoice_lines}",
+        end=True,
+        workflow_status_override="succeeded",
+    )
+    return workflow_run_id
+
+
+########################################
+# AI Pipeline Functions
+########################################
+
+
 def _run_ai_pipeline(file_id: str) -> List[str]:
     """Run the complete AI pipeline (AI1-AI4) with detailed logging."""
     import time
@@ -907,9 +2563,13 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
         elapsed = int((time.time() - start_time) * 1000)
         steps.append("AI1")
 
+        ai1_prompt = ai_service.prompts.get("document_analysis", "")
+        raw_response = ai_service.last_raw_response or ""
         log_parts = [
             f"Classified document as '{result.document_type}'",
             f"OCR text length: {len(ocr_text or '')} characters",
+            f"--- PROMPT ---\n{ai1_prompt}",
+            f"--- RAW RESPONSE ---\n{raw_response}",
         ]
         if result.reasoning:
             log_parts.append(f"Reasoning: {result.reasoning}")
@@ -971,9 +2631,13 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
         elapsed = int((time.time() - start_time) * 1000)
         steps.append("AI2")
 
+        ai2_prompt = ai_service.prompts.get("expense_classification", "")
+        raw_response = ai_service.last_raw_response or ""
         log_parts = [
             f"Classified expense as '{result.expense_type}'",
             f"Document type: {document_type or 'other'}",
+            f"--- PROMPT ---\n{ai2_prompt}",
+            f"--- RAW RESPONSE ---\n{raw_response}",
         ]
         if result.card_identifier:
             log_parts.append(f"Card identifier: {result.card_identifier}")
@@ -1082,8 +2746,12 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             if len(result.receipt_items) > 3:
                 items_summary.append(f"... +{len(result.receipt_items) - 3} more")
 
+        ai3_prompt = ai_service.prompts.get("data_extraction", "")
+        raw_response = ai_service.last_raw_response or ""
         log_parts = [
             f"Extracted data: {', '.join(extracted) if extracted else 'NO DATA'}",
+            f"--- PROMPT ---\n{ai3_prompt}",
+            f"--- RAW RESPONSE ---\n{raw_response}",
         ]
         if company_details:
             log_parts.append(f"Company: {'; '.join(company_details)}")
@@ -1161,10 +2829,14 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             if len(result.proposals or []) > 5:
                 proposal_details.append(f"... +{len(result.proposals) - 5} more")
 
+            ai4_prompt = ai_service.prompts.get("accounting_classification", "")
+            raw_response = ai_service.last_raw_response or ""
             log_parts = [
                 f"Generated {proposal_count} accounting proposals",
                 f"Vendor: {vendor_name or 'N/A'}",
                 f"Amounts: gross={gross}, net={net}, vat={vat_amount}",
+                f"--- PROMPT ---\n{ai4_prompt}",
+                f"--- RAW RESPONSE ---\n{raw_response}",
             ]
             if result.based_on_bas2025:
                 log_parts.append("Based on BAS 2025 chart of accounts")
@@ -1308,525 +2980,30 @@ def _save_accounting_entries(file_id: str, entries: List[AccountingEntry]) -> bo
         return False
 
 
-@celery_app.task
-@track_task("process_ocr")
-def process_ocr(file_id: str) -> dict[str, Any]:
-    import time
-
-    start_time = time.time()
-
-    # Run real OCR
-    result: dict[str, Any] | None = None
-    error_msg: str | None = None
-
-    try:
-        result = run_ocr(file_id, os.getenv("STORAGE_DIR", "/data/storage"))
-    except Exception as exc:
-        result = None
-        error_msg = f"{type(exc).__name__}: {str(exc)}"
-
-    if result:
-        # OCR ONLY writes raw text - NO business data extraction
-        _update_file_fields(
-            file_id,
-            ocr_raw=result.get("text"),
-        )
-        ok = _update_file_status(file_id, status="ocr_done", confidence=None)
-
-        elapsed = int((time.time() - start_time) * 1000)
-        text_len = len(result.get("text", ""))
-        text_preview = result.get("text", "")[:100].replace('\n', ' ') if result.get("text") else ""
-
-        # Build detailed log message
-        log_parts = [f"OCR completed successfully: extracted {text_len} characters of raw text"]
-        if text_preview:
-            log_parts.append(f"preview: '{text_preview}{'...' if text_len > 100 else ''}'")
-
-        # Add detected patterns if available
-        detected = []
-        if result.get("merchant_name"):
-            detected.append(f"merchant='{result.get('merchant_name')}'")
-        if result.get("gross_amount") is not None:
-            detected.append(f"amount={result.get('gross_amount')}")
-        if result.get("purchase_datetime"):
-            detected.append(f"date={result.get('purchase_datetime')}")
-        if detected:
-            log_parts.append(f"detected: {', '.join(detected)}")
-
-        _history(
-            file_id,
-            job="ocr",
-            status="success",
-            ai_stage_name="OCR-TextExtraction",
-            log_text="; ".join(log_parts),
-            confidence=None,
-            processing_time_ms=elapsed,
-            provider="paddleocr",
-        )
-
-        _maybe_advance_invoice_from_file(file_id, success=True)
-
-        # Only continue to AI pipeline if OCR succeeded
-        try:
-            process_ai_pipeline.delay(file_id)  # type: ignore[attr-defined]
-        except Exception:
-            try:
-                process_ai_pipeline.run(file_id)
-            except Exception:
-                pass
-
-        return {"file_id": file_id, "status": "ocr_done", "ok": ok, "real": True}
-    else:
-        # OCR failed
-        ok = _update_file_status(file_id, status="manual_review", confidence=0.0)
-        elapsed = int((time.time() - start_time) * 1000)
-
-        _history(
-            file_id,
-            job="ocr",
-            status="error",
-            ai_stage_name="OCR-TextExtraction",
-            log_text="OCR processing failed or returned no results",
-            error_message=error_msg or "OCR returned no results",
-            confidence=0.0,
-            processing_time_ms=elapsed,
-            provider="paddleocr",
-        )
-
-        _maybe_advance_invoice_from_file(file_id, success=False)
-
-        return {"file_id": file_id, "status": "manual_review", "ok": False, "error": error_msg or "OCR failed"}
 
 
-@celery_app.task
-@track_task("process_ai_pipeline")
-def process_ai_pipeline(file_id: str) -> dict[str, Any]:
-    import time
-
-    start_time = time.time()
-    try:
-        steps = _run_ai_pipeline(file_id)
-        elapsed = int((time.time() - start_time) * 1000)
-
-        _history(
-            file_id,
-            job="ai_pipeline",
-            status="success",
-            ai_stage_name="Pipeline-Complete",
-            log_text=f"Completed {len(steps)} AI stages successfully: {', '.join(steps)}",
-            processing_time_ms=elapsed,
-        )
-        return {"file_id": file_id, "steps": steps, "ok": True}
-    except Exception as exc:
-        elapsed = int((time.time() - start_time) * 1000)
-        error_msg = f"{type(exc).__name__}: {str(exc)}"
-
-        _history(
-            file_id,
-            job="ai_pipeline",
-            status="error",
-            ai_stage_name="Pipeline-Complete",
-            log_text="AI pipeline failed, file marked for manual review",
-            error_message=error_msg,
-            processing_time_ms=elapsed,
-        )
-        _update_file_status(file_id, "manual_review")
-        return {"file_id": file_id, "ok": False, "error": str(exc)}
 
 
-@celery_app.task
-@track_task("process_audio_transcription")
-def process_audio_transcription(file_id: str) -> dict[str, Any]:
-    import time
-
-    start_time = time.time()
-    try:
-        ok = _update_file_status(file_id, status="transcription_queued")
-        elapsed = int((time.time() - start_time) * 1000)
-        _history(
-            file_id,
-            job="transcription",
-            status="success",
-            ai_stage_name="Audio-Queued",
-            log_text="Audio file queued for transcription pipeline",
-            processing_time_ms=elapsed,
-            provider="audio_pipeline",
-        )
-        return {"file_id": file_id, "status": "transcription_queued", "ok": ok}
-    except Exception as exc:
-        elapsed = int((time.time() - start_time) * 1000)
-        _history(
-            file_id,
-            job="transcription",
-            status="error",
-            ai_stage_name="Audio-Queued",
-            log_text="Failed to queue audio for transcription",
-            error_message=str(exc),
-            processing_time_ms=elapsed,
-            provider="audio_pipeline",
-        )
-        return {"file_id": file_id, "status": "error", "ok": False, "error": str(exc)}
 
 
-@celery_app.task
-@track_task("process_classification")
-def process_classification(file_id: str) -> dict[str, Any]:
-    """Legacy task - most processing now done via AI pipeline."""
-    file_type = _get_file_type(file_id)
-    receipt_model = _load_receipt_model(file_id)
-    company_name = receipt_model.merchant_name if receipt_model else None  # From companies table
-    tags = receipt_model.tags if receipt_model else []
-    gross_decimal = receipt_model.gross_amount if receipt_model else None
-
-    merchants_cfg = os.getenv("COMPANY_CARD_MERCHANTS", "")
-    cc_merchants = {m.strip().lower() for m in merchants_cfg.split(",") if m.strip()}
-    company_card = (company_name or "").lower() in cc_merchants if company_name else False
-
-    enriched_name = None
-    try:
-        orgnr_val = None
-        if db_cursor is not None:
-            with db_cursor() as cur:
-                cur.execute("SELECT orgnr FROM unified_files WHERE id=%s", (file_id,))
-                row = cur.fetchone()
-                if row:
-                    (orgnr_val,) = row
-        if orgnr_val:
-            company = enrich_receipt(
-                Receipt(
-                    id=file_id,
-                    submitted_by=None,
-                    submitted_at=datetime.now(timezone.utc),
-                    pages=[],
-                    tags=[],
-                    location_opt_in=False,
-                    merchant_name=company_name,
-                    orgnr=str(orgnr_val),
-                    purchase_datetime=None,
-                    gross_amount=gross_decimal,
-                    net_amount=None,
-                    vat_breakdown={},
-                    company_card_flag=company_card,
-                    status=ReceiptStatus.PROCESSING,
-                    confidence_summary=None,
-                ),
-                provider_from_env(),
-            )
-            if company:
-                enriched_name = company.legal_name
-    except Exception:
-        pass
-
-    # NOTE: enriched_name not saved - companies table is source of truth
-
-    text_hints = _collect_text_hints(file_id)
-    document_type = _infer_document_type(file_type, company_name, tags, text_hints, company_card)
-
-    status_map = {
-        "receipt": "classified_receipt",
-        "invoice": "classified_invoice",
-        "other": "classified_other",
-    }
-    status_value = status_map.get(document_type, "classified_other")
-
-    ok = _update_file_status(file_id, status=status_value)
-    _history(file_id, job="classification", status="success" if ok else "error")
-
-    validation_triggered = False
-    if document_type == "receipt":
-        try:
-            process_validation.delay(file_id)  # type: ignore[attr-defined]
-            validation_triggered = True
-        except Exception:
-            try:
-                process_validation.run(file_id)
-                validation_triggered = True
-            except Exception:
-                validation_triggered = False
-
-    return {
-        "file_id": file_id,
-        "status": status_value,
-        "document_type": document_type,
-        "ok": ok,
-        "company_card": company_card,
-        "validation_triggered": validation_triggered,
-    }
 
 
-@celery_app.task
-@track_task("process_validation")
-def process_validation(file_id: str) -> dict[str, Any]:
-    receipt = _load_receipt_model(file_id)
-    if receipt is None:
-        _history(file_id, job="validation", status="error")
-        return {"file_id": file_id, "status": "error", "ok": False}
-
-    report = validate_receipt(receipt)
-    status_map = {
-        ReceiptStatus.PASSED: "passed",
-        ReceiptStatus.MANUAL_REVIEW: "manual_review",
-        ReceiptStatus.FAILED: "failed",
-    }
-    new_status = status_map.get(report.status, "manual_review")
-    ok = _update_file_status(file_id, status=new_status)
-    _history(file_id, job="validation", status="success" if ok else "error")
-
-    if report.status == ReceiptStatus.PASSED:
-        try:
-            process_accounting_proposal.delay(file_id)  # type: ignore[attr-defined]
-        except Exception:
-            try:
-                process_accounting_proposal.run(file_id)
-            except Exception:
-                pass
-
-    messages = [
-        {"message": msg.message, "severity": getattr(msg.severity, "value", str(msg.severity)), "field": msg.field_ref}
-        for msg in report.messages
-    ]
-    return {"file_id": file_id, "status": new_status, "ok": ok, "messages": messages}
 
 
-@celery_app.task
-@track_task("process_accounting_proposal")
-def process_accounting_proposal(file_id: str) -> dict[str, Any]:
-    receipt = _load_receipt_model(file_id)
-    if receipt is None:
-        _history(file_id, job="accounting_proposal", status="error")
-        return {"file_id": file_id, "status": "error", "ok": False}
-
-    rules = _load_rules()
-    entries = propose_accounting_entries(receipt, rules)
-    saved = _save_accounting_entries(file_id, entries)
-    if saved and entries:
-        _update_file_status(file_id, status="accounting_proposed")
-    _history(file_id, job="accounting_proposal", status="success" if saved else "error")
-    return {
-        "file_id": file_id,
-        "entries": len(entries),
-        "ok": saved,
-    }
 
 
-@celery_app.task
-@track_task("process_invoice_document")
-def process_invoice_document(document_id: str) -> dict[str, Any]:
-    transitioned = transition_processing_status(
-        document_id,
-        InvoiceProcessingStatus.AI_PROCESSING,
-        (
-            InvoiceProcessingStatus.OCR_DONE,
-            InvoiceProcessingStatus.OCR_PENDING,
-            InvoiceProcessingStatus.UPLOADED,
-        ),
-    )
-    if not transitioned:
-        _history(document_id, job="invoice_document", status="error", log_text="invalid_processing_state")
-        return {
-            "document_id": document_id,
-            "status": "invalid_state",
-            "ok": False,
-        }
-
-    metadata = _load_invoice_metadata(document_id) or {}
-    metadata["invoice_document_scheduled"] = False
-    texts = _collect_invoice_ocr_text(document_id)
-    combined_text = "\n".join(text for _, text in texts if text).strip()
-
-    if not combined_text:
-        metadata["processing_status"] = InvoiceProcessingStatus.FAILED.value
-        _update_invoice_metadata(document_id, metadata)
-        transition_processing_status(
-            document_id,
-            InvoiceProcessingStatus.FAILED,
-            (InvoiceProcessingStatus.AI_PROCESSING,),
-        )
-        transition_document_status(
-            document_id,
-            InvoiceDocumentStatus.FAILED,
-            (
-                InvoiceDocumentStatus.IMPORTED,
-                InvoiceDocumentStatus.MATCHING,
-                InvoiceDocumentStatus.MATCHED,
-                InvoiceDocumentStatus.PARTIALLY_MATCHED,
-            ),
-        )
-        _history(
-            document_id,
-            job="invoice_document",
-            status="error",
-            log_text="no_ocr_text",
-        )
-        return {
-            "document_id": document_id,
-            "status": InvoiceProcessingStatus.FAILED.value,
-            "ok": False,
-        }
-
-    _history(
-        document_id,
-        job="invoice_document",
-        status="success",
-        log_text="ai_processing_started",
-    )
-
-    parsed = parse_credit_card_statement(combined_text)
-    lines = parsed.get("lines") or []
-    inserted = _persist_invoice_lines(document_id, lines)
-
-    metadata["processing_status"] = InvoiceProcessingStatus.READY_FOR_MATCHING.value
-    metadata["ai_summary"] = combined_text[:400]
-    metadata["line_counts"] = {
-        "total": inserted,
-        "matched": 0,
-        "unmatched": max(inserted, 0),
-    }
-    if parsed.get("period_start"):
-        metadata["period_start"] = parsed["period_start"]
-    if parsed.get("period_end"):
-        metadata["period_end"] = parsed["period_end"]
-    _update_invoice_metadata(document_id, metadata)
-
-    if db_cursor is not None:
-        try:
-            with db_cursor() as cur:
-                if parsed.get("period_start") and parsed.get("period_end"):
-                    cur.execute(
-                        "UPDATE invoice_documents SET period_start=%s, period_end=%s WHERE id=%s",
-                        (
-                            parsed.get("period_start"),
-                            parsed.get("period_end"),
-                            document_id,
-                        ),
-                    )
-                elif parsed.get("period_start"):
-                    cur.execute(
-                        "UPDATE invoice_documents SET period_start=%s WHERE id=%s",
-                        (parsed.get("period_start"), document_id),
-                    )
-                elif parsed.get("period_end"):
-                    cur.execute(
-                        "UPDATE invoice_documents SET period_end=%s WHERE id=%s",
-                        (parsed.get("period_end"), document_id),
-                    )
-        except Exception:
-            pass
-
-    ready = transition_processing_status(
-        document_id,
-        InvoiceProcessingStatus.READY_FOR_MATCHING,
-        (InvoiceProcessingStatus.AI_PROCESSING,),
-    )
-    if ready:
-        transition_document_status(
-            document_id,
-            InvoiceDocumentStatus.MATCHING,
-            (
-                InvoiceDocumentStatus.IMPORTED,
-                InvoiceDocumentStatus.MATCHING,
-            ),
-        )
-    _history(
-        document_id,
-        job="invoice_document",
-        status="success",
-        log_text=f"lines_extracted:{inserted}",
-    )
-    return {
-        "document_id": document_id,
-        "status": InvoiceProcessingStatus.READY_FOR_MATCHING.value,
-        "lines": inserted,
-        "ok": ready,
-    }
 
 
-@celery_app.task
-@track_task("process_matching")
-def process_matching(statement_id: str) -> dict[str, Any]:
-    auto_matched, _ = _auto_match_invoice_lines(statement_id)
-
-    matched = 0
-    total_lines = 0
-    if db_cursor is not None:
-        try:
-            with db_cursor() as cur:
-                cur.execute(
-                    (
-                        "SELECT COUNT(*), SUM(CASE WHEN match_status IN ('auto','manual','confirmed') "
-                        "THEN 1 ELSE 0 END) FROM invoice_lines WHERE invoice_id=%s"
-                    ),
-                    (statement_id,),
-                )
-                row = cur.fetchone()
-                if row:
-                    total_lines = int(row[0] or 0)
-                    matched = int(row[1] or 0)
-        except Exception:
-            total_lines = 0
-            matched = 0
-
-    metadata = _load_invoice_metadata(statement_id) or {}
-    metadata.setdefault("line_counts", {})
-    metadata["line_counts"] = {
-        "total": total_lines,
-        "matched": matched,
-        "unmatched": max(total_lines - matched, 0),
-    }
-    _update_invoice_metadata(statement_id, metadata)
-
-    processing_ok = transition_processing_status(
-        statement_id,
-        InvoiceProcessingStatus.MATCHING_COMPLETED,
-        (
-            InvoiceProcessingStatus.READY_FOR_MATCHING,
-            InvoiceProcessingStatus.AI_PROCESSING,
-        ),
-    )
-
-    if matched == 0:
-        transition_document_status(
-            statement_id,
-            InvoiceDocumentStatus.IMPORTED,
-            (
-                InvoiceDocumentStatus.MATCHING,
-                InvoiceDocumentStatus.IMPORTED,
-                InvoiceDocumentStatus.PARTIALLY_MATCHED,
-            ),
-        )
-    elif total_lines and matched < total_lines:
-        transition_document_status(
-            statement_id,
-            InvoiceDocumentStatus.PARTIALLY_MATCHED,
-            (
-                InvoiceDocumentStatus.IMPORTED,
-                InvoiceDocumentStatus.MATCHING,
-                InvoiceDocumentStatus.MATCHED,
-            ),
-        )
-    else:
-        transition_document_status(
-            statement_id,
-            InvoiceDocumentStatus.MATCHED,
-            (
-                InvoiceDocumentStatus.IMPORTED,
-                InvoiceDocumentStatus.MATCHING,
-                InvoiceDocumentStatus.PARTIALLY_MATCHED,
-            ),
-        )
-
-    return {
-        "statement_id": statement_id,
-        "matched": matched,
-        "auto_matched": auto_matched,
-        "total": total_lines,
-        "processing_ok": processing_ok,
-    }
 
 
-@celery_app.task
-def hello(name):
-    print(f"Hello, {name}!")
-    return f"Hello, {name}!"
+
+
+
+
+
+
+
+
+
 
 

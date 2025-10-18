@@ -127,6 +127,7 @@ class FakeDB:
                 "original_file_name": original_file_name,
                 "original_file_size": original_file_size,
                 "credit_card_match": 0,
+                "matched": 0,
             }
             self.rowcount = 1
         elif statement.startswith("update unified_files set other_data"):
@@ -205,6 +206,21 @@ class FakeDB:
                 if row.get("invoice_number") == invoice_number
             ]
             self._results = matches[:1]
+        elif statement.startswith("select id, card_name, invoice_date from creditcard_invoices_main where id in"):
+            ids = {int(value) for value in params if value is not None}
+            results = []
+            for main_id in ids:
+                row = self.creditcard_invoices_main.get(main_id)
+                if not row:
+                    continue
+                results.append(
+                    (
+                        row.get("id", main_id),
+                        row.get("card_name"),
+                        row.get("invoice_date"),
+                    )
+                )
+            self._results = results
         elif statement.startswith(
             "select id, transaction_date, amount, coalesce(merchant_name, description) as merchant_hint, match_status from invoice_lines"
         ):
@@ -990,6 +1006,7 @@ def test_invoice_detail_includes_matched_receipt(app: Flask, monkeypatch: pytest
         "purchase_datetime": datetime(2025, 9, 5, 12, 0),
         "gross_amount": 150.25,
         "credit_card_match": 1,
+        "matched": 1,
         "company_id": company_id,
         "created_at": datetime(2025, 9, 6, 8, 30),
     }
@@ -1060,6 +1077,7 @@ def test_line_candidates_excludes_matched_receipts(app: Flask, monkeypatch: pyte
         "purchase_datetime": datetime(2025, 9, 10, 14, 0),
         "gross_amount": 200.00,
         "credit_card_match": 0,
+        "matched": 0,
         "created_at": datetime(2025, 9, 11, 9, 0),
         "company_id": 201,
     }
@@ -1068,6 +1086,7 @@ def test_line_candidates_excludes_matched_receipts(app: Flask, monkeypatch: pyte
         "purchase_datetime": datetime(2025, 9, 10, 12, 0),
         "gross_amount": 200.00,
         "credit_card_match": 1,
+        "matched": 1,
         "created_at": datetime(2025, 9, 10, 13, 0),
         "company_id": 202,
     }
@@ -1076,6 +1095,7 @@ def test_line_candidates_excludes_matched_receipts(app: Flask, monkeypatch: pyte
         "purchase_datetime": datetime(2025, 9, 10, 15, 0),
         "gross_amount": 200.00,
         "credit_card_match": 0,
+        "matched": 0,
         "created_at": datetime(2025, 9, 10, 16, 0),
         "company_id": 203,
     }
@@ -1084,6 +1104,7 @@ def test_line_candidates_excludes_matched_receipts(app: Flask, monkeypatch: pyte
         "purchase_datetime": datetime(2025, 9, 9, 10, 0),
         "gross_amount": 75.00,
         "credit_card_match": 0,
+        "matched": 0,
         "created_at": datetime(2025, 9, 9, 11, 0),
         "company_id": 204,
     }
@@ -1154,6 +1175,7 @@ def test_process_matching_auto_matches_lines(app: Flask, monkeypatch: pytest.Mon
         "content_hash": f"hash-{receipt_id}",
         "company_name": "Coffee Shop AB",
         "credit_card_match": 0,
+        "matched": 0,
     }
 
     def fake_ai_match(request: Any) -> CreditCardMatchResponse:
@@ -1167,6 +1189,9 @@ def test_process_matching_auto_matches_lines(app: Flask, monkeypatch: pytest.Mon
         )
         if request.file_id in fake.unified_files:
             fake.unified_files[request.file_id]["credit_card_match"] = 1
+            fake.unified_files[request.file_id]["matched"] = 1
+        if fake.creditcard_invoice_items:
+            fake.creditcard_invoice_items[0]["matched"] = 1
         return CreditCardMatchResponse(
             file_id=request.file_id,
             matched=True,
