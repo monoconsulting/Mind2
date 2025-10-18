@@ -286,6 +286,14 @@ def _persist_extraction_result(
             "receipt_number": unified.receipt_number,
             "other_data": unified.other_data or "{}",
             "ocr_raw": unified.ocr_raw or "",
+            "credit_card_number": unified.credit_card_number,
+            "credit_card_last_4_digits": unified.credit_card_last_4_digits,
+            "credit_card_brand_full": unified.credit_card_brand_full,
+            "credit_card_brand_short": unified.credit_card_brand_short,
+            "credit_card_payment_variant": unified.credit_card_payment_variant,
+            "credit_card_type": unified.credit_card_type,
+            "credit_card_token": unified.credit_card_token,
+            "credit_card_entering_mode": unified.credit_card_entering_mode,
         }
         set_parts: List[str] = []
         params: List[Any] = []
