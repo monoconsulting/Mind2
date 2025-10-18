@@ -951,12 +951,20 @@ class AIService:
                 pass
 
         # Extract unified_file data from LLM
-        unified_data = llm_result.get("unified_file", {})
+        unified_data = llm_result.get("unified_file", {}) or {}
 
         # Serialize other_data if it's a dict
         other_data_value = unified_data.get("other_data")
         if isinstance(other_data_value, dict):
             other_data_value = json.dumps(other_data_value, ensure_ascii=False)
+
+        # Handle common aliases for last four digits
+        card_last_4 = unified_data.get("credit_card_last_4_digits")
+        if card_last_4 in (None, "", 0):
+            card_last_4 = unified_data.get("credit_card_last_4")
+        # Let Pydantic coerce to int; just ensure empty strings become None
+        if isinstance(card_last_4, str) and not card_last_4.strip():
+            card_last_4 = None
 
         unified_file = UnifiedFileBase(
             file_type=request.document_type,
@@ -973,6 +981,14 @@ class AIService:
             receipt_number=unified_data.get("receipt_number"),
             other_data=other_data_value,
             ocr_raw=ocr_text,
+            credit_card_number=unified_data.get("credit_card_number"),
+            credit_card_last_4_digits=card_last_4,
+            credit_card_brand_full=unified_data.get("credit_card_brand_full"),
+            credit_card_brand_short=unified_data.get("credit_card_brand_short"),
+            credit_card_payment_variant=unified_data.get("credit_card_payment_variant"),
+            credit_card_type=unified_data.get("credit_card_type"),
+            credit_card_token=unified_data.get("credit_card_token"),
+            credit_card_entering_mode=unified_data.get("credit_card_entering_mode"),
         )
 
         # Extract company data from LLM
