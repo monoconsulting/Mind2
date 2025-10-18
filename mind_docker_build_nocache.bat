@@ -12,7 +12,7 @@ echo.
 
 REM Build backend image without cache
 echo [1/2] Building backend image...
-docker build --no-cache -t mind2-backend:latest -f backend/Dockerfile .
+docker build --no-cache -t mind2-ai-api:dev -f backend/Dockerfile .
 if %errorlevel% neq 0 (
     echo ERROR: Backend build failed!
     pause
