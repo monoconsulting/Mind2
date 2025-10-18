@@ -95,6 +95,14 @@ def _build_extraction_response() -> DataExtractionResponse:
         original_filename=None,
         approved_by=None,
         credit_card_match=False,
+        credit_card_number="**** **** **** 1234",
+        credit_card_last_4_digits=1234,
+        credit_card_brand_full="Visa",
+        credit_card_brand_short="VISA",
+        credit_card_payment_variant="contactless",
+        credit_card_type="corporate",
+        credit_card_token="token-1234",
+        credit_card_entering_mode="NFC",
     )
     company = Company(
         name="Test Store",
@@ -145,7 +153,26 @@ def test_persist_extraction_result_writes_company_and_receipts(monkeypatch):
     assert "DELETE FROM receipt_items" in sql_statements
     assert "INSERT INTO receipt_items" in sql_statements
     assert "UPDATE unified_files SET" in sql_statements
+    for column in (
+        "credit_card_number",
+        "credit_card_last_4_digits",
+        "credit_card_brand_full",
+        "credit_card_brand_short",
+        "credit_card_payment_variant",
+        "credit_card_type",
+        "credit_card_token",
+        "credit_card_entering_mode",
+    ):
+        assert f"{column} = %s" in sql_statements
     assert fake_conn.committed is True
+
+
+def test_unified_file_base_accepts_swish():
+    unified = UnifiedFileBase(
+        file_type="receipt",
+        payment_type="swish",
+    )
+    assert unified.payment_type == "swish"
 
 
 def test_persist_credit_card_match_updates_status(monkeypatch):
