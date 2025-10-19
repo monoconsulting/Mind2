@@ -169,7 +169,183 @@ function toOptionalString(value) {
   if (value === null || value === undefined) {
     return '';
   }
-  return fixMojibakeString(String(value));
+  return fixMojibakeString(String(value)).trim();
+}
+
+function pickFirstString(...values) {
+  for (const value of values) {
+    const str = toOptionalString(value);
+    if (str) {
+      return str;
+    }
+  }
+  return '';
+}
+
+function pickFirstNumber(...values) {
+  for (const value of values) {
+    const num = toNullableNumber(value);
+    if (num !== null) {
+      return num;
+    }
+  }
+  return null;
+}
+
+function splitArticlePrefix(value) {
+  if (value === null || value === undefined) {
+    return { article_id: '', name: '' };
+  }
+  const text = fixMojibakeString(String(value)).trim();
+  if (!text) {
+    return { article_id: '', name: '' };
+  }
+  const match = text.match(/^([A-Za-z0-9/_-]+)\s*[.:\-]\s*(.+)$/);
+  if (match && match[1] && match[2]) {
+    return { article_id: toOptionalString(match[1]), name: toOptionalString(match[2]) || '' };
+  }
+  return { article_id: '', name: toOptionalString(text) };
+}
+
+function normaliseReceipt(payload) {
+  const sourceReceipt = payload?.receipt || {};
+  const unifiedFile = payload?.unified_file || {};
+  const header = payload?.header || {};
+  const receipt = { ...sourceReceipt };
+
+  const ensureString = (key, ...candidates) => {
+    const current = toOptionalString(receipt[key]);
+    if (current) {
+      receipt[key] = current;
+      return;
+    }
+    const candidate = pickFirstString(...candidates);
+    receipt[key] = candidate;
+  };
+
+  const ensureNumber = (key, ...candidates) => {
+    const current = toNullableNumber(receipt[key]);
+    if (current !== null) {
+      receipt[key] = current;
+      return;
+    }
+    const candidate = pickFirstNumber(...candidates);
+    receipt[key] = candidate;
+  };
+
+  ensureString(
+    'merchant',
+    sourceReceipt.merchant_name,
+    unifiedFile.merchant,
+    unifiedFile.merchant_name,
+    unifiedFile.company_name
+  );
+  ensureString(
+    'purchase_datetime',
+    sourceReceipt.purchase_date,
+    unifiedFile.purchase_datetime,
+    unifiedFile.purchase_date,
+    header.purchase_datetime,
+    header.purchase_date
+  );
+  ensureString('receipt_number', unifiedFile.receipt_number, unifiedFile.invoice_number, header.receipt_number);
+  ensureString('payment_type', unifiedFile.payment_type);
+  ensureString('expense_type', unifiedFile.expense_type);
+  ensureString('credit_card_number', unifiedFile.credit_card_number);
+  ensureString('credit_card_last_4_digits', unifiedFile.credit_card_last_4_digits);
+  ensureString('credit_card_type', unifiedFile.credit_card_type);
+  ensureString('credit_card_brand_full', unifiedFile.credit_card_brand_full);
+  ensureString('credit_card_brand_short', unifiedFile.credit_card_brand_short);
+  ensureString('credit_card_payment_variant', unifiedFile.credit_card_payment_variant);
+  ensureString('credit_card_token', unifiedFile.credit_card_token);
+  ensureString('credit_card_entering_mode', unifiedFile.credit_card_entering_mode);
+  ensureString('currency', unifiedFile.currency, 'SEK');
+
+  const exchangeRate = pickFirstNumber(sourceReceipt.exchange_rate, unifiedFile.exchange_rate);
+  receipt.exchange_rate = exchangeRate !== null ? exchangeRate : null;
+
+  const grossAmount = pickFirstNumber(
+    sourceReceipt.gross_amount,
+    sourceReceipt.gross_amount_original,
+    unifiedFile.gross_amount,
+    unifiedFile.total_amount,
+    unifiedFile.gross_amount_original
+  );
+  receipt.gross_amount = grossAmount;
+
+  const netAmount = pickFirstNumber(
+    sourceReceipt.net_amount,
+    sourceReceipt.net_amount_original,
+    unifiedFile.net_amount,
+    unifiedFile.net_amount_original
+  );
+  receipt.net_amount = netAmount;
+
+  ensureNumber(
+    'gross_amount_original',
+    sourceReceipt.gross_amount_original,
+    unifiedFile.gross_amount_original,
+    unifiedFile.total_amount,
+    grossAmount
+  );
+  ensureNumber('net_amount_original', sourceReceipt.net_amount_original, unifiedFile.net_amount_original, netAmount);
+  ensureNumber('gross_amount_sek', sourceReceipt.gross_amount_sek, unifiedFile.gross_amount_sek);
+  ensureNumber('net_amount_sek', sourceReceipt.net_amount_sek, unifiedFile.net_amount_sek);
+  ensureNumber('total_vat_25', sourceReceipt.total_vat_25, unifiedFile.total_vat_25);
+  ensureNumber('total_vat_12', sourceReceipt.total_vat_12, unifiedFile.total_vat_12);
+  ensureNumber('total_vat_6', sourceReceipt.total_vat_6, unifiedFile.total_vat_6);
+
+  if (receipt.credit_card_match === undefined || receipt.credit_card_match === null) {
+    const match = pickFirstNumber(unifiedFile.credit_card_match, 0);
+    receipt.credit_card_match = match ?? 0;
+  }
+
+  return receipt;
+}
+
+function normaliseCompany(payload) {
+  const company = { ...(payload?.company || {}) };
+  const candidates = [
+    payload?.receipt?.company,
+    payload?.receipt?.merchant_details,
+    payload?.unified_file?.company,
+    payload?.unified_file,
+  ].filter(Boolean);
+
+  const ensure = (key, aliases = []) => {
+    const current = toOptionalString(company[key]);
+    if (current) {
+      company[key] = current;
+      return;
+    }
+    for (const source of candidates) {
+      const keys = [key, ...aliases];
+      for (const alias of keys) {
+        const value = source?.[alias];
+        if (value !== undefined && value !== null) {
+          const str = toOptionalString(value);
+          if (str) {
+            company[key] = str;
+            return;
+          }
+        }
+      }
+    }
+    company[key] = '';
+  };
+
+  ensure('name', ['company_name', 'merchant_name', 'merchant']);
+  ensure('orgnr', ['orgnr', 'org_number', 'organisation_number', 'organization_number', 'vat_number']);
+  ensure('address', ['address', 'street_address', 'street']);
+  ensure('address2', ['address2', 'address_line2', 'street2']);
+  ensure('zip', ['zip', 'zip_code', 'postal_code', 'postnr']);
+  ensure('city', ['city', 'town', 'locality', 'municipality']);
+  ensure('country', ['country', 'country_name', 'country_code']);
+  ensure('www', ['www', 'website', 'url', 'web']);
+  ensure('phone', ['phone', 'phone_number', 'telephone', 'tel']);
+  ensure('email', ['email', 'email_address']);
+
+  return company;
 }
 
 function normaliseItems(payload) {
@@ -221,13 +397,21 @@ function normaliseItems(payload) {
       (vatAmount != null && totalNet ? (vatAmount / totalNet) * 100 : null);
     const idCandidate = item.id ?? item.item_id ?? item.receipt_item_id ?? item.main_id ?? item.uuid ?? null;
 
+    const rawName = item.name ?? item.description ?? item.item_name ?? '';
+    const { article_id: parsedArticleId, name: parsedName } = splitArticlePrefix(rawName);
+    let articleId = toOptionalString(
+      item.article_id ?? item.articleNumber ?? item.item_code ?? item.sku ?? item.product_code ?? ''
+    );
+    if (!articleId && parsedArticleId) {
+      articleId = parsedArticleId;
+    }
+    const resolvedName = parsedName || toOptionalString(rawName);
+
     return {
       id: idCandidate,
       item_id: item.item_id ?? item.receipt_item_id ?? null,
-      article_id: toOptionalString(
-        item.article_id ?? item.articleNumber ?? item.item_code ?? item.sku ?? item.product_code ?? ''
-      ),
-      name: toOptionalString(item.name ?? item.description ?? item.item_name ?? ''),
+      article_id: articleId,
+      name: resolvedName,
       number: quantity != null ? quantity : '',
       item_price_ex_vat: unitNet,
       item_price_inc_vat: unitGross,
@@ -316,10 +500,12 @@ function decorateModalPayload(payload) {
   if (!payload) {
     return payload;
   }
-  const company = payload.company || {};
-  const items = normaliseItems(payload);
-  const proposals = normaliseProposals(payload, items);
-  return { ...payload, company, items, proposals };
+  const receipt = normaliseReceipt(payload);
+  const basePayload = { ...payload, receipt };
+  const company = normaliseCompany(basePayload);
+  const items = normaliseItems(basePayload);
+  const proposals = normaliseProposals(basePayload, items);
+  return { ...basePayload, company, items, proposals };
 }
 
 const ITEM_DETAIL_FIELDS = [
