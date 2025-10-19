@@ -42,7 +42,9 @@ Add the tasks in english using the following standard:
   
     **Description:** Follow instructions in @docs/MIND_MISSING_CARD_DETAILS.md
   
-    Task 5.4. - Felaktigheter i gula fält
+  - [ ] **Task 5.4 - Fix overlay issues**
+  
+    Descriptions: 1. Create a new branch "overlay-issues". Then read and follow carefully the instructions in @docs/tasks/MIND_OVERLAY_ISSUES.md
   
     
   
@@ -428,3 +430,4 @@ Analyze the existing workflow for multiple receipt pages and correct this so it 
   **Description:** If a PDF is uploaded (with the correct mime-type OR the correct file ending). This should be converted to a jpg at step 0. This should create a 300dpi png-picture with dpi configurable in the settings menu option. Do a full plan on how to implement this. Step by step. Add new task in this file. DO NOT IMPLEMENT THE FUNCTION YET.
 
   **How to verify:**
+
