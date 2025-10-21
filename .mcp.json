@@ -4,6 +4,11 @@
 			"type": "stdio",
 			"command": "docker",
 			"args": ["exec", "-i", "busy_solomon", "context7-mcp"]
+		},
+		"playwright": {
+			"type": "stdio",
+			"command": "npx",
+			"args": ["-y", "@playwright/mcp@latest"]
 		}
 	}
 }

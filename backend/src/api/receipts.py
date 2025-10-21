@@ -1143,15 +1143,18 @@ def put_receipt_modal(rid: str) -> Any:
     refreshed_items, refreshed_items_source = _get_receipt_items_with_source(rid, refreshed_receipt.get("currency"))
     refreshed_proposals = _fetch_saved_accounting_entries(rid)
     refreshed_company = _fetch_company_by_id(refreshed_receipt.get("company_id"))
+    refreshed_boxes = _load_boxes(rid)
     refreshed = {
         "receipt": refreshed_receipt,
         "company": refreshed_company,
         "items": refreshed_items,
         "proposals": refreshed_proposals,
+        "boxes": refreshed_boxes,
         "meta": {
             "items_source": refreshed_items_source,
             "items_count": len(refreshed_items),
             "proposals_count": len(refreshed_proposals),
+            "boxes_count": len(refreshed_boxes),
         },
     }
     if refreshed_items_source != "database":

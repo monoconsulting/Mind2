@@ -22,6 +22,41 @@ function resolveBoxField(boxes, candidates) {
   return match?.field || candidates[0];
 }
 
+function buildHoverCandidates(key, options = {}) {
+  const { source = 'receipt', extras = [], index } = options;
+  const candidates = [];
+
+  const isValidIndex = typeof index === 'number' && Number.isFinite(index) && index >= 0;
+
+  // Add index-qualified candidate first so arrays can match distinct overlays.
+  if (source && isValidIndex) {
+    candidates.push(`${source}[${index}].${key}`);
+  }
+
+  // Add primary candidate with source prefix.
+  if (source) {
+    candidates.push(`${source}.${key}`);
+  }
+
+  // Add the key itself as a generic fallback.
+  candidates.push(key);
+
+  // Add all extra candidates (supporting optional index-qualified variants).
+  if (Array.isArray(extras)) {
+    extras.forEach((extra) => {
+      if (typeof extra === 'string' && extra.length > 0) {
+        candidates.push(extra);
+        if (isValidIndex && extra.includes('[]')) {
+          candidates.push(extra.replace('[]', `[${index}]`));
+        }
+      }
+    });
+  }
+
+  // Deduplicate while preserving order to keep resolveBoxField deterministic.
+  return [...new Set(candidates)];
+}
+
 function firstNonEmptyArray(source, keys) {
   if (!source || typeof source !== 'object') {
     return [];
@@ -75,6 +110,27 @@ async function attachLineItemsFallback(payload, receiptId) {
   } catch (err) {
     console.error('Failed to load fallback line items', err);
     return payload;
+  }
+}
+
+function publishOverlayDebug(payload) {
+  const boxesList = Array.isArray(payload?.boxes) ? payload.boxes : [];
+  const debugPayload = {
+    hasPayload: !!payload,
+    orientation: payload?.meta?.image_orientation || 'unknown',
+    boxesCount: boxesList.length,
+    sample: boxesList.slice(0, 3),
+    firstBox: boxesList[0] || null,
+    allBoxes: boxesList,
+  };
+  console.log('[OVERLAY_DEBUG] Payload:', payload);
+  console.log('[OVERLAY_DEBUG] Boxes:', boxesList);
+  console.log('[OVERLAY_DEBUG] Boxes length:', boxesList.length);
+  if (boxesList.length > 0) {
+    console.log('[OVERLAY_DEBUG] First box:', boxesList[0]);
+  }
+  if (typeof window !== 'undefined') {
+    window.__overlayDebug = debugPayload;
   }
 }
 
@@ -504,9 +560,49 @@ function decorateModalPayload(payload) {
   const basePayload = { ...payload, receipt };
   const company = normaliseCompany(basePayload);
   const items = normaliseItems(basePayload);
-  const proposals = normaliseProposals(basePayload, items);
+const proposals = normaliseProposals(basePayload, items);
   return { ...basePayload, company, items, proposals };
 }
+
+const COMPANY_FIELDS = [
+  { key: 'name', label: 'Företag', source: 'company', extras: ['receipt.merchant'] },
+  { key: 'orgnr', label: 'Organisationsnummer', source: 'company', extras: ['receipt.organisation_number', 'header.orgnr'] },
+  { key: 'address', label: 'Adress', source: 'company', extras: ['company.address_line1'] },
+  { key: 'address2', label: 'Adress 2', source: 'company', extras: ['company.address_line2'] },
+  { key: 'zip', label: 'Postnummer', source: 'company', extras: ['receipt.postnr', 'receipt.postal_code'] },
+  { key: 'city', label: 'Ort', source: 'company', extras: ['receipt.city'] },
+  { key: 'country', label: 'Land', source: 'company', extras: ['company.country_name'] },
+  { key: 'www', label: 'Hemsida', source: 'company', extras: ['company.website', 'company.url'] },
+  { key: 'phone', label: 'Telefonnummer', source: 'company', extras: ['company.phone_number'] },
+  { key: 'email', label: 'Email', source: 'company', extras: ['company.email_address'] },
+];
+
+const PAYMENT_FIELDS = [
+  { key: 'purchase_datetime', label: 'Inköpsdatum', source: 'receipt', extras: ['receipt.purchase_date', 'header.purchase_datetime'] },
+  { key: 'receipt_number', label: 'Kvittonummer', source: 'receipt', extras: ['header.receipt_number'] },
+  { key: 'payment_type', label: 'Betalningstyp', source: 'receipt', extras: ['header.payment_type'] },
+  { key: 'expense_type', label: 'Utgiftstyp', source: 'receipt' },
+  { key: 'credit_card_number', label: 'Kortnummer', source: 'receipt', extras: ['receipt.card_number'] },
+  { key: 'credit_card_last_4_digits', label: 'Kortnummer 4 sista', source: 'receipt', extras: ['receipt.card_last4'] },
+  { key: 'credit_card_type', label: 'Korttyp', source: 'receipt', extras: ['receipt.card_type'] },
+  { key: 'credit_card_brand_full', label: 'Korttyp full', source: 'receipt' },
+  { key: 'credit_card_brand_short', label: 'Korttyp kort', source: 'receipt' },
+  { key: 'credit_card_payment_variant', label: 'Betalningsvariant', source: 'receipt' },
+  { key: 'credit_card_token', label: 'Korttyp token', source: 'receipt' },
+  { key: 'credit_card_entering_mode', label: 'Inmatningsläge', source: 'receipt', extras: ['receipt.card_entry_mode'] },
+];
+
+const AMOUNT_FIELDS = [
+  { key: 'currency', label: 'Valuta', source: 'receipt' },
+  { key: 'exchange_rate', label: 'Växlingskurs', source: 'receipt' },
+  { key: 'gross_amount', label: 'Originalbelopp ink. moms', source: 'receipt', format: 'currency' },
+  { key: 'net_amount', label: 'Originalbelopp ex. moms', source: 'receipt', format: 'currency' },
+  { key: 'gross_amount_sek', label: 'Svenskt totalbelopp ink moms SEK', source: 'receipt', format: 'currency' },
+  { key: 'net_amount_sek', label: 'Svenskt totalbelopp ex. moms SEK', source: 'receipt', format: 'currency' },
+  { key: 'total_vat_25', label: 'Moms 25%', source: 'receipt', format: 'currency' },
+  { key: 'total_vat_12', label: 'Moms 12%', source: 'receipt', format: 'currency' },
+  { key: 'total_vat_6', label: 'Moms 6%', source: 'receipt', format: 'currency' },
+];
 
 const ITEM_DETAIL_FIELDS = [
   { key: 'article_id', label: 'Artikelnummer' },
@@ -631,6 +727,11 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
   const [draft, setDraft] = React.useState(null);
   const [editing, setEditing] = React.useState(false);
   const [hoverField, setHoverField] = React.useState(null);
+  const imgRef = React.useRef(null);
+
+  const safeReceipt = receipt ?? {};
+  const safeReceiptId = safeReceipt.id ?? '';
+  const shouldRender = Boolean(open && receipt);
 
   React.useEffect(() => {
     if (!open) {
@@ -641,11 +742,12 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
       setError(null);
       setLoading(false);
       setSaving(false);
+      publishOverlayDebug(null);
     }
   }, [open]);
 
   React.useEffect(() => {
-    if (!open || !receipt?.id) {
+    if (!open || !safeReceiptId) {
       return;
     }
     let cancelled = false;
@@ -656,7 +758,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
 
     const fetchData = async () => {
       try {
-        const res = await api.fetch(`/ai/api/receipts/${receipt.id}/modal`);
+        const res = await api.fetch(`/ai/api/receipts/${safeReceiptId}/modal`);
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
@@ -665,7 +767,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
         // KRITISKT: Applicera encoding-fix på ALL data från API INNAN vidare behandling
         rawPayload = fixEncodingDeep(rawPayload);
 
-        rawPayload = await attachLineItemsFallback(rawPayload, receipt.id);
+        rawPayload = await attachLineItemsFallback(rawPayload, safeReceiptId);
         if (cancelled) {
           return;
         }
@@ -677,6 +779,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
         setPayload(mergedPayload);
         setDraft(prepareDraft(mergedPayload));
         setLoading(false);
+        publishOverlayDebug(mergedPayload);
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
@@ -690,11 +793,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
     return () => {
       cancelled = true;
     };
-  }, [open, receipt?.id]);
-
-  if (!open || !receipt) {
-    return null;
-  }
+  }, [open, safeReceiptId]);
 
   const boxes = payload?.boxes || [];
 
@@ -702,7 +801,20 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
     if (!hoverField || !key) {
       return '';
     }
-    return normaliseFieldId(hoverField) === normaliseFieldId(key) ? 'highlighted' : 'muted';
+    if (hoverField === key) {
+      return 'highlighted';
+    }
+    const normalisedHover = normaliseFieldId(hoverField);
+    const normalisedKey = normaliseFieldId(key);
+    if (normalisedHover !== normalisedKey) {
+      return 'muted';
+    }
+    const hoverHasIndex = /\[\d+\]/.test(hoverField);
+    const keyHasIndex = /\[\d+\]/.test(key);
+    if (hoverHasIndex || keyHasIndex) {
+      return 'muted';
+    }
+    return 'highlighted';
   };
 
   const receiptData = payload?.receipt || {};
@@ -776,13 +888,16 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
   };
 
   const handleSave = async () => {
-    if (!draft) {
+    if (!draft || !safeReceiptId) {
+      if (!safeReceiptId) {
+        setError('Kvitto-id saknas');
+      }
       return;
     }
     setSaving(true);
     setError(null);
     try {
-      const res = await api.fetch(`/ai/api/receipts/${receipt.id}/modal`, {
+      const res = await api.fetch(`/ai/api/receipts/${safeReceiptId}/modal`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(draft),
@@ -796,7 +911,7 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
       // KRITISKT: Applicera encoding-fix på uppdaterad data
       refreshedPayload = fixEncodingDeep(refreshedPayload);
 
-      refreshedPayload = await attachLineItemsFallback(refreshedPayload, receipt.id);
+      refreshedPayload = await attachLineItemsFallback(refreshedPayload, safeReceiptId);
       const decorated = decorateModalPayload(refreshedPayload);
       const nextPayload = {
         ...(payload || {}),
@@ -827,18 +942,18 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
   };
 
   const handleDelete = async () => {
-    if (!receipt?.id) {
+    if (!safeReceiptId) {
       return;
     }
     try {
-      const res = await api.fetch(`/ai/api/receipts/${receipt.id}`, {
+      const res = await api.fetch(`/ai/api/receipts/${safeReceiptId}`, {
         method: 'DELETE'
       });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
       if (typeof onReceiptUpdate === 'function') {
-        onReceiptUpdate({ id: receipt.id, deleted: true });
+        onReceiptUpdate({ id: safeReceiptId, deleted: true });
       }
       onClose();
     } catch (err) {
@@ -846,7 +961,13 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
     }
   };
 
-  const baseImageSrc = previewImage || `/ai/api/receipts/${receipt.id}/image?size=preview&rotate=portrait`;
+  const baseImageSrc = safeReceiptId
+    ? previewImage || `/ai/api/receipts/${safeReceiptId}/image?size=preview&rotate=portrait`
+    : null;
+
+  if (!shouldRender) {
+    return null;
+  }
 
   return (
     <div className="modal-backdrop receipt-preview-modal" role="dialog" aria-label={`Förhandsgranskning kvitto ${receipt.id}`} onClick={handleBackdrop}>
@@ -855,9 +976,9 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
           <div>
             <h3>Förhandsgranska kvitto</h3>
             <p className="card-subtitle">
-              {receiptData.merchant || receipt.merchant || 'Kvitto'} • {formatDate(receiptData.purchase_datetime)}
+              {receiptData.merchant || safeReceipt.merchant || 'Kvitto'} • {formatDate(receiptData.purchase_datetime)}
             </p>
-            {(receipt.credit_card_match || receiptData.credit_card_match) && (
+            {(safeReceipt.credit_card_match || receiptData.credit_card_match) && (
               <span className="status-badge status-passed mt-2 inline-flex items-center gap-2 text-xs">
                 <FiCreditCard className="text-sm" />
                 Kortmatchat
@@ -890,32 +1011,40 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                 <div className="receipt-modal-section">
                   <h4>Grunddata (Företagsinformation)</h4>
                   <div className="receipt-modal-grid">
-                    {[
-                      { key: 'name', label: 'Företag', source: 'company' },
-                      { key: 'orgnr', label: 'Organisationsnummer', source: 'company' },
-                      { key: 'address', label: 'Adress', source: 'company' },
-                      { key: 'address2', label: 'Adress 2', source: 'company' },
-                      { key: 'zip', label: 'Postnummer', source: 'company' },
-                      { key: 'city', label: 'Ort', source: 'company' },
-                      { key: 'country', label: 'Land', source: 'company' },
-                      { key: 'www', label: 'Hemsida', source: 'company' },
-                      { key: 'phone', label: 'Telefonnummer', source: 'company' },
-                      { key: 'email', label: 'Email', source: 'company' },
-                    ].map((field) => {
+                    {COMPANY_FIELDS.map((field) => {
                       const sourceData = field.source === 'company' ? companyData : receiptData;
                       const draftData = field.source === 'company' ? companyDraft : receiptDraft;
+                      const candidates = buildHoverCandidates(field.key, {
+                        source: field.source,
+                        extras: field.extras
+                      });
+                      const hoverKey = resolveBoxField(boxes, candidates);
+                      const highlightKey = hoverKey || candidates[0] || field.key;
+                      const readonlyValue =
+                        sourceData[field.key] ??
+                        (field.source === 'company' ? receiptData[field.key] : companyData[field.key]) ??
+                        '';
                       return (
-                        <div key={field.key} className="receipt-modal-field">
+                        <div
+                          key={field.key}
+                          className={`receipt-modal-field ${matchHighlight(highlightKey)}`}
+                          onMouseEnter={() => setHoverField(highlightKey)}
+                          onMouseLeave={() => setHoverField(null)}
+                        >
                           <label className="field-label">{field.label}</label>
                           {editing ? (
                             <input
                               className="dm-input"
                               value={draftData[field.key] ?? ''}
-                              onChange={(event) => field.source === 'company' ? updateCompanyDraft(field.key, event.target.value) : updateReceiptDraft(field.key, event.target.value)}
+                              onChange={(event) =>
+                                field.source === 'company'
+                                  ? updateCompanyDraft(field.key, event.target.value)
+                                  : updateReceiptDraft(field.key, event.target.value)
+                              }
                               disabled={saving}
                             />
                           ) : (
-                            <div className="field-value">{sourceData[field.key] || '-'}</div>
+                            <div className="field-value">{readonlyValue || '-'}</div>
                           )}
                         </div>
                       );
@@ -927,36 +1056,36 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                 <div className="receipt-modal-section">
                   <h4>Betalningstyp</h4>
                   <div className="receipt-modal-grid">
-                    {[
-                      { key: 'purchase_datetime', label: 'Inköpsdatum' },
-                      { key: 'receipt_number', label: 'Kvittonnummer' },
-                      { key: 'payment_type', label: 'Betalningstyp' },
-                      { key: 'expense_type', label: 'Utgiftstyp' },
-                      { key: 'credit_card_number', label: 'Kortnummer' },
-                      { key: 'credit_card_last_4_digits', label: 'Kortnummer 4 sista' },
-                      { key: 'credit_card_type', label: 'Korttyp' },
-                      { key: 'credit_card_brand_full', label: 'Korttyp full' },
-                      { key: 'credit_card_brand_short', label: 'Korttyp kort' },
-                      { key: 'credit_card_payment_variant', label: 'Betalningsvariant' },
-                      { key: 'credit_card_token', label: 'Korttyp token' },
-                      { key: 'credit_card_entering_mode', label: 'Inmatningsläge' },
-                    ].map((field) => (
-                      <div key={field.key} className="receipt-modal-field">
-                        <label className="field-label">{field.label}</label>
-                        {editing ? (
-                          <input
-                            className="dm-input"
-                            value={receiptDraft[field.key] ?? ''}
-                            onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
-                            disabled={saving}
-                          />
-                        ) : field.key === 'purchase_datetime' ? (
-                          <div className="field-value">{formatDate(receiptData.purchase_datetime)}</div>
-                        ) : (
-                          <div className="field-value">{receiptData[field.key] || '-'}</div>
-                        )}
-                      </div>
-                    ))}
+                    {PAYMENT_FIELDS.map((field) => {
+                      const candidates = buildHoverCandidates(field.key, {
+                        source: field.source,
+                        extras: field.extras
+                      });
+                      const hoverKey = resolveBoxField(boxes, candidates);
+                      const highlightKey = hoverKey || candidates[0] || field.key;
+                      return (
+                        <div
+                          key={field.key}
+                          className={`receipt-modal-field ${matchHighlight(highlightKey)}`}
+                          onMouseEnter={() => setHoverField(highlightKey)}
+                          onMouseLeave={() => setHoverField(null)}
+                        >
+                          <label className="field-label">{field.label}</label>
+                          {editing ? (
+                            <input
+                              className="dm-input"
+                              value={receiptDraft[field.key] ?? ''}
+                              onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
+                              disabled={saving}
+                            />
+                          ) : field.key === 'purchase_datetime' ? (
+                            <div className="field-value">{formatDate(receiptData.purchase_datetime)}</div>
+                          ) : (
+                            <div className="field-value">{receiptData[field.key] || '-'}</div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
@@ -964,54 +1093,73 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                 <div className="receipt-modal-section">
                   <h4>Belopp</h4>
                   <div className="receipt-modal-grid">
-                    {[
-                      { key: 'currency', label: 'Valuta' },
-                      { key: 'exchange_rate', label: 'Växlingskurs' },
-                      { key: 'gross_amount', label: 'Originalbelopp ink. moms', format: 'currency' },
-                      { key: 'net_amount', label: 'Originalbelopp ex. moms', format: 'currency' },
-                      { key: 'gross_amount_sek', label: 'Svenskt totalbelopp ink moms SEK', format: 'currency' },
-                      { key: 'net_amount_sek', label: 'Svenskt totalbelopp ex. moms SEK', format: 'currency' },
-                      { key: 'total_vat_25', label: 'Moms 25%', format: 'currency' },
-                      { key: 'total_vat_12', label: 'Moms 12%', format: 'currency' },
-                      { key: 'total_vat_6', label: 'Moms 6%', format: 'currency' },
-                    ].map((field) => (
-                      <div key={field.key} className="receipt-modal-field">
-                        <label className="field-label">{field.label}</label>
-                        {editing ? (
-                          <input
-                            className="dm-input"
-                            value={receiptDraft[field.key] ?? ''}
-                            onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
-                            disabled={saving}
-                          />
-                        ) : field.format === 'currency' ? (
-                          <div className="field-value">{formatCurrency(Number(receiptData[field.key] || 0))}</div>
-                        ) : (
-                          <div className="field-value">{receiptData[field.key] || '-'}</div>
-                        )}
-                      </div>
-                    ))}
+                    {AMOUNT_FIELDS.map((field) => {
+                      const candidates = buildHoverCandidates(field.key, {
+                        source: field.source,
+                        extras: field.extras
+                      });
+                      const hoverKey = resolveBoxField(boxes, candidates);
+                      const highlightKey = hoverKey || candidates[0] || field.key;
+                      return (
+                        <div
+                          key={field.key}
+                          className={`receipt-modal-field ${matchHighlight(highlightKey)}`}
+                          onMouseEnter={() => setHoverField(highlightKey)}
+                          onMouseLeave={() => setHoverField(null)}
+                        >
+                          <label className="field-label">{field.label}</label>
+                          {editing ? (
+                            <input
+                              className="dm-input"
+                              value={receiptDraft[field.key] ?? ''}
+                              onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
+                              disabled={saving}
+                            />
+                          ) : field.format === 'currency' ? (
+                            <div className="field-value">{formatCurrency(Number(receiptData[field.key] || 0))}</div>
+                          ) : (
+                            <div className="field-value">{receiptData[field.key] || '-'}</div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
                 {/* RP8: ├ûvrigt (Box 4) - Other Data (Full Width) */}
                 <div className="receipt-modal-section">
                   <h4>Övrigt</h4>
-                  <div className="receipt-modal-field">
-                    <label className="field-label">Övrig data</label>
-                    {editing ? (
-                      <textarea
-                        className="dm-input"
-                        value={receiptDraft.other_data ?? ''}
-                        onChange={(event) => updateReceiptDraft('other_data', event.target.value)}
-                        disabled={saving}
-                        rows={3}
-                        style={{ width: '100%', resize: 'vertical' }}
-                      />
-                    ) : (
-                      <div className="field-value" style={{ whiteSpace: 'pre-wrap' }}>{receiptData.other_data || '-'}</div>
-                    )}
-                  </div>
+                  {(() => {
+                    const otherCandidates = buildHoverCandidates('other_data', {
+                      source: 'receipt',
+                      extras: ['receipt.notes', 'notes']
+                    });
+                    const otherHoverKey = resolveBoxField(boxes, otherCandidates);
+                    const otherHighlightKey = otherHoverKey || otherCandidates[0] || 'other_data';
+                    return (
+                      <div
+                        className={`receipt-modal-field ${matchHighlight(otherHighlightKey)}`}
+                        onMouseEnter={() => setHoverField(otherHighlightKey)}
+                        onMouseLeave={() => setHoverField(null)}
+                      >
+                        <label className="field-label">Övrig data</label>
+                        {editing ? (
+                          <textarea
+                            className="dm-input"
+                            value={receiptDraft.other_data ?? ''}
+                            onChange={(event) => updateReceiptDraft('other_data', event.target.value)}
+                            disabled={saving}
+                            rows={3}
+                            style={{ width: '100%', resize: 'vertical' }}
+                          />
+                        ) : (
+                          <div className="field-value" style={{ whiteSpace: 'pre-wrap' }}>
+                            {receiptData.other_data || '-'}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* OCR Text Section */}
@@ -1029,38 +1177,45 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
               <div className="receipt-modal-center">
                 <div className="receipt-modal-image-wrapper">
                   {baseImageSrc ? (
-                    <img src={baseImageSrc} alt={`Kvitto ${receipt.id}`} className="receipt-modal-image" />
+                    <div className="receipt-modal-image-stage">
+                      <img
+                        ref={imgRef}
+                        src={baseImageSrc}
+                        alt={`Kvitto ${safeReceiptId || ''}`}
+                        className="receipt-modal-image"
+                      />
+                      {boxes.map((box, index) => {
+                        const overlayKey = box.field || `box-${index}`;
+                        const toCss = (val) => {
+                          if (typeof val !== 'number') {
+                            return '0%';
+                          }
+                          if (val > 1) {
+                            return `${val}px`;
+                          }
+                          const clamped = Math.min(Math.max(val, 0), 1);
+                          return `${clamped * 100}%`;
+                        };
+                        return (
+                          <div
+                            key={`${overlayKey}-${index}`}
+                            className={`receipt-modal-overlay ${matchHighlight(overlayKey)}`}
+                            style={{
+                              position: 'absolute',
+                              top: toCss(box.y ?? box.top ?? 0),
+                              left: toCss(box.x ?? box.left ?? 0),
+                              width: toCss(box.w ?? box.width ?? 0),
+                              height: toCss(box.h ?? box.height ?? 0),
+                            }}
+                            onMouseEnter={() => setHoverField(overlayKey)}
+                            onMouseLeave={() => setHoverField(null)}
+                          />
+                        );
+                      })}
+                    </div>
                   ) : (
                     <div className="receipt-modal-image-fallback">Ingen bild</div>
                   )}
-                  {boxes.map((box, index) => {
-                    const overlayKey = box.field || `box-${index}`;
-                    const toCss = (val) => {
-                      if (typeof val !== 'number') {
-                        return '0%';
-                      }
-                      if (val > 1) {
-                        return `${val}px`;
-                      }
-                      const clamped = Math.min(Math.max(val, 0), 1);
-                      return `${clamped * 100}%`;
-                    };
-                    return (
-                      <div
-                        key={`${overlayKey}-${index}`}
-                        className={`receipt-modal-overlay ${matchHighlight(overlayKey)}`}
-                        style={{
-                          position: 'absolute',
-                          top: toCss(box.y ?? box.top ?? 0),
-                          left: toCss(box.x ?? box.left ?? 0),
-                          width: toCss(box.w ?? box.width ?? 0),
-                          height: toCss(box.h ?? box.height ?? 0),
-                        }}
-                        onMouseEnter={() => setHoverField(overlayKey)}
-                        onMouseLeave={() => setHoverField(null)}
-                      />
-                    );
-                  })}
                 </div>
               </div>
 
@@ -1104,8 +1259,21 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                                   : null;
                               const readOnlyValue = field.computed ? computedValue : getItemValue(field.key);
                               const draftValue = itemDraft ? itemDraft[field.key] ?? '' : '';
+                              const itemFieldKey = `items[${itemIndex}].${field.key}`;
+                              const candidates = buildHoverCandidates(field.key, {
+                                source: 'items',
+                                extras: field.extras || [],
+                                index: itemIndex
+                              });
+                              const hoverKey = resolveBoxField(boxes, candidates);
+                              const highlightKey = hoverKey || candidates[0] || itemFieldKey;
                               return (
-                                <div key={`${field.key}-${itemIndex}`} className="receipt-item-cell-new">
+                                <div
+                                  key={`${field.key}-${itemIndex}`}
+                                  className={`receipt-item-cell-new ${matchHighlight(highlightKey)}`}
+                                  onMouseEnter={() => setHoverField(highlightKey)}
+                                  onMouseLeave={() => setHoverField(null)}
+                                >
                                   <span className="cell-label-new">{field.label}</span>
                                   {editing && !field.computed ? (
                                     <input
@@ -1149,10 +1317,53 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                                   ? `${Number(vatRateValue).toLocaleString('sv-SE', { maximumFractionDigits: 2 })}%`
                                   : '-';
 
+                                const accountFieldKey = `proposals[${globalIndex}].account`;
+                                const accountCandidates = buildHoverCandidates('account', {
+                                  source: 'proposals',
+                                  extras: [],
+                                  index: globalIndex
+                                });
+                                const accountHoverKey = resolveBoxField(boxes, accountCandidates);
+                                const accountHighlightKey =
+                                  accountHoverKey || accountCandidates[0] || accountFieldKey;
+
+                                const amountFieldKey = `proposals[${globalIndex}].${isDebit ? 'debit' : 'credit'}`;
+                                const amountCandidates = buildHoverCandidates(isDebit ? 'debit' : 'credit', {
+                                  source: 'proposals',
+                                  extras: [],
+                                  index: globalIndex
+                                });
+                                const amountHoverKey = resolveBoxField(boxes, amountCandidates);
+                                const amountHighlightKey =
+                                  amountHoverKey || amountCandidates[0] || amountFieldKey;
+
+                                const vatFieldKey = `proposals[${globalIndex}].vat_rate`;
+                                const vatCandidates = buildHoverCandidates('vat_rate', {
+                                  source: 'proposals',
+                                  extras: [],
+                                  index: globalIndex
+                                });
+                                const vatHoverKey = resolveBoxField(boxes, vatCandidates);
+                                const vatHighlightKey = vatHoverKey || vatCandidates[0] || vatFieldKey;
+
+                                const notesFieldKey = `proposals[${globalIndex}].notes`;
+                                const notesCandidates = buildHoverCandidates('notes', {
+                                  source: 'proposals',
+                                  extras: [],
+                                  index: globalIndex
+                                });
+                                const notesHoverKey = resolveBoxField(boxes, notesCandidates);
+                                const notesHighlightKey =
+                                  notesHoverKey || notesCandidates[0] || notesFieldKey;
+
                                 return (
                                   <div key={`proposal-${globalIndex}`} className="proposal-card-new">
                                     <div className="proposal-line-new">
-                                      <div className="proposal-cell-new">
+                                      <div
+                                        className={`proposal-cell-new ${matchHighlight(accountHighlightKey)}`}
+                                        onMouseEnter={() => setHoverField(accountHighlightKey)}
+                                        onMouseLeave={() => setHoverField(null)}
+                                      >
                                         <span className="cell-label-new">{isDebit ? 'Debetkonto' : 'Kreditkonto'}</span>
                                         {editing ? (
                                           <input
@@ -1166,7 +1377,11 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                                           <div className="cell-value-new">{accountValue || '-'}</div>
                                         )}
                                       </div>
-                                      <div className="proposal-cell-new">
+                                      <div
+                                        className={`proposal-cell-new ${matchHighlight(amountHighlightKey)}`}
+                                        onMouseEnter={() => setHoverField(amountHighlightKey)}
+                                        onMouseLeave={() => setHoverField(null)}
+                                      >
                                         <span className="cell-label-new">Belopp {isDebit ? 'Debet' : 'Kredit'}</span>
                                         {editing ? (
                                           <div className="proposal-amount-inputs-new">
@@ -1189,7 +1404,11 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                                           <div className="cell-value-new">{amountDisplay}</div>
                                         )}
                                       </div>
-                                      <div className="proposal-cell-new">
+                                      <div
+                                        className={`proposal-cell-new ${matchHighlight(vatHighlightKey)}`}
+                                        onMouseEnter={() => setHoverField(vatHighlightKey)}
+                                        onMouseLeave={() => setHoverField(null)}
+                                      >
                                         <span className="cell-label-new">Momssats</span>
                                         {editing ? (
                                           <input
@@ -1203,7 +1422,11 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                                           <div className="cell-value-new">{vatRateDisplay}</div>
                                         )}
                                       </div>
-                                      <div className="proposal-cell-new">
+                                      <div
+                                        className={`proposal-cell-new ${matchHighlight(notesHighlightKey)}`}
+                                        onMouseEnter={() => setHoverField(notesHighlightKey)}
+                                        onMouseLeave={() => setHoverField(null)}
+                                      >
                                         <span className="cell-label-new">Notering</span>
                                         {editing ? (
                                           <input
@@ -1266,3 +1489,18 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -316,7 +316,7 @@ class CreditCardMatchResponse(BaseModel):
 class BatchProcessingRequest(BaseModel):
     """Request for batch AI processing of multiple files."""
     file_ids: List[str]
-    processing_steps: List[Literal["AI1", "AI2", "AI3", "AI4", "AI5"]]
+    processing_steps: List[Literal["AI1", "AI2", "AI3", "AI4", "AI5", "AI7"]]
     stop_on_error: bool = False
 
 

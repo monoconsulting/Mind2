@@ -1,0 +1,116 @@
+                  <div className="receipt-modal-grid">
+                    {[
+                      { key: 'name', label: 'Företag', source: 'company' },
+                      { key: 'orgnr', label: 'Organisationsnummer', source: 'company' },
+                      { key: 'address', label: 'Adress', source: 'company' },
+                      { key: 'address2', label: 'Adress 2', source: 'company' },
+                      { key: 'zip', label: 'Postnummer', source: 'company' },
+                      { key: 'city', label: 'Ort', source: 'company' },
+                      { key: 'country', label: 'Land', source: 'company' },
+                      { key: 'www', label: 'Hemsida', source: 'company' },
+                      { key: 'phone', label: 'Telefonnummer', source: 'company' },
+                      { key: 'email', label: 'Email', source: 'company' },
+                    ].map((field) => {
+                      const sourceData = field.source === 'company' ? companyData : receiptData;
+                      const draftData = field.source === 'company' ? companyDraft : receiptDraft;
+                      return (
+                        <div key={field.key} className="receipt-modal-field">
+                          <label className="field-label">{field.label}</label>
+                          {editing ? (
+                            <input
+                              className="dm-input"
+                              value={draftData[field.key] ?? ''}
+                              onChange={(event) => field.source === 'company' ? updateCompanyDraft(field.key, event.target.value) : updateReceiptDraft(field.key, event.target.value)}
+                              disabled={saving}
+                            />
+                          ) : (
+                            <div className="field-value">{sourceData[field.key] || '-'}</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* RP6: Betalningstyp (Box 2) - Payment Information */}
+                <div className="receipt-modal-section">
+                  <h4>Betalningstyp</h4>
+                  <div className="receipt-modal-grid">
+                    {[
+                      { key: 'purchase_datetime', label: 'Inköpsdatum' },
+                      { key: 'receipt_number', label: 'Kvittonnummer' },
+                      { key: 'payment_type', label: 'Betalningstyp' },
+                      { key: 'expense_type', label: 'Utgiftstyp' },
+                      { key: 'credit_card_number', label: 'Kortnummer' },
+                      { key: 'credit_card_last_4_digits', label: 'Kortnummer 4 sista' },
+                      { key: 'credit_card_type', label: 'Korttyp' },
+                      { key: 'credit_card_brand_full', label: 'Korttyp full' },
+                      { key: 'credit_card_brand_short', label: 'Korttyp kort' },
+                      { key: 'credit_card_payment_variant', label: 'Betalningsvariant' },
+                      { key: 'credit_card_token', label: 'Korttyp token' },
+                      { key: 'credit_card_entering_mode', label: 'Inmatningsläge' },
+                    ].map((field) => (
+                      <div key={field.key} className="receipt-modal-field">
+                        <label className="field-label">{field.label}</label>
+                        {editing ? (
+                          <input
+                            className="dm-input"
+                            value={receiptDraft[field.key] ?? ''}
+                            onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
+                            disabled={saving}
+                          />
+                        ) : field.key === 'purchase_datetime' ? (
+                          <div className="field-value">{formatDate(receiptData.purchase_datetime)}</div>
+                        ) : (
+                          <div className="field-value">{receiptData[field.key] || '-'}</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* RP7: Belopp (Box 3) - Amounts and VAT */}
+                <div className="receipt-modal-section">
+                  <h4>Belopp</h4>
+                  <div className="receipt-modal-grid">
+                    {[
+                      { key: 'currency', label: 'Valuta' },
+                      { key: 'exchange_rate', label: 'Växlingskurs' },
+                      { key: 'gross_amount', label: 'Originalbelopp ink. moms', format: 'currency' },
+                      { key: 'net_amount', label: 'Originalbelopp ex. moms', format: 'currency' },
+                      { key: 'gross_amount_sek', label: 'Svenskt totalbelopp ink moms SEK', format: 'currency' },
+                      { key: 'net_amount_sek', label: 'Svenskt totalbelopp ex. moms SEK', format: 'currency' },
+                      { key: 'total_vat_25', label: 'Moms 25%', format: 'currency' },
+                      { key: 'total_vat_12', label: 'Moms 12%', format: 'currency' },
+                      { key: 'total_vat_6', label: 'Moms 6%', format: 'currency' },
+                    ].map((field) => (
+                      <div key={field.key} className="receipt-modal-field">
+                        <label className="field-label">{field.label}</label>
+                        {editing ? (
+                          <input
+                            className="dm-input"
+                            value={receiptDraft[field.key] ?? ''}
+                            onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
+                            disabled={saving}
+                          />
+                        ) : field.format === 'currency' ? (
+                          <div className="field-value">{formatCurrency(Number(receiptData[field.key] || 0))}</div>
+                        ) : (
+                          <div className="field-value">{receiptData[field.key] || '-'}</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* RP8: ├ûvrigt (Box 4) - Other Data (Full Width) */}
+                <div className="receipt-modal-section">
+                  <h4>Övrigt</h4>
+                  <div className="receipt-modal-field">
+                    <label className="field-label">Övrig data</label>
+                    {editing ? (
+                      <textarea
+                        className="dm-input"
+                        value={receiptDraft.other_data ?? ''}
+                        onChange={(event) => updateReceiptDraft('other_data', event.target.value)}
+                        disabled={saving}

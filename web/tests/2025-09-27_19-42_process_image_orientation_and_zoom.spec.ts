@@ -23,6 +23,15 @@ import { test, expect } from '@playwright/test';
 //   },
 // });
 
+// Enable trace for this test
+test.use({
+  trace: 'on',
+});
+
+test.beforeEach(async ({ page }) => {
+  page.on('console', (msg) => console.log('[PAGE]', msg.type(), msg.text()));
+});
+
 test('Login, open Process, preview first receipt', async ({ page }) => {
   // Navigate to login using baseURL from config.
   await page.goto('/login');
@@ -53,12 +62,18 @@ test('Login, open Process, preview first receipt', async ({ page }) => {
   await page.waitForLoadState('networkidle');
 
   // Click on a "Förhandsgranska kvitto" button without hardcoding a UUID.
-  const previewBtn = page.getByRole('button', { name: /Förhandsgranska kvitto/i }).first();
+  // Using nth(4) to get the 5th item (0-indexed)
+  const previewBtn = page.getByRole('button', { name: /Förhandsgranska kvitto/i }).nth(4);
   await expect(previewBtn).toBeVisible();
   await previewBtn.click();
 
-  // Optional: assert that a modal opened or a preview area became visible.
-  // Replace the selector below with a stable preview container marker in your UI.
-  // const previewModal = page.getByRole('dialog').or(page.getByTestId('receipt-preview'));
-  // await expect(previewModal).toBeVisible();
+  const overlayDebugHandle = await page.waitForFunction(() => (window as any).__overlayDebug ?? null, undefined, {
+    timeout: 15000,
+  });
+  const overlayDebug = await overlayDebugHandle.jsonValue();
+  console.log('[OVERLAY_DEBUG_DATA]', JSON.stringify(overlayDebug, null, 2));
+
+  // Keep the review modal open for 5 seconds before test ends
+  await page.waitForTimeout(5000);
 });
+

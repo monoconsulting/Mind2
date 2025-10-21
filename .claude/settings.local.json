@@ -43,9 +43,17 @@
       "Bash(docker-compose:*)",
       "Bash(mysql:*)",
       "Bash(docker inspect:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(unzip -p \"0fd032d27644b38bf5443d3a65f8763333520bc0.zip\" \"test.trace\")",
+      "Bash(cat test.trace)",
+      "Bash(cat 0-trace.trace)",
+      "Bash(cat resources/src@*.txt)",
+      "Bash(cat 0-trace.network)",
+      "Bash(start \"\" \"web/test-results/_artifacts/2025-09-27_19-42_receipt_i-15fe7-ocess-preview-first-receipt-chromium-ultrawide/video.webm\")"
     ],
     "deny": [],
     "ask": []
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": ["playwright"]
 }
