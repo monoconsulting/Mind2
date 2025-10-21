@@ -28,7 +28,7 @@ def _receipt_dir(base: str | Path, receipt_id: str) -> Path:
 def _write_boxes(base: str | Path, receipt_id: str, boxes: List[Dict[str, Any]]) -> None:
     root = _receipt_dir(base, receipt_id)
     root.mkdir(parents=True, exist_ok=True)
-    (root / "boxes.json").write_text(json.dumps(boxes, ensure_ascii=False, indent=2), encoding="utf-8")
+    (root / "ocr_boxes.json").write_text(json.dumps(boxes, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _write_line_items(base: str | Path, receipt_id: str, line_items: List[Dict[str, Any]]) -> None:

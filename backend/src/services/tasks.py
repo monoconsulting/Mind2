@@ -32,6 +32,7 @@ from services.ocr import run_ocr
 from services.enrichment import enrich_receipt, provider_from_env
 from services.validation import validate_receipt
 from services.accounting import propose_accounting_entries
+from services.box_enrichment import run_box_enrichment
 from services.invoice_status import (
     InvoiceDocumentStatus,
     InvoiceProcessingStatus,
@@ -2370,6 +2371,13 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             provider=ai6_provider,
             model_name=ai6_model,
         )
+        ai7_stats = run_box_enrichment(file_id)
+        if not ai7_stats.get("success"):
+            logger.warning(
+                "AI7 box enrichment failed for %s after AI6: %s",
+                file_id,
+                ai7_stats.get("error", "unknown"),
+            )
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
         error_msg = f"{type(exc).__name__}: {exc}"
@@ -2816,6 +2824,17 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             )
             elapsed = int((time.time() - start_time) * 1000)
             steps.append("AI4")
+
+            ai7_stats = run_box_enrichment(file_id)
+            if ai7_stats.get("success"):
+                if "AI7" not in steps:
+                    steps.append("AI7")
+            else:
+                logger.warning(
+                    "AI7 box enrichment failed for %s in pipeline: %s",
+                    file_id,
+                    ai7_stats.get("error", "unknown"),
+                )
 
             proposal_count = len(result.proposals or [])
 

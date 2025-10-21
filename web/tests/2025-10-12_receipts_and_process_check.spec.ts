@@ -8,7 +8,7 @@ test.use({
 });
 
 test('test', async ({ page }) => {
-  await page.goto('http://localhost:8008/login');
+  await page.goto('http://localhost:5169/login');
   await page.getByRole('textbox', { name: 'Lösenord' }).click();
   await page.getByRole('textbox', { name: 'Lösenord' }).fill('adminadmin');
   await page.getByRole('button', { name: 'Logga in' }).click();

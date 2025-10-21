@@ -899,7 +899,7 @@ input::placeholder {
 .receipt-modal-field.highlighted {
   border-color: rgba(253, 224, 71, 0.9);
   background: rgba(253, 224, 71, 0.12);
-  box-shadow: 0 0 0 1px rgba(253, 224, 71, 0.35);
+  box-shadow: 0 0 0 2px rgba(253, 224, 71, 0.2) inset;
 }
 
 .receipt-modal-field.muted {
@@ -935,6 +935,12 @@ input::placeholder {
   max-width: clamp(480px, 45vw, 820px);
   max-height: calc(90vh - 8rem);
   margin: 0 auto;
+}
+
+.receipt-modal-image-stage {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
 }
 
 .receipt-modal-image {
@@ -1296,6 +1302,17 @@ input::placeholder {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease, opacity 0.2s ease;
+}
+
+.receipt-item-cell-new.highlighted {
+  border-color: rgba(253, 224, 71, 0.9);
+  background: rgba(253, 224, 71, 0.12);
+  box-shadow: 0 0 0 2px rgba(253, 224, 71, 0.2) inset;
+}
+
+.receipt-item-cell-new.muted {
+  opacity: 0.45;
 }
 
 .cell-label-new {
@@ -1347,6 +1364,17 @@ input::placeholder {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+  transition: box-shadow 0.2s ease, background 0.2s ease, opacity 0.2s ease;
+}
+
+.proposal-cell-new.highlighted {
+  background: rgba(253, 224, 71, 0.12);
+  box-shadow: 0 0 0 2px rgba(253, 224, 71, 0.2) inset, 0 0 0 1px rgba(253, 224, 71, 0.45);
+  border-radius: 0.375rem;
+}
+
+.proposal-cell-new.muted {
+  opacity: 0.45;
 }
 
 .proposal-amount-inputs-new {

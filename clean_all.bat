@@ -30,12 +30,13 @@ del /F /Q "inbox\*.json" 2>nul
 echo      Local inbox cleaned!
 
 echo.
-echo [2/5] Cleaning Docker container inbox...
+echo [2/5] Cleaning Docker container inbox and storage...
 docker-compose exec -T ai-api rm -rf /data/inbox/* 2>nul
+docker-compose exec -T ai-api sh -c "rm -rf /data/storage/originals/* /data/storage/converted/* /data/storage/audio/* /data/storage/line_items/*" 2>nul
 if %errorlevel% equ 0 (
-    echo      Container inbox cleaned!
+    echo      Container inbox and storage cleaned!
 ) else (
-    echo      WARNING: Could not clean container inbox (maybe already empty)
+    echo      WARNING: Could not clean container completely (maybe already empty)
 )
 
 echo.
@@ -43,6 +44,9 @@ echo [3/5] Cleaning storage folder...
 rmdir /S /Q "storage" 2>nul
 mkdir "storage" 2>nul
 mkdir "storage\line_items" 2>nul
+mkdir "storage\originals" 2>nul
+mkdir "storage\converted" 2>nul
+mkdir "storage\audio" 2>nul
 echo      Storage folder cleaned and recreated!
 
 echo.
@@ -71,10 +75,12 @@ echo    CLEANUP COMPLETE!
 echo ========================================
 echo.
 echo The following have been cleaned:
-echo   - Local inbox folder
+echo   - Local inbox folder (all image/PDF files)
 echo   - Docker container inbox
-echo   - Storage folder (all files and folders)
+echo   - Storage folder (originals, converted PNG, audio, line_items)
 echo   - Celery task queue (Redis)
 echo   - All database tables for files
+echo.
+echo Note: All converted PNG files from PDFs have been removed.
 echo.
 pause

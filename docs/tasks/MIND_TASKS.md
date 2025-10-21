@@ -42,7 +42,7 @@ Add the tasks in english using the following standard:
   
     **Description:** Follow instructions in @docs/MIND_MISSING_CARD_DETAILS.md
   
-  - [ ] **Task 5.4 - Fix overlay issues**
+- [x] **Task 5.4 - Fix overlay issues**
   
     Descriptions: 1. Create a new branch "overlay-issues". Then read and follow carefully the instructions in @docs/tasks/MIND_OVERLAY_ISSUES.md
   

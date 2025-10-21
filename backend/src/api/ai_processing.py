@@ -28,6 +28,7 @@ from models.ai_processing import (
     ReceiptItem,
 )
 from services.ai_service import AIService
+from services.box_enrichment import run_box_enrichment
 from services.db.connection import db_cursor, get_connection
 from api.middleware import auth_required
 
@@ -603,6 +604,11 @@ def match_credit_card_internal(req: CreditCardMatchRequest) -> CreditCardMatchRe
         result.confidence,
         result.matched,
     )
+    # AI7: Enrichment after credit card match
+    try:
+        run_box_enrichment(req.file_id)
+    except Exception:
+        logger.exception("AI7 error after credit card match on %s", req.file_id)
     return result
 
 
@@ -671,6 +677,13 @@ def classify_accounting() -> Any:
         payload = request.get_json(force=True) or {}
         req = AccountingClassificationRequest(**payload)
         result = classify_accounting_internal(req)
+        ai7_stats = run_box_enrichment(req.file_id)
+        if not ai7_stats.get("success"):
+            logger.warning(
+                "AI7 box enrichment failed for %s via classify_accounting: %s",
+                req.file_id,
+                ai7_stats.get("error", "unknown"),
+            )
         return jsonify(result.dict()), 200
     except ValidationError as exc:
         return jsonify({"error": exc.errors()}), 400
@@ -807,6 +820,13 @@ def process_batch() -> Any:
                                 )
                             )
                             file_result["steps_completed"].append("AI4")
+                            stats = run_box_enrichment(file_id)
+                            if stats.get("success"):
+                                if "AI7" not in file_result["steps_completed"]:
+                                    file_result["steps_completed"].append("AI7")
+                                file_result["ai7"] = stats
+                            else:
+                                file_result["ai7_error"] = stats.get("error", "unknown")
                     elif step == "AI5":
                         match_info = _load_match_context(file_id)
                         if match_info and match_info[0]:
@@ -819,6 +839,14 @@ def process_batch() -> Any:
                                 )
                             )
                             file_result["steps_completed"].append("AI5")
+                    elif step == "AI7":
+                        stats = run_box_enrichment(file_id)
+                        if stats.get("success"):
+                            if "AI7" not in file_result["steps_completed"]:
+                                file_result["steps_completed"].append("AI7")
+                            file_result["ai7"] = stats
+                        else:
+                            file_result["ai7_error"] = stats.get("error", "unknown")
                 processed += 1
                 results.append(file_result)
             except Exception as exc:
