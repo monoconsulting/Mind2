@@ -6,7 +6,7 @@ import uuid
 import hashlib
 import logging
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 from flask import Blueprint, jsonify, request
 from werkzeug.utils import secure_filename
 
@@ -20,6 +20,7 @@ from services.db.files import (
     insert_unified_file,
     update_other_data,
     DuplicateFileError,
+    set_ai_status,
 )
 from services.db.connection import db_cursor
 
@@ -173,3 +174,163 @@ def upload_files() -> Any:
         return jsonify({"ok": False, "uploaded": uploaded_count, "skipped": skipped_count, "errors": errors}), 500
 
     return jsonify({"ok": True, "uploaded": uploaded_count, "skipped": skipped_count}), 200
+
+
+def _parse_other_data(raw: Any) -> dict[str, Any]:
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except Exception:
+        logger.warning("Failed to parse other_data payload during resume request")
+        return {}
+
+
+def _resolve_resume_workflow(
+    *,
+    file_type: Optional[str],
+    workflow_type: Optional[str],
+    other_data: dict[str, Any],
+) -> Optional[str]:
+    """Infer which workflow should handle the resume action."""
+    wft = (workflow_type or "").lower()
+    if wft == "creditcard_invoice":
+        return "WF3_FIRSTCARD_INVOICE"
+
+    detected_kind = (other_data.get("detected_kind") or "").lower()
+    file_type_norm = (file_type or "").lower()
+
+    if detected_kind in {"pdf", "document"} or file_type_norm in {"pdf"}:
+        return "WF2_PDF_SPLIT"
+
+    return "WF1_RECEIPT"
+
+
+@ingest_bp.post("/ingest/process/<file_id>/resume")
+@auth_required
+def resume_processing(file_id: str) -> Any:
+    """Re-dispatch processing for an existing receipt or invoice."""
+    if not file_id:
+        return jsonify({"queued": False, "error": "missing_file_id"}), 400
+
+    if db_cursor is None:
+        return jsonify({"queued": False, "error": "database_unavailable"}), 503
+
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT id,
+                       content_hash,
+                       file_type,
+                       workflow_type,
+                       other_data,
+                       ai_status
+                  FROM unified_files
+                 WHERE id = %s AND deleted_at IS NULL
+                """,
+                (file_id,),
+            )
+            row = cur.fetchone()
+    except Exception as exc:
+        logger.error("Resume lookup failed for %s: %s", file_id, exc, exc_info=True)
+        return jsonify({"queued": False, "error": "database_error"}), 500
+
+    if not row:
+        return jsonify({"queued": False, "error": "not_found"}), 404
+
+    (
+        _fid,
+        content_hash,
+        file_type,
+        workflow_type,
+        other_data_raw,
+        current_status,
+    ) = row
+
+    other_data = _parse_other_data(other_data_raw)
+    workflow_key = _resolve_resume_workflow(
+        file_type=file_type,
+        workflow_type=workflow_type,
+        other_data=other_data,
+    )
+
+    if not workflow_key:
+        logger.error(
+            "Unable to determine workflow for resume (file_id=%s, file_type=%s, workflow_type=%s)",
+            file_id,
+            file_type,
+            workflow_type,
+        )
+        return jsonify({"queued": False, "error": "unknown_workflow"}), 400
+
+    effective_hash = content_hash or other_data.get("content_hash") or file_id
+
+    workflow_run_id = create_workflow_run(
+        workflow_key=workflow_key,
+        source_channel="manual_resume",
+        file_id=file_id,
+        content_hash=effective_hash,
+    )
+
+    if not workflow_run_id:
+        logger.error("Failed to create workflow run for resume (file_id=%s)", file_id)
+        return jsonify({"queued": False, "error": "workflow_creation_failed"}), 500
+
+    set_ai_status(file_id, "queued")
+    _history(
+        file_id=file_id,
+        job="resume",
+        status="queued",
+        ai_stage_name="resume_dispatch",
+        log_text=f"Resume requested via API (workflow={workflow_key}, previous_status={current_status})",
+    )
+
+    dispatched = False
+    try:
+        dispatched = dispatch_workflow(workflow_run_id)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.exception("Dispatch raised for workflow_run %s: %s", workflow_run_id, exc)
+        dispatched = False
+
+    if not dispatched:
+        set_ai_status(file_id, "failed")
+        _history(
+            file_id=file_id,
+            job="resume",
+            status="error",
+            ai_stage_name="resume_dispatch",
+            error_message="Dispatch failed",
+            log_text=f"Failed to dispatch workflow_run {workflow_run_id} for resume.",
+        )
+        return jsonify({"queued": False, "error": "dispatch_failed"}), 500
+
+    set_ai_status(file_id, "processing")
+    _history(
+        file_id=file_id,
+        job="resume",
+        status="success",
+        ai_stage_name="resume_dispatch",
+        log_text=f"Resume dispatched successfully (workflow_run={workflow_run_id}, workflow={workflow_key})",
+    )
+
+    message = "Bearbetning återupptagen"
+    action = f"{workflow_key} run {workflow_run_id}"
+
+    return (
+        jsonify(
+            {
+                "queued": True,
+                "file_id": file_id,
+                "workflow_key": workflow_key,
+                "workflow_run_id": workflow_run_id,
+                "status": "processing",
+                "message": message,
+                "action": action,
+                "previous_status": current_status,
+            }
+        ),
+        200,
+    )

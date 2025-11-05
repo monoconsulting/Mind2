@@ -15,6 +15,31 @@ logger = logging.getLogger(__name__)
 
 ai_config_bp = Blueprint('ai_config', __name__, url_prefix='/ai-config')
 
+
+def _normalise_text(value: object) -> str:
+    """Ensure textual fields are returned as well-formed UTF-8."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8")
+        except Exception:
+            try:
+                value = value.decode("latin-1")
+            except Exception:
+                value = value.decode(errors="ignore")
+    value_str = str(value)
+    if not value_str:
+        return value_str
+    # Detect common mojibake markers from latin1/utf8 mixups
+    if any(marker in value_str for marker in ("Ã", "Â", "â")):
+        try:
+            repaired = value_str.encode("latin-1").decode("utf-8")
+            value_str = repaired
+        except Exception:
+            pass
+    return value_str
+
 PROMPT_DEFAULTS: dict[str, dict[str, str]] = {
     "credit_card_invoice_parsing": {
         "title": "AI6 - Credit Card Invoice Parsing",
@@ -178,10 +203,10 @@ def get_providers():
             for row in provider_rows:
                 provider = {
                     'id': row[0],
-                    'provider_name': row[1],
-                    'own_name': row[2],
+                    'provider_name': _normalise_text(row[1]),
+                    'own_name': _normalise_text(row[2]),
                     'api_key': row[3] if row[3] else '',  # Mask in frontend if needed
-                    'endpoint_url': row[4],
+                    'endpoint_url': _normalise_text(row[4]),
                     'enabled': bool(row[5]),
                     'created_at': row[6].isoformat() if row[6] else None,
                     'models': []
@@ -198,8 +223,8 @@ def get_providers():
                 for model_row in cursor.fetchall():
                     provider['models'].append({
                         'id': model_row[0],
-                        'model_name': model_row[1],
-                        'display_name': model_row[2],
+                        'model_name': _normalise_text(model_row[1]),
+                        'display_name': _normalise_text(model_row[2]),
                         'is_active': bool(model_row[3]),
                         'created_at': model_row[4].isoformat() if model_row[4] else None
                     })
@@ -405,12 +430,28 @@ def get_prompts():
 
             prompts = []
             for row in rows:
+                prompt_id = row[0]
+                clean_title = _normalise_text(row[2])
+                clean_description = _normalise_text(row[3])
+                clean_content = _normalise_text(row[4])
+                if (clean_title != row[2] or clean_description != row[3] or clean_content != row[4]):
+                    try:
+                        cursor.execute(
+                            """
+                            UPDATE ai_system_prompts
+                            SET title=%s, description=%s, prompt_content=%s, updated_at=CURRENT_TIMESTAMP
+                            WHERE id=%s
+                            """,
+                            (clean_title, clean_description, clean_content, prompt_id),
+                        )
+                    except Exception as exc:
+                        logger.warning('Failed to normalise prompt %s: %s', prompt_id, exc)
                 prompts.append({
-                    'id': row[0],
+                    'id': prompt_id,
                     'prompt_key': row[1],
-                    'title': row[2],
-                    'description': row[3],
-                    'prompt_content': row[4],
+                    'title': clean_title,
+                    'description': clean_description,
+                    'prompt_content': clean_content,
                     'selected_model_id': row[5],
                     'selected_model_name': row[6],
                     'selected_provider': row[7]
@@ -434,15 +475,18 @@ def update_prompt(prompt_id):
 
     try:
         with db_cursor() as cursor:
+            clean_title = _normalise_text(data.get('title'))
+            clean_description = _normalise_text(data.get('description'))
+            clean_content = _normalise_text(data.get('prompt_content'))
             cursor.execute("""
                 UPDATE ai_system_prompts
                 SET title = %s, description = %s, prompt_content = %s,
                     selected_model_id = %s, updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s
             """, (
-                data.get('title'),
-                data.get('description'),
-                data.get('prompt_content'),
+                clean_title,
+                clean_description,
+                clean_content,
                 data.get('selected_model_id'),
                 prompt_id
             ))

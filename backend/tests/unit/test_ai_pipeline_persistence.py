@@ -1,10 +1,18 @@
 import sys
+import types
 from decimal import Decimal
 from pathlib import Path
+
+mysql_stub = types.ModuleType('mysql')
+mysql_connector_stub = types.ModuleType('mysql.connector')
+mysql_stub.connector = mysql_connector_stub
+sys.modules.setdefault('mysql', mysql_stub)
+sys.modules.setdefault('mysql.connector', mysql_connector_stub)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SRC = _REPO_ROOT / "backend" / "src"
 for candidate in (_REPO_ROOT, _SRC):
+
     if str(candidate) not in sys.path:
         sys.path.insert(0, str(candidate))
 
@@ -186,6 +194,7 @@ def test_persist_credit_card_match_updates_status(monkeypatch):
         matched_amount=Decimal("199.00"),
         confidence=0.92,
         matched=True,
+        match_origin="auto",
     )
 
     sql_statements = "\n".join(call[0] for call in fake_cursor.calls)
@@ -221,3 +230,4 @@ def test_persist_accounting_proposals_replaces_rows(monkeypatch):
     assert "INSERT INTO ai_accounting_proposals" in sql_statements
     assert "UPDATE unified_files SET ai_status" in sql_statements
     assert fake_conn.committed is True
+

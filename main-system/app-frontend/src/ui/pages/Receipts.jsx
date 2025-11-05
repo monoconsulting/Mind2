@@ -623,17 +623,31 @@ export default function ReceiptsList() {
       }
       const payload = await res.json()
       const list = Array.isArray(payload?.items) ? payload.items : []
+      const filteredList = list.filter((item) => {
+        const workflowType = String(item?.workflow_type || '').toLowerCase()
+        if (workflowType && workflowType !== 'receipt') {
+          return false
+        }
+        const fileType = String(item?.file_type || '').toLowerCase()
+        if (workflowType === 'creditcard_invoice') {
+          return false
+        }
+        if (fileType.startsWith('cc_') || fileType === 'credit_card') {
+          return false
+        }
+        return true
+      })
       const fetchedMeta = payload?.meta || {}
-      setItems(list)
+      setItems(filteredList)
       setMeta({
         page: fetchedMeta.page ?? page,
         page_size: fetchedMeta.page_size ?? pageSize,
-        total: fetchedMeta.total ?? list.length
+        total: fetchedMeta.total ?? filteredList.length
       })
       if (!silent) {
         setBanner({
           type: 'info',
-          message: `Visar ${list.length} av ${fetchedMeta.total ?? list.length} kvitton`
+          message: `Visar ${filteredList.length} kvitton`
         })
       }
     } catch (error) {
