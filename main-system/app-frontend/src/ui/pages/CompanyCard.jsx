@@ -324,7 +324,7 @@ export default function CompanyCard() {
       }
       let data = await res.json()
       data = fixEncodingDeep(data)
-      const nextItems = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : []
+      const nextItems = Array.isArray(data?.statements) ? data.statements : []
       setItems(nextItems)
       if (!nextItems.length) {
         setSelectedDocumentId(null)
@@ -398,6 +398,12 @@ export default function CompanyCard() {
 
   React.useEffect(() => {
     loadStatements()
+
+    const intervalId = setInterval(() => {
+      loadStatements(selectedDocumentIdRef.current)
+    }, 15000) // Poll every 15 seconds
+
+    return () => clearInterval(intervalId) // Cleanup on unmount
   }, [loadStatements])
 
   React.useEffect(() => {
@@ -718,7 +724,7 @@ export default function CompanyCard() {
                     <div className="font-medium">{line.description || '–'}</div>
                     <div className="text-xs text-gray-400">Rad-ID: {line.id}</div>
                   </td>
-                  <td className="px-4 py-3 text-gray-100 whitespace-nowrap">{formatAmount(line.amount)}</td>
+                  <td className="px-4 py-3 text-gray-100 whitespace-nowrap">{line && line.currency ? formatCurrency(line.amount, line.currency) : formatAmount(line.amount)}</td>
                   <td className="px-4 py-3 text-gray-200">
                     <span className={`status-badge ${badgeClass}`}>{statusDetails.label}</span>
                   </td>
@@ -849,7 +855,7 @@ export default function CompanyCard() {
           <div>
             <h3>Matchningskandidater</h3>
             <p className="text-sm text-gray-400 mt-1">
-              Rad {candidateState.line.id}: {candidateState.line.description} - {formatAmount(candidateState.line.amount)}
+              Rad {candidateState.line.id}: {candidateState.line.description} - {(candidateState.line?.currency ? formatCurrency(candidateState.line.amount, candidateState.line.currency) : formatAmount(candidateState.line.amount))}
             </p>
           </div>
           <button type="button" className="icon-button" onClick={closeCandidates} aria-label="Stäng">
@@ -1728,3 +1734,8 @@ function InvoiceUploadModal({ open, onClose, onUploaded }) {
     </div>
   )
 }
+
+
+
+
+

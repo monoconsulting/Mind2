@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
@@ -27,6 +27,7 @@ except ImportError:
     insert_unified_file = lambda **kwargs: None
     update_other_data = lambda **kwargs: None
     class DuplicateFileError(Exception): pass
+from observability.events import log_event
 from observability.metrics import record_invoice_decision, track_task
 from services.ocr import run_ocr
 from services.enrichment import enrich_receipt, provider_from_env
@@ -50,7 +51,6 @@ from models.ai_processing import (
     CreditCardInvoiceExtractionResponse,
     CreditCardInvoiceHeader,
     CreditCardInvoiceLine,
-    CreditCardMatchRequest,
     DataExtractionRequest,
     DocumentClassificationRequest,
     ExpenseClassificationRequest,
@@ -62,7 +62,7 @@ from api.ai_processing import (
     classify_document_internal,
     classify_expense_internal,
     extract_data_internal,
-    match_credit_card_internal,
+    _persist_credit_card_match,
 )
 
 
@@ -399,6 +399,156 @@ def _collect_invoice_ocr_text(invoice_id: str) -> list[tuple[str, str]]:
         if ocr_raw:
             texts.append((file_id, ocr_raw))
     return texts
+
+
+@celery_app.task(name="process_invoice_document")
+def process_invoice_document(invoice_id: str) -> dict[str, Any]:
+    """Legacy-compatible processing entrypoint for credit card invoices."""
+    metadata = _load_invoice_metadata(invoice_id) or {}
+    try:
+        transition_processing_status(
+            invoice_id,
+            InvoiceProcessingStatus.AI_PROCESSING,
+            (
+                InvoiceProcessingStatus.OCR_DONE,
+                InvoiceProcessingStatus.AI_PROCESSING,
+                InvoiceProcessingStatus.OCR_PENDING,
+            ),
+        )
+    except Exception:
+        pass
+
+    ocr_entries = _collect_invoice_ocr_text(invoice_id)
+    combined_text = "\n".join(text for _, text in ocr_entries if text)
+    if not combined_text.strip():
+        transition_processing_status(
+            invoice_id,
+            InvoiceProcessingStatus.FAILED,
+            (
+                InvoiceProcessingStatus.AI_PROCESSING,
+                InvoiceProcessingStatus.OCR_PENDING,
+                InvoiceProcessingStatus.OCR_DONE,
+            ),
+        )
+        transition_document_status(
+            invoice_id,
+            InvoiceDocumentStatus.FAILED,
+            (
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.MATCHING,
+                InvoiceDocumentStatus.PROCESSING,
+            ),
+        )
+        raise ValueError("Combined OCR text is missing.")
+
+    page_ids = [file_id for file_id, _ in ocr_entries if file_id != invoice_id]
+    if page_ids:
+        metadata.setdefault("page_ids", page_ids)
+        metadata.setdefault("page_count", len(page_ids))
+    metadata["combined_ocr_text"] = combined_text
+    _update_invoice_metadata(invoice_id, metadata)
+
+    from services.ai_service import AIService
+
+    ai_service = AIService()
+    request = CreditCardInvoiceExtractionRequest(
+        invoice_id=invoice_id,
+        ocr_text=combined_text,
+        page_ids=page_ids,
+    )
+
+    extraction = ai_service.parse_credit_card_invoice(request)
+
+    main_id = _persist_creditcard_invoice_main(invoice_id, extraction.header, combined_text)
+    if not main_id:
+        transition_processing_status(
+            invoice_id,
+            InvoiceProcessingStatus.FAILED,
+            (
+                InvoiceProcessingStatus.AI_PROCESSING,
+                InvoiceProcessingStatus.OCR_DONE,
+            ),
+        )
+        transition_document_status(
+            invoice_id,
+            InvoiceDocumentStatus.FAILED,
+            (
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.MATCHING,
+            ),
+        )
+        raise RuntimeError("Failed to persist credit card invoice header")
+
+    _persist_creditcard_invoice_items(main_id, extraction.lines)
+
+    invoice_line_payloads: list[dict[str, Any]] = []
+    for line in extraction.lines:
+        amount_candidate = (
+            line.amount_sek
+            or line.gross_amount
+            or line.amount_original
+            or Decimal("0.00")
+        )
+        amount_float = float(amount_candidate) if amount_candidate is not None else 0.0
+        invoice_line_payloads.append(
+            {
+                "transaction_date": line.purchase_date.isoformat() if hasattr(line.purchase_date, "isoformat") else None,
+                "merchant_name": line.merchant_name or "",
+                "description": line.description or (line.merchant_name or ""),
+                "amount": amount_float,
+                "confidence": line.confidence,
+                "raw_text": line.source_text or "",
+            }
+        )
+
+    inserted_invoice_lines = _persist_invoice_lines(invoice_id, invoice_line_payloads)
+
+    metadata = _load_invoice_metadata(invoice_id) or {}
+    metadata["creditcard_main_id"] = main_id
+    metadata["overall_confidence"] = extraction.overall_confidence
+    metadata["invoice_summary"] = {
+        "invoice_number": extraction.header.invoice_number,
+        "card_holder": extraction.header.card_holder,
+        "card_number_masked": extraction.header.card_number_masked,
+        "currency": extraction.header.currency,
+        "period_start": extraction.header.period_start.isoformat() if hasattr(extraction.header.period_start, "isoformat") else None,
+        "period_end": extraction.header.period_end.isoformat() if hasattr(extraction.header.period_end, "isoformat") else None,
+    }
+    metadata["line_counts"] = {
+        "total": inserted_invoice_lines,
+        "matched": 0,
+        "unmatched": inserted_invoice_lines,
+    }
+    _update_invoice_metadata(invoice_id, metadata)
+
+    try:
+        transition_processing_status(
+            invoice_id,
+            InvoiceProcessingStatus.READY_FOR_MATCHING,
+            (
+                InvoiceProcessingStatus.AI_PROCESSING,
+                InvoiceProcessingStatus.READY_FOR_MATCHING,
+            ),
+        )
+        transition_document_status(
+            invoice_id,
+            InvoiceDocumentStatus.MATCHING,
+            (
+                InvoiceDocumentStatus.PROCESSING,
+                InvoiceDocumentStatus.MATCHING,
+                InvoiceDocumentStatus.IMPORTED,
+            ),
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "status": InvoiceProcessingStatus.READY_FOR_MATCHING.value,
+        "lines": inserted_invoice_lines,
+        "creditcard_main_id": main_id,
+        "confidence": extraction.overall_confidence,
+    }
 
 
 def _persist_invoice_lines(invoice_id: str, parsed_lines: list[dict[str, Any]]) -> int:
@@ -946,10 +1096,173 @@ def _ensure_creditcard_pages_and_ocr(
 
     return combined_text, other_data
 
-def _auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
+
+def _load_credit_items_for_invoice(
+    document_id: str,
+    metadata: Optional[dict[str, Any]] = None,
+) -> tuple[Optional[int], list[dict[str, Any]]]:
+    """Fetch credit card invoice items and normalise data for matching."""
+    data = metadata or (_load_invoice_metadata(document_id) or {})
+    main_id_raw = data.get("creditcard_main_id")
+    try:
+        main_id = int(main_id_raw) if main_id_raw is not None else None
+    except (TypeError, ValueError):
+        main_id = None
+    if main_id is None or db_cursor is None:
+        return (None, [])
+
+    items: list[dict[str, Any]] = []
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT id,
+                       line_no,
+                       purchase_date,
+                       amount_original,
+                       amount_sek,
+                       gross_amount,
+                       net_amount,
+                       merchant_name,
+                       description,
+                       matched
+                  FROM creditcard_invoice_items
+                 WHERE main_id=%s
+                 ORDER BY line_no ASC, id ASC
+                """,
+                (main_id,),
+            )
+            rows = cur.fetchall() or []
+    except Exception:
+        return (main_id, [])
+
+    for row in rows:
+        (
+            item_id,
+            line_no,
+            purchase_date,
+            amount_original,
+            amount_sek,
+            gross_amount,
+            net_amount,
+            merchant_name,
+            description,
+            matched_flag,
+        ) = row
+        items.append(
+            {
+                "id": int(item_id),
+                "line_no": int(line_no) if line_no is not None else None,
+                "purchase_date": purchase_date,
+                "amount_original": _to_decimal(amount_original),
+                "amount_sek": _to_decimal(amount_sek),
+                "gross_amount": _to_decimal(gross_amount),
+                "net_amount": _to_decimal(net_amount),
+                "merchant": (merchant_name or description or "").strip(),
+                "matched_flag": int(matched_flag or 0),
+                "used": False,
+            }
+        )
+
+    return (main_id, items)
+
+
+def _select_credit_item_for_line(
+    line_ctx: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> tuple[Optional[int], Optional[Decimal]]:
+    """Pick the best credit card invoice item for the provided invoice line."""
+    if not items:
+        return (None, None)
+
+    line_amount: Optional[Decimal] = line_ctx.get("amount")
+    merchant_hint_raw = (line_ctx.get("merchant_hint") or "").strip()
+    merchant_hint = merchant_hint_raw.lower()
+
+    line_date_raw = line_ctx.get("transaction_date")
+    if isinstance(line_date_raw, datetime):
+        line_date: Optional[date] = line_date_raw.date()
+    elif isinstance(line_date_raw, date):
+        line_date = line_date_raw
+    elif isinstance(line_date_raw, str):
+        try:
+            line_date = datetime.fromisoformat(line_date_raw[:10]).date()
+        except Exception:
+            line_date = None
+    else:
+        line_date = None
+
+    best_item: Optional[dict[str, Any]] = None
+    best_amount: Optional[Decimal] = None
+    best_score: Optional[tuple[float, int, int, int]] = None
+
+    for item in items:
+        if item.get("used"):
+            continue
+        if item.get("matched_flag"):
+            continue
+
+        amount_candidates = [
+            value
+            for value in (
+                item.get("amount_sek"),
+                item.get("gross_amount"),
+                item.get("amount_original"),
+                item.get("net_amount"),
+            )
+            if value is not None
+        ]
+        if line_amount is not None and amount_candidates:
+            diffs = [abs(line_amount - cand) for cand in amount_candidates]
+            best_diff = min(diffs)
+            best_amt = amount_candidates[diffs.index(best_diff)]
+        else:
+            best_diff = Decimal("999999")
+            best_amt = amount_candidates[0] if amount_candidates else None
+
+        item_date_raw = item.get("purchase_date")
+        if isinstance(item_date_raw, datetime):
+            item_date = item_date_raw.date()
+        elif isinstance(item_date_raw, date):
+            item_date = item_date_raw
+        else:
+            item_date = None
+        if line_date is not None and item_date is not None:
+            date_diff = abs((line_date - item_date).days)
+        else:
+            date_diff = 9999
+
+        merchant_penalty = 1
+        item_merchant = (item.get("merchant") or "").lower()
+        if not merchant_hint or not item_merchant:
+            merchant_penalty = 0
+        elif merchant_hint in item_merchant or item_merchant in merchant_hint:
+            merchant_penalty = 0
+
+        score = (
+            float(best_diff if isinstance(best_diff, Decimal) else Decimal(best_diff)),
+            date_diff,
+            merchant_penalty,
+            item.get("line_no") if item.get("line_no") is not None else item["id"],
+        )
+
+        if best_score is None or score < best_score:
+            best_score = score
+            best_item = item
+            best_amount = best_amt
+
+    if best_item is not None:
+        best_item["used"] = True
+        return (best_item["id"], best_amount)
+
+    return (None, None)
+
+
+def auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
     if db_cursor is None:
         return (0, 0)
 
+    pending_rows: list[Any] = []
     try:
         with db_cursor() as cur:
             cur.execute(
@@ -967,9 +1280,29 @@ def _auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
             )
             pending_rows = cur.fetchall() or []
     except Exception:
+        log_event(
+            logger,
+            "matching.auto.lines_fetch_failed",
+            invoice_id=document_id,
+            reason="db_error",
+        )
         return (0, 0)
 
-    if not pending_rows:
+    pending_total = len(pending_rows)
+    log_event(
+        logger,
+        "matching.auto.lines_fetched",
+        invoice_id=document_id,
+        pending=pending_total,
+    )
+
+    if pending_total == 0:
+        log_event(
+            logger,
+            "matching.auto.skipped",
+            invoice_id=document_id,
+            reason="no_pending_lines",
+        )
         return (0, 0)
 
     def _safe_decimal(value: Any) -> Optional[Decimal]:
@@ -995,8 +1328,14 @@ def _auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
         return str(value)
 
     pending: dict[int, dict[str, Any]] = {}
-    candidate_order: list[str] = []
-    candidate_map: dict[str, dict[str, Any]] = {}
+    metadata = _load_invoice_metadata(document_id) or {}
+    _, credit_items = _load_credit_items_for_invoice(document_id, metadata)
+    log_event(
+        logger,
+        "matching.auto.credit_items_loaded",
+        invoice_id=document_id,
+        credit_items=len(credit_items),
+    )
 
     def _fetch_receipt_candidates(tx_date: Any, amount: Optional[Decimal]) -> list[Any]:
         if amount is None or db_cursor is None or tx_date is None:
@@ -1009,20 +1348,47 @@ def _auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
                 cur.execute(
                     """
                     SELECT uf.id,
-                           uf.purchase_datetime,
-                           uf.gross_amount,
+                           COALESCE(uf.purchase_datetime, uf.created_at) AS match_datetime,
+                           CAST(
+                               COALESCE(
+                                   uf.gross_amount,
+                                   NULLIF(uf.gross_amount_sek, 0),
+                                   uf.net_amount,
+                                   NULLIF(uf.net_amount_sek, 0)
+                               ) AS DECIMAL(13, 2)
+                           ) AS match_amount,
                            c.name
                       FROM unified_files AS uf
                  LEFT JOIN creditcard_receipt_matches AS m ON m.receipt_id = uf.id
                  LEFT JOIN companies AS c ON c.id = uf.company_id
-                     WHERE uf.purchase_datetime IS NOT NULL
-                       AND uf.gross_amount IS NOT NULL
-                       AND DATE(uf.purchase_datetime) = %s
-                       AND ABS(uf.gross_amount - %s) <= 5
-                       AND (uf.credit_card_match IS NULL OR uf.credit_card_match = 0)
-                       AND m.receipt_id IS NULL
-                  ORDER BY ABS(uf.gross_amount - %s) ASC, uf.created_at DESC
-                     LIMIT 10
+                      WHERE COALESCE(uf.purchase_datetime, uf.created_at) IS NOT NULL
+                        AND DATE(COALESCE(uf.purchase_datetime, uf.created_at)) = %s
+                        AND COALESCE(
+                            uf.gross_amount,
+                            NULLIF(uf.gross_amount_sek, 0),
+                            uf.net_amount,
+                            NULLIF(uf.net_amount_sek, 0)
+                        ) IS NOT NULL
+                        AND ABS(
+                            COALESCE(
+                                uf.gross_amount,
+                                NULLIF(uf.gross_amount_sek, 0),
+                                uf.net_amount,
+                                NULLIF(uf.net_amount_sek, 0)
+                            ) - %s
+                        ) <= 5
+                        AND (uf.credit_card_match IS NULL OR uf.credit_card_match = 0)
+                        AND m.receipt_id IS NULL
+                  ORDER BY ABS(
+                               COALESCE(
+                                   uf.gross_amount,
+                                   NULLIF(uf.gross_amount_sek, 0),
+                                   uf.net_amount,
+                                   NULLIF(uf.net_amount_sek, 0)
+                               ) - %s
+                           ) ASC,
+                           COALESCE(uf.purchase_datetime, uf.created_at) DESC
+                      LIMIT 10
                     """,
                     (date_value, amount, amount),
                 )
@@ -1042,83 +1408,197 @@ def _auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
             "merchant_hint": merchant_hint,
             "initial_status": match_status,
             "matched": False,
+            "candidates": [],
         }
         if amount is None or tx_date is None:
             continue
         for candidate in _fetch_receipt_candidates(tx_date, amount):
             receipt_id = str(candidate[0])
-            existing = candidate_map.get(receipt_id)
-            if not existing:
-                existing = {
+            purchase_dt = candidate[1]
+            candidate_amount = _safe_decimal(candidate[2])
+            company_name = candidate[3]
+            if isinstance(purchase_dt, datetime):
+                receipt_date = purchase_dt.date()
+            elif isinstance(purchase_dt, date):
+                receipt_date = purchase_dt
+            else:
+                receipt_date = None
+            if isinstance(tx_date, datetime):
+                line_dt = tx_date.date()
+            elif isinstance(tx_date, date):
+                line_dt = tx_date
+            elif isinstance(tx_date, str):
+                try:
+                    line_dt = datetime.fromisoformat(tx_date[:10]).date()
+                except Exception:
+                    line_dt = None
+            else:
+                line_dt = None
+            if line_dt is not None and receipt_date is not None:
+                date_diff = abs((line_dt - receipt_date).days)
+            else:
+                date_diff = 9999
+            if amount is not None and candidate_amount is not None and amount != 0:
+                amount_diff = abs(amount - candidate_amount)
+                ratio = min((amount_diff / abs(amount)), Decimal("1"))
+            else:
+                amount_diff = Decimal("999999")
+                ratio = Decimal("1")
+            confidence = max(
+                0.25,
+                float(
+                    min(
+                        Decimal("0.95"),
+                        Decimal("1")
+                        - ratio * Decimal("0.6")
+                        - Decimal(min(date_diff, 30)) / Decimal("120"),
+                    )
+                ),
+            )
+            pending[line_id]["candidates"].append(
+                {
                     "receipt_id": receipt_id,
-                    "purchase_datetime": candidate[1],
-                    "amount": _safe_decimal(candidate[2]),
-                    "company_name": candidate[3],
+                    "purchase_datetime": purchase_dt,
+                    "amount": candidate_amount,
+                    "company_name": company_name,
+                    "amount_diff": amount_diff,
+                    "date_diff": date_diff,
+                    "confidence": confidence,
                 }
-                candidate_map[receipt_id] = existing
-                candidate_order.append(receipt_id)
+            )
+        log_event(
+            logger,
+            "matching.auto.candidates_collected",
+            invoice_id=document_id,
+            line_id=line_id,
+            candidates=len(pending[line_id]["candidates"]),
+            merchant_hint=merchant_hint,
+            amount=amount,
+        )
 
     matched = 0
     used_receipts: set[str] = set()
+    line_order = sorted(
+        pending.keys(),
+        key=lambda lid: (len(pending[lid].get("candidates") or []), lid),
+    )
 
-    for receipt_id in candidate_order:
-        if receipt_id in used_receipts:
-            continue
-        candidate = candidate_map.get(receipt_id)
-        if not candidate:
-            continue
-        receipt_amount = candidate.get("amount")
-        if receipt_amount is None:
-            continue
-        try:
-            request = CreditCardMatchRequest(
-                file_id=receipt_id,
-                purchase_date=candidate.get("purchase_datetime"),
-                amount=receipt_amount,
-                invoice_id=document_id,
-                merchant_name=candidate.get("company_name"),
-            )
-        except Exception:
-            continue
-        try:
-            response = match_credit_card_internal(request)
-        except Exception:
-            continue
-        if not response.matched or response.credit_card_invoice_item_id is None:
-            continue
-        line_id = int(response.credit_card_invoice_item_id)
+    for line_id in line_order:
         line_ctx = pending.get(line_id)
         if not line_ctx or line_ctx.get("matched"):
             continue
-        updated = transition_line_status_and_link(
-            line_id,
-            receipt_id,
-            response.confidence,
-            InvoiceLineMatchStatus.AUTO,
-            (
-                InvoiceLineMatchStatus.PENDING,
-                InvoiceLineMatchStatus.UNMATCHED,
-            ),
-        )
-        if not updated:
+        candidates = line_ctx.get("candidates") or []
+        if not candidates:
+            log_event(
+                logger,
+                "matching.auto.no_candidates",
+                invoice_id=document_id,
+                line_id=line_id,
+                merchant_hint=line_ctx.get("merchant_hint"),
+                amount=line_ctx.get("amount"),
+            )
             continue
-        line_ctx["matched"] = True
-        line_ctx["matched_file_id"] = receipt_id
-        used_receipts.add(receipt_id)
-        matched += 1
-        try:
-            with db_cursor() as cur:
-                cur.execute(
-                    (
-                        "INSERT INTO invoice_line_history "
-                        "(invoice_line_id, action, performed_by, old_matched_file_id, new_matched_file_id, reason) "
-                        "VALUES (%s, 'matched', 'system', NULL, %s, %s)"
-                    ),
-                    (line_id, receipt_id, "auto-match-ai5"),
+
+        item_id, matched_amount = _select_credit_item_for_line(line_ctx, credit_items)
+        if item_id is None:
+            log_event(
+                logger,
+                "matching.auto.no_invoice_item",
+                invoice_id=document_id,
+                line_id=line_id,
+                merchant_hint=line_ctx.get("merchant_hint"),
+            )
+            continue
+
+        for candidate in sorted(
+            candidates, key=lambda c: (c["amount_diff"], c["date_diff"])
+        ):
+            receipt_id = candidate["receipt_id"]
+            if receipt_id in used_receipts:
+                continue
+
+            updated = transition_line_status_and_link(
+                line_id,
+                receipt_id,
+                candidate["confidence"],
+                InvoiceLineMatchStatus.AUTO,
+                (
+                    InvoiceLineMatchStatus.PENDING,
+                    InvoiceLineMatchStatus.UNMATCHED,
+                ),
+            )
+            if not updated:
+                log_event(
+                    logger,
+                    "matching.auto.transition_blocked",
+                    invoice_id=document_id,
+                    line_id=line_id,
+                    receipt_id=receipt_id,
                 )
-        except Exception:
-            pass
-        record_invoice_decision("matched")
+                continue
+
+            line_ctx["matched"] = True
+            line_ctx["matched_file_id"] = receipt_id
+            used_receipts.add(receipt_id)
+            matched += 1
+
+            try:
+                with db_cursor() as cur:
+                    cur.execute(
+                        (
+                            "INSERT INTO invoice_line_history "
+                            "(invoice_line_id, action, performed_by, old_matched_file_id, new_matched_file_id, reason) "
+                            "VALUES (%s, 'matched', 'system', NULL, %s, %s)"
+                        ),
+                        (line_id, receipt_id, "auto-match-ai5"),
+                    )
+            except Exception:
+                pass
+
+            if matched_amount is None:
+                matched_amount = line_ctx.get("amount")
+
+            persist_ok = True
+            try:
+                _persist_credit_card_match(
+                    receipt_id,
+                    item_id,
+                    matched_amount,
+                    candidate["confidence"],
+                    True,
+                    match_origin="auto",
+                )
+            except Exception:
+                persist_ok = False
+                logger.exception(
+                    "Failed to persist credit card match (auto) for line %s -> %s",
+                    line_id,
+                    receipt_id,
+                )
+                log_event(
+                    logger,
+                    "matching.auto.persist_failed",
+                    invoice_id=document_id,
+                    line_id=line_id,
+                    receipt_id=receipt_id,
+                    invoice_item_id=item_id,
+                    level="error",
+                )
+            record_invoice_decision("matched")
+            log_event(
+                logger,
+                "matching.auto.matched",
+                invoice_id=document_id,
+                line_id=line_id,
+                receipt_id=receipt_id,
+                invoice_item_id=item_id,
+                amount_diff=candidate["amount_diff"],
+                date_diff=candidate["date_diff"],
+                confidence=candidate["confidence"],
+                matched_amount=matched_amount,
+                persisted=persist_ok,
+            )
+            break
 
     for line_id, ctx in pending.items():
         if ctx.get("matched"):
@@ -1148,7 +1628,16 @@ def _auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
         except Exception:
             pass
         record_invoice_decision("unmatched")
+        log_event(
+            logger,
+            "matching.auto.marked_unmatched",
+            invoice_id=document_id,
+            line_id=line_id,
+            previous_status=ctx.get("initial_status"),
+        )
 
+    total_lines_db: Optional[int] = None
+    matched_lines_db: Optional[int] = None
     if db_cursor is not None:
         try:
             total_lines = 0
@@ -1165,6 +1654,8 @@ def _auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
                 if row:
                     total_lines = int(row[0] or 0)
                     matched_lines = int(row[1] or 0)
+                    total_lines_db = total_lines
+                    matched_lines_db = matched_lines
             metadata = _load_invoice_metadata(document_id) or {}
             metadata.setdefault("line_counts", {})
             metadata["line_counts"] = {
@@ -1176,7 +1667,151 @@ def _auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
         except Exception:
             pass
 
+    log_event(
+        logger,
+        "matching.auto.completed",
+        invoice_id=document_id,
+        matched=matched,
+        evaluated=len(pending_rows),
+        total_lines=total_lines_db,
+        matched_lines=matched_lines_db,
+    )
     return (matched, len(pending_rows))
+
+
+def refresh_invoice_match_state(document_id: str) -> tuple[int, int]:
+    """Recompute invoice match counters and update lifecycle states."""
+    if db_cursor is None:
+        return (0, 0)
+
+    total_lines = 0
+    matched_lines = 0
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                (
+                    "SELECT COUNT(*), SUM(CASE WHEN match_status IN ('auto','manual','confirmed') "
+                    "THEN 1 ELSE 0 END) FROM invoice_lines WHERE invoice_id=%s"
+                ),
+                (document_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                total_lines = int(row[0] or 0)
+                matched_lines = int(row[1] or 0)
+    except Exception:
+        log_event(
+            logger,
+            "matching.invoice_state.refresh_failed",
+            invoice_id=document_id,
+            reason="line_count_query_failed",
+            level="error",
+        )
+        return (0, 0)
+
+    try:
+        metadata = _load_invoice_metadata(document_id) or {}
+        metadata.setdefault("line_counts", {})
+        metadata["line_counts"] = {
+            "total": total_lines,
+            "matched": matched_lines,
+            "unmatched": max(total_lines - matched_lines, 0),
+        }
+        metadata["processing_status"] = metadata.get("processing_status")
+        _update_invoice_metadata(document_id, metadata)
+    except Exception:
+        pass
+
+    try:
+        if total_lines == 0:
+            transition_processing_status(
+                document_id,
+                InvoiceProcessingStatus.MATCHING_COMPLETED,
+                (
+                    InvoiceProcessingStatus.READY_FOR_MATCHING,
+                    InvoiceProcessingStatus.AI_PROCESSING,
+                    InvoiceProcessingStatus.MATCHING_COMPLETED,
+                ),
+            )
+            transition_document_status(
+                document_id,
+                InvoiceDocumentStatus.MATCHED,
+                (
+                    InvoiceDocumentStatus.MATCHING,
+                    InvoiceDocumentStatus.IMPORTED,
+                    InvoiceDocumentStatus.PARTIALLY_MATCHED,
+                    InvoiceDocumentStatus.MATCHED,
+                ),
+            )
+        elif matched_lines == 0:
+            transition_processing_status(
+                document_id,
+                InvoiceProcessingStatus.READY_FOR_MATCHING,
+                (
+                    InvoiceProcessingStatus.MATCHING_COMPLETED,
+                    InvoiceProcessingStatus.READY_FOR_MATCHING,
+                    InvoiceProcessingStatus.AI_PROCESSING,
+                ),
+            )
+            transition_document_status(
+                document_id,
+                InvoiceDocumentStatus.IMPORTED,
+                (
+                    InvoiceDocumentStatus.MATCHING,
+                    InvoiceDocumentStatus.IMPORTED,
+                ),
+            )
+        elif matched_lines < total_lines:
+            transition_processing_status(
+                document_id,
+                InvoiceProcessingStatus.MATCHING_COMPLETED,
+                (
+                    InvoiceProcessingStatus.READY_FOR_MATCHING,
+                    InvoiceProcessingStatus.AI_PROCESSING,
+                    InvoiceProcessingStatus.MATCHING_COMPLETED,
+                ),
+            )
+            transition_document_status(
+                document_id,
+                InvoiceDocumentStatus.PARTIALLY_MATCHED,
+                (
+                    InvoiceDocumentStatus.IMPORTED,
+                    InvoiceDocumentStatus.MATCHING,
+                    InvoiceDocumentStatus.MATCHED,
+                    InvoiceDocumentStatus.PARTIALLY_MATCHED,
+                ),
+            )
+        else:
+            transition_processing_status(
+                document_id,
+                InvoiceProcessingStatus.MATCHING_COMPLETED,
+                (
+                    InvoiceProcessingStatus.READY_FOR_MATCHING,
+                    InvoiceProcessingStatus.AI_PROCESSING,
+                    InvoiceProcessingStatus.MATCHING_COMPLETED,
+                ),
+            )
+            transition_document_status(
+                document_id,
+                InvoiceDocumentStatus.MATCHED,
+                (
+                    InvoiceDocumentStatus.IMPORTED,
+                    InvoiceDocumentStatus.MATCHING,
+                    InvoiceDocumentStatus.PARTIALLY_MATCHED,
+                    InvoiceDocumentStatus.MATCHED,
+                ),
+            )
+    except Exception:
+        pass
+
+    log_event(
+        logger,
+        "matching.invoice_state.refreshed",
+        invoice_id=document_id,
+        total_lines=total_lines,
+        matched_lines=matched_lines,
+    )
+    return (total_lines, matched_lines)
 
 
 def _maybe_advance_invoice_from_file(file_id: str, success: bool) -> None:
@@ -1591,7 +2226,7 @@ def mark_stage(
                 if status == "failed":
                     workflow_status = "failed"
                 elif status == "skipped":
-                    workflow_status = "skipped"
+                    workflow_status = "canceled"
 
             if update_workflow_status:
                 cur.execute(
@@ -2519,6 +3154,34 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
         ),
     )
 
+    try:
+        mark_stage(
+            workflow_run_id,
+            "auto_match",
+            "running",
+            start=True,
+            update_workflow_status=False,
+        )
+        matched_auto, evaluated = auto_match_invoice_lines(file_id)
+        total_lines, matched_lines = refresh_invoice_match_state(file_id)
+        mark_stage(
+            workflow_run_id,
+            "auto_match",
+            "succeeded",
+            message=f"Auto-matched {matched_lines} of {total_lines} lines (new matches: {matched_auto})",
+            end=True,
+            update_workflow_status=False,
+        )
+    except Exception as exc:
+        mark_stage(
+            workflow_run_id,
+            "auto_match",
+            "failed",
+            message=f"Auto-match failed: {exc}",
+            end=True,
+            update_workflow_status=False,
+        )
+
     mark_stage(
         workflow_run_id,
         "firstcard_invoice",
@@ -2997,31 +3660,6 @@ def _save_accounting_entries(file_id: str, entries: List[AccountingEntry]) -> bo
         return True
     except Exception:
         return False
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

@@ -872,6 +872,7 @@ def list_receipts() -> Any:
     q_from = request.args.get("from")
     q_to = request.args.get("to")
     q_file_type = request.args.get("file_type")
+    include_credit = request.args.get("include_credit", "").lower() in {"1", "true", "yes"}
 
     # Simple pagination
     try:
@@ -923,6 +924,13 @@ def list_receipts() -> Any:
                     )
                     params.extend(tag_list)
 
+            if not include_credit:
+                # Exclude credit card statements by default
+                where.append("(u.workflow_type IS NULL OR u.workflow_type='' OR u.workflow_type='receipt')")
+                where.append(
+                    "(u.file_type IS NULL OR (LOWER(u.file_type) NOT LIKE 'cc_%' AND LOWER(u.file_type) <> 'credit_card'))"
+                )
+
             where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
             # Count (needs same joins as main query)
@@ -935,23 +943,48 @@ def list_receipts() -> Any:
 
             # Page
             with db_cursor() as cur:
-                cur.execute(
-                    (
-                        "SELECT u.id, u.original_filename, c.name as company_name, u.purchase_datetime, u.net_amount_sek, u.gross_amount_sek, u.ai_status, u.file_type, u.submitted_by, "
-                        "u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, "
-                        "COALESCE(GROUP_CONCAT(t.tag), '') as tags "
-                        "FROM unified_files u "
-                        "LEFT JOIN companies c ON c.id = u.company_id "
-                        "LEFT JOIN file_tags t ON t.file_id=u.id "
-                        "LEFT JOIN file_locations fl ON fl.file_id=u.id "
-                        + where_sql
-                        + " GROUP BY u.id, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, c.name ORDER BY u.created_at DESC LIMIT %s OFFSET %s"
-                    ),
-                    tuple(params + [page_size, offset]),
+                query = (
+                    "SELECT u.id, u.original_filename, c.name as company_name, u.purchase_datetime, "
+                    "u.net_amount_sek, u.gross_amount_sek, u.ai_status, u.file_type, u.workflow_type, "
+                    "u.submitted_by, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, "
+                    "COALESCE(GROUP_CONCAT(t.tag), '') as tags "
+                    "FROM unified_files u "
+                    "LEFT JOIN companies c ON c.id = u.company_id "
+                    "LEFT JOIN file_tags t ON t.file_id=u.id "
+                    "LEFT JOIN file_locations fl ON fl.file_id=u.id "
+                    f"{where_sql} "
+                    "GROUP BY u.id, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, c.name, u.workflow_type "
+                    "ORDER BY u.created_at DESC LIMIT %s OFFSET %s"
                 )
+                cur.execute(query, tuple(params + [page_size, offset]))
                 results = cur.fetchall()
                 logger.info(f"Query returned {len(results)} rows")
-                for rid, fname, merchant, pdt, net, gross, status, file_type, submitted_by, file_creation_ts, lat, lon, acc, tag_csv in results:
+                for (
+                    rid,
+                    fname,
+                    merchant,
+                    pdt,
+                    net,
+                    gross,
+                    status,
+                    file_type,
+                    workflow_type,
+                    submitted_by,
+                    file_creation_ts,
+                    lat,
+                    lon,
+                    acc,
+                    tag_csv,
+                ) in results:
+                    wf_type = (workflow_type or "").lower()
+                    file_type_lower = (str(file_type or "")).lower()
+                    if not include_credit:
+                        if wf_type and wf_type != "receipt":
+                            if wf_type == "creditcard_invoice":
+                                # Skip credit card statements in Receipts queue
+                                continue
+                        if file_type_lower.startswith("cc_") or file_type_lower == "credit_card":
+                            continue
                     purchase_iso = pdt.isoformat() if hasattr(pdt, "isoformat") else pdt
                     purchase_date = None
                     if hasattr(pdt, "date"):
@@ -982,6 +1015,10 @@ def list_receipts() -> Any:
                     net_value = float(net) if net is not None else None
                     gross_value = float(gross) if gross is not None else None
                     line_items = _count_line_items(rid)
+                    document_type = None
+                    if include_credit:
+                        if wf_type == "creditcard_invoice" or file_type_lower.startswith("cc_") or file_type_lower == "credit_card":
+                            document_type = "Credit Card"
                     items.append(
                         {
                             "id": rid,
@@ -996,7 +1033,9 @@ def list_receipts() -> Any:
                             "status": status,
                             "ai_status": status,  # Add ai_status field so frontend deps can detect changes
                             "file_type": file_type,
+                            "workflow_type": workflow_type,
                             "submitted_by": submitted_by,
+                            "document_type": document_type,
                             "line_item_count": line_items,
                             "tags": [t for t in (tag_csv or "").split(",") if t],
                         }

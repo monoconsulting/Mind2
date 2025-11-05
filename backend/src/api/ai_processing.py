@@ -31,6 +31,7 @@ from services.ai_service import AIService
 from services.box_enrichment import run_box_enrichment
 from services.db.connection import db_cursor, get_connection
 from api.middleware import auth_required
+from observability.events import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -387,6 +388,7 @@ def _persist_credit_card_match(
     confidence: Optional[float],
     matched: bool,
     *,
+    match_origin: Optional[str] = None,
     connection=None,
 ) -> None:
     owns_connection = connection is None
@@ -395,10 +397,18 @@ def _persist_credit_card_match(
     try:
         if owns_connection:
             conn.start_transaction()
+        match_value = 0
+        if matched:
+            if match_origin == "manual":
+                match_value = 2
+            elif match_origin == "confirmed":
+                match_value = 3
+            else:
+                match_value = 1
         if invoice_item_id is not None:
             cursor.execute(
                 "UPDATE creditcard_invoice_items SET matched = %s, updated_at = NOW() WHERE id = %s",
-                (1 if matched else 0, invoice_item_id),
+                (match_value, invoice_item_id),
             )
         if matched and invoice_item_id is not None:
             cursor.execute(
@@ -592,23 +602,69 @@ def classify_accounting_internal(req: AccountingClassificationRequest) -> Accoun
 
 def match_credit_card_internal(req: CreditCardMatchRequest) -> CreditCardMatchResponse:
     potential_matches = _potential_credit_matches(req)
+    log_event(
+        logger,
+        "matching.ai.requested",
+        file_id=req.file_id,
+        purchase_date=req.purchase_date,
+        amount=req.amount,
+        merchant_name=req.merchant_name,
+        candidates=len(potential_matches),
+    )
     ai_service = AIService()
     result = ai_service.match_credit_card(req, potential_matches)
+    log_event(
+        logger,
+        "matching.ai.result",
+        file_id=req.file_id,
+        matched=result.matched,
+        confidence=result.confidence,
+        invoice_item_id=result.credit_card_invoice_item_id,
+        details=result.match_details,
+    )
     matched_amount: Optional[Decimal] = None
     if result.match_details and result.match_details.get("matched_amount") is not None:
         matched_amount = Decimal(str(result.match_details["matched_amount"]))
-    _persist_credit_card_match(
-        req.file_id,
-        result.credit_card_invoice_item_id,
-        matched_amount,
-        result.confidence,
-        result.matched,
+    persist_ok = True
+    try:
+        _persist_credit_card_match(
+            req.file_id,
+            result.credit_card_invoice_item_id,
+            matched_amount,
+            result.confidence,
+            result.matched,
+            match_origin="auto" if result.matched else None,
+        )
+    except Exception:
+        persist_ok = False
+        log_event(
+            logger,
+            "matching.ai.persist_failed",
+            file_id=req.file_id,
+            invoice_item_id=result.credit_card_invoice_item_id,
+            level="error",
+        )
+        raise
+    log_event(
+        logger,
+        "matching.ai.persisted",
+        file_id=req.file_id,
+        invoice_item_id=result.credit_card_invoice_item_id,
+        matched_amount=matched_amount,
+        matched=result.matched,
+        persisted=persist_ok,
     )
     # AI7: Enrichment after credit card match
     try:
         run_box_enrichment(req.file_id)
     except Exception:
         logger.exception("AI7 error after credit card match on %s", req.file_id)
+        log_event(
+            logger,
+            "matching.ai.box_enrichment_failed",
+            file_id=req.file_id,
+            level="error",
+        )
     return result
 
 
