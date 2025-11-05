@@ -1143,6 +1143,7 @@ export default function Receipts() {
     if (filters.to) params.set('to', filters.to)
     if (filters.tag) params.set('tags', filters.tag)
     if (filters.fileType) params.set('file_type', filters.fileType)
+    params.set('include_credit', '1')
 
     try {
       const res = await api.fetch(`/ai/api/receipts?${params.toString()}`)
@@ -1399,22 +1400,23 @@ export default function Receipts() {
   };
 
   const handleResume = async (fileId) => {
-    resetReceiptForResume(fileId);
     try {
       const res = await api.fetch(`/ai/api/ingest/process/${fileId}/resume`, {
         method: 'POST',
       });
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (jsonError) {
+        console.warn('Resume response JSON parse failed', jsonError);
       }
 
-      const data = await res.json();
-
-      if (data.queued) {
+      if (res.ok && data.queued) {
+        resetReceiptForResume(fileId);
         setBanner({
           type: 'success',
-          message: `Bearbetning återupptagen: ${data.action || 'processing resumed'}`,
+          message: data.message || `Bearbetning återupptagen: ${data.action || 'processing resumed'}`,
         });
         // Refresh immediately so the UI shows the pending state without waiting for polling
         try {
@@ -1427,9 +1429,11 @@ export default function Receipts() {
           loadReceipts(true).catch((err) => console.error('Delayed receipts refresh failed after resume', err));
         }, 5000);
       } else {
+        const errorMessage =
+          (data && data.error) || `Kunde inte återuppta bearbetning (HTTP ${res.status})`;
         setBanner({
           type: 'error',
-          message: data.error || 'Kunde inte återuppta bearbetning',
+          message: errorMessage,
         });
       }
     } catch (error) {
@@ -1458,29 +1462,53 @@ export default function Receipts() {
 
     let successCount = 0;
     let errorCount = 0;
+    const errorMessages = [];
 
     for (const receipt of displayedItems) {
-      resetReceiptForResume(receipt.id)
       try {
         const res = await api.fetch(`/ai/api/ingest/process/${receipt.id}/resume`, {
           method: 'POST',
         });
 
-        if (res.ok) {
+        let data = {};
+        try {
+          data = await res.json();
+        } catch (jsonError) {
+          console.warn('Bulk resume JSON parse failed', jsonError);
+        }
+
+        if (res.ok && data.queued) {
+          resetReceiptForResume(receipt.id);
           successCount++;
         } else {
           errorCount++;
+          if (data && data.error) {
+            errorMessages.push(`${receipt.original_filename || receipt.id}: ${data.error}`);
+          } else {
+            errorMessages.push(`${receipt.original_filename || receipt.id}: HTTP ${res.status}`);
+          }
         }
       } catch (error) {
         console.error(`Error resuming ${receipt.id}:`, error);
         errorCount++;
+        errorMessages.push(`${receipt.original_filename || receipt.id}: ${error instanceof Error ? error.message : error}`);
       }
     }
 
-    setBanner({
-      type: successCount > 0 ? 'success' : 'error',
-      message: `Återupptagning klar: ${successCount} lyckades, ${errorCount} misslyckades`,
-    });
+    if (successCount === 0) {
+      const failureDetail = errorMessages.length > 0 ? `: ${errorMessages.join(', ')}` : '';
+      setBanner({
+        type: 'error',
+        message: `Återupptagning misslyckades${failureDetail}`,
+      });
+    } else {
+      const summary = `Återupptagning klar: ${successCount} lyckades, ${errorCount} misslyckades`;
+      const detail = errorMessages.length > 0 ? ` - ${errorMessages[0]}` : '';
+      setBanner({
+        type: errorCount > 0 ? 'info' : 'success',
+        message: `${summary}${detail}`,
+      });
+    }
 
     setTimeout(() => {
       loadReceipts(true);

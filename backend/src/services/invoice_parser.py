@@ -6,7 +6,8 @@ from typing import Any, Dict, List, Optional
 
 
 _LINE_PATTERN = re.compile(
-    r"(20\d{2}-\d{2}-\d{2})\s+(.+?)\s+(-?\d+[.,]\d{2})"
+    r"^(20\d{2}-\d{2}-\d{2})\s+(.+?)\s+(-?\d+[.,]\d{2})$",
+    re.MULTILINE,
 )
 _PERIOD_PATTERN = re.compile(
     r"Period\s*:?\s*(20\d{2}-\d{2}-\d{2})\s*(?:to|-)\s*(20\d{2}-\d{2}-\d{2})",

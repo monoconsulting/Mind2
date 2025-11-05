@@ -4,9 +4,16 @@
 Version: 2.1
 Datum: 2025-10-07
 ```
-*** CRITICAL RULES ***
+** CRITICAL RULES **
+* Mock data in the system are **not allowed.** This can not be used without a specific order to implement it
+* **SQLLite can never be used.** You have no permissions to use this.
+* Test **must** be performed exactly as stated in @docs/TEST_RULES.md
+* You are **never allowed to change port** or assign a new port to something that is not working.  You MUST ask permission
+* You have **NO PERMISSIONS to use taskkill** to kill a port that someone else is using. This can cause serious damage
+* You **ARE NOT ALLOWED TO EDIT playwright.config.ts** (except playwright.dev.config.ts for development testing)
 ** NO MOCKDATA IS ALLOWED. EVER. THIS MESSES UP EVERYTHING AND STOPS THE WORK **
 **⚠️ MERCHANT_NAME IS NEVER EVER ALLOWED TO BE USED ANYWHERE **
+** All receipt, pdf:s, invoices and other documents MUST always be in portrait mode. If they are in landscape this MUST be changed to portrait. This functaionality cannot be removed.**
 
 Detta dokument specificerar de primära uppgifterna och reglerna för agenter baserade på Anthropic's Claude-modeller.
 

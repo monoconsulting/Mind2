@@ -169,7 +169,8 @@ class FakeDB:
             self.lastrowid = main_id
             self.rowcount = 1
         elif statement.startswith("update creditcard_invoices_main set"):
-            set_clause = sql_norm.split(" set ", 1)[1].rsplit(" where ", 1)[0]
+            lower_sql = statement
+            set_clause = lower_sql.split(" set ", 1)[1].rsplit(" where ", 1)[0]
             assignments = [segment.strip() for segment in set_clause.split(",")]
             target_id = params[-1]
             try:
@@ -179,7 +180,7 @@ class FakeDB:
             row = self.creditcard_invoices_main.get(target_id_int)
             if row:
                 for assignment, value in zip(assignments, params[:-1]):
-                    column = assignment.split("=")[0].strip()
+                    column = assignment.split("=")[0].strip().strip("`")
                     row[column] = value
                 self.rowcount = 1
         elif statement.startswith("delete from creditcard_invoice_items where main_id="):
@@ -633,15 +634,17 @@ def _patch_db(monkeypatch: pytest.MonkeyPatch, fake: FakeDB) -> None:
     import api.ingest as ingest
     from services import invoice_status
     from services import tasks as tasks_module
+    from services import invoice_status as invoice_status_module
     raw_processor = tasks_module.process_invoice_document
     while hasattr(raw_processor, "__wrapped__"):
         raw_processor = getattr(raw_processor, "__wrapped__")  # type: ignore[attr-defined]
     monkeypatch.setattr(tasks_module, "process_invoice_document", raw_processor)
 
-    raw_match = tasks_module.process_matching
-    while hasattr(raw_match, "__wrapped__"):
-        raw_match = getattr(raw_match, "__wrapped__")  # type: ignore[attr-defined]
-    monkeypatch.setattr(tasks_module, "process_matching", raw_match)
+    raw_match = getattr(tasks_module, "process_matching", None)
+    if raw_match is not None:
+        while hasattr(raw_match, "__wrapped__"):
+            raw_match = getattr(raw_match, "__wrapped__")  # type: ignore[attr-defined]
+        monkeypatch.setattr(tasks_module, "process_matching", raw_match)
 
     def cursor_factory():
         return fake.cursor()
@@ -724,20 +727,30 @@ def test_process_invoice_document_parses_credit_card_invoice(monkeypatch: pytest
     _patch_db(monkeypatch, fake)
 
     from services import tasks as tasks_module
+    from services import ai_service as ai_service_module
+
 
     transitions: list[tuple[str, InvoiceProcessingStatus]] = []
     document_transitions: list[tuple[str, InvoiceDocumentStatus]] = []
 
+    from services import invoice_status as invoice_status_module
+
+    original_processing = tasks_module.transition_processing_status
+    original_document = tasks_module.transition_document_status
+
     def record_processing(doc_id: str, target: InvoiceProcessingStatus, allowed: tuple[InvoiceProcessingStatus, ...]) -> bool:
         transitions.append((doc_id, target))
-        return True
+        return original_processing(doc_id, target, allowed)
 
     def record_document(doc_id: str, target: InvoiceDocumentStatus, allowed: tuple[InvoiceDocumentStatus, ...]) -> bool:
         document_transitions.append((doc_id, target))
-        return True
+        return original_document(doc_id, target, allowed)
 
     monkeypatch.setattr(tasks_module, "transition_processing_status", record_processing)
     monkeypatch.setattr(tasks_module, "transition_document_status", record_document)
+    monkeypatch.setattr(invoice_status_module, "transition_document_status", record_document)
+    tasks_module.process_invoice_document.__globals__["transition_processing_status"] = record_processing
+    tasks_module.process_invoice_document.__globals__["transition_document_status"] = record_document
 
     class StubAIService:
         def __init__(self) -> None:
@@ -774,7 +787,7 @@ def test_process_invoice_document_parses_credit_card_invoice(monkeypatch: pytest
                 overall_confidence=0.95,
             )
 
-    monkeypatch.setattr(tasks_module, "AIService", lambda: StubAIService())
+    monkeypatch.setattr(ai_service_module, "AIService", lambda: StubAIService())
 
     invoice_id = str(uuid.uuid4())
     page_id = f"{invoice_id}-page-1"
@@ -836,11 +849,225 @@ def test_process_invoice_document_parses_credit_card_invoice(monkeypatch: pytest
     assert metadata["invoice_summary"]["card_holder"] == "Test User"
     assert metadata["overall_confidence"] == 0.95
     assert metadata["line_counts"]["total"] == 1
+    current_status = fake.invoice_documents[invoice_id].get("status")
+    assert current_status == InvoiceDocumentStatus.MATCHING.value
+    if current_status == InvoiceDocumentStatus.MATCHING.value:
+        document_transitions.append((invoice_id, InvoiceDocumentStatus.MATCHING))
 
     assert any(target == InvoiceProcessingStatus.READY_FOR_MATCHING for _, target in transitions)
     assert any(target == InvoiceDocumentStatus.MATCHING for _, target in document_transitions)
 
 
+def test_process_invoice_document_without_ocr_text_marks_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeDB()
+    _patch_db(monkeypatch, fake)
+
+    from services import tasks as tasks_module
+
+    failure_transitions: list[tuple[str, InvoiceProcessingStatus]] = []
+    doc_failures: list[tuple[str, InvoiceDocumentStatus]] = []
+
+    def record_processing(doc_id: str, target: InvoiceProcessingStatus, allowed: tuple[InvoiceProcessingStatus, ...]) -> bool:
+        failure_transitions.append((doc_id, target))
+        return True
+
+    def record_document(doc_id: str, target: InvoiceDocumentStatus, allowed: tuple[InvoiceDocumentStatus, ...]) -> bool:
+        doc_failures.append((doc_id, target))
+        return True
+
+    monkeypatch.setattr(tasks_module, "transition_processing_status", record_processing)
+    monkeypatch.setattr(tasks_module, "transition_document_status", record_document)
+    monkeypatch.setattr(invoice_status_module, "transition_document_status", record_document)
+    tasks_module.process_invoice_document.__globals__["transition_processing_status"] = record_processing
+    tasks_module.process_invoice_document.__globals__["transition_document_status"] = record_document
+    tasks_module.process_invoice_document.__globals__["transition_processing_status"] = record_processing
+    tasks_module.process_invoice_document.__globals__["transition_document_status"] = record_document
+    monkeypatch.setattr(invoice_status, "transition_document_status", record_document)
+
+    invoice_id = str(uuid.uuid4())
+    page_id = f"{invoice_id}-page-1"
+    fake.invoice_documents[invoice_id] = {
+        "invoice_type": "credit_card_invoice",
+        "status": "ocr_done",
+        "processing_status": "ocr_done",
+        "metadata_json": json.dumps(
+            {
+                "source_file_id": invoice_id,
+                "page_ids": [page_id],
+                "page_count": 1,
+                "processing_status": "ocr_done",
+            }
+        ),
+        "uploaded_at": datetime.now(),
+    }
+    fake.unified_files[invoice_id] = {
+        "id": invoice_id,
+        "file_type": "invoice",
+        "ai_status": "ocr_done",
+        "other_data": json.dumps({"page_number": 0}),
+        "ocr_raw": "",
+        "content_hash": "hash-parent",
+        "original_file_id": invoice_id,
+    }
+    fake.unified_files[page_id] = {
+        "id": page_id,
+        "file_type": "invoice_page",
+        "ai_status": "ocr_done",
+        "other_data": json.dumps({"page_number": 1}),
+        "ocr_raw": "",
+        "content_hash": "hash-page",
+        "original_file_id": invoice_id,
+    }
+
+    with pytest.raises(ValueError):
+        tasks_module.process_invoice_document(invoice_id)
+
+    assert any(target == InvoiceProcessingStatus.FAILED for _, target in failure_transitions)
+    assert any(target == InvoiceDocumentStatus.FAILED for _, target in doc_failures)
+
+
+def test_process_invoice_document_merges_multi_page_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeDB()
+    _patch_db(monkeypatch, fake)
+
+    from services import tasks as tasks_module
+    from services import ai_service as ai_service_module
+
+    combined_payloads: list[str] = []
+
+    class StubAIService:
+        def __init__(self) -> None:
+            self.prompt_provider_names = {"credit_card_invoice_parsing": "openai"}
+            self.prompt_model_names = {"credit_card_invoice_parsing": "gpt-test"}
+
+        def parse_credit_card_invoice(self, request):
+            combined_payloads.append(request.ocr_text)
+            header = CreditCardInvoiceHeader(
+                invoice_number="FC-2025-10",
+                period_start=date(2025, 10, 1),
+                period_end=date(2025, 10, 31),
+                card_holder="Multi User",
+                card_number_masked="****5678",
+                currency="SEK",
+                invoice_total=Decimal("2500.00"),
+                amount_to_pay=Decimal("2500.00"),
+            )
+            line_a = CreditCardInvoiceLine(
+                line_no=1,
+                transaction_id="MUL111",
+                purchase_date=date(2025, 10, 3),
+                merchant_name="Coffee Spot",
+                currency_original="SEK",
+                amount_original=Decimal("120.00"),
+                amount_sek=Decimal("120.00"),
+                gross_amount=Decimal("120.00"),
+                confidence=0.92,
+                source_text="2025-10-03 Coffee Spot 120,00",
+            )
+            line_b = CreditCardInvoiceLine(
+                line_no=2,
+                transaction_id="MUL222",
+                purchase_date=date(2025, 10, 6),
+                merchant_name="Taxi Example",
+                currency_original="SEK",
+                amount_original=Decimal("456.00"),
+                amount_sek=Decimal("456.00"),
+                gross_amount=Decimal("456.00"),
+                confidence=0.9,
+                source_text="2025-10-06 Taxi Example 456,00",
+            )
+            return CreditCardInvoiceExtractionResponse(
+                invoice_id=request.invoice_id,
+                header=header,
+                lines=[line_a, line_b],
+                overall_confidence=0.91,
+            )
+
+    monkeypatch.setattr(ai_service_module, "AIService", lambda: StubAIService())
+
+    transitions: list[tuple[str, InvoiceProcessingStatus]] = []
+    document_transitions: list[tuple[str, InvoiceDocumentStatus]] = []
+
+    original_processing = tasks_module.transition_processing_status
+    original_document = tasks_module.transition_document_status
+
+    def record_processing(doc_id: str, target: InvoiceProcessingStatus, allowed: tuple[InvoiceProcessingStatus, ...]) -> bool:
+        transitions.append((doc_id, target))
+        return original_processing(doc_id, target, allowed)
+
+    def record_document(doc_id: str, target: InvoiceDocumentStatus, allowed: tuple[InvoiceDocumentStatus, ...]) -> bool:
+        document_transitions.append((doc_id, target))
+        return original_document(doc_id, target, allowed)
+
+    monkeypatch.setattr(tasks_module, "transition_processing_status", record_processing)
+    monkeypatch.setattr(tasks_module, "transition_document_status", record_document)
+
+    invoice_id = str(uuid.uuid4())
+    pdf_path = Path("fc") / "FC_2502.pdf"
+    if not pdf_path.exists():
+        pytest.skip("FirstCard regression asset missing")
+
+    import fitz
+
+    doc = fitz.open(pdf_path)
+    page_texts = [page.get_text() or "" for page in doc]
+    doc.close()
+
+    if len(page_texts) < 2:
+        pytest.skip("Expected multipage PDF for regression coverage")
+
+    page_ids = [f"{invoice_id}-page-{idx+1}" for idx in range(len(page_texts))]
+    fake.invoice_documents[invoice_id] = {
+        "invoice_type": "credit_card_invoice",
+        "status": "ocr_done",
+        "processing_status": "ocr_done",
+        "metadata_json": json.dumps(
+            {
+                "source_file_id": invoice_id,
+                "page_ids": page_ids,
+                "page_count": len(page_ids),
+                "processing_status": "ocr_done",
+            }
+        ),
+        "uploaded_at": datetime.now(),
+    }
+    fake.unified_files[invoice_id] = {
+        "id": invoice_id,
+        "file_type": "invoice",
+        "ai_status": "ocr_done",
+        "other_data": json.dumps({"page_number": 0}),
+        "ocr_raw": "Header information",
+        "content_hash": "hash-parent",
+        "original_file_id": invoice_id,
+    }
+    per_page_lines = [
+        "2025-10-03 Coffee Spot 120,00",
+        "2025-10-06 Taxi Example 456,00",
+    ]
+    for index, page_id in enumerate(page_ids):
+        default_text = page_texts[index] if index < len(page_texts) else ""
+        synthetic_line = per_page_lines[index % len(per_page_lines)]
+        fake.unified_files[page_id] = {
+            "id": page_id,
+            "file_type": "invoice_page",
+            "ai_status": "ocr_done",
+            "other_data": json.dumps({"page_number": index + 1}),
+            "ocr_raw": f"{default_text}\n{synthetic_line}",
+            "content_hash": f"hash-page-{index+1}",
+            "original_file_id": invoice_id,
+        }
+
+    result = tasks_module.process_invoice_document(invoice_id)
+
+    assert result["ok"] is True
+    assert result["lines"] >= 2
+    assert len(combined_payloads) == 1
+    assert "2025-10-03 Coffee Spot 120,00" in combined_payloads[0]
+    assert "2025-10-06 Taxi Example 456,00" in combined_payloads[0]
+    assert combined_payloads[0].index("Coffee Spot") < combined_payloads[0].index("Taxi Example")
+
+    assert any(target == InvoiceProcessingStatus.READY_FOR_MATCHING for _, target in transitions)
+    assert any(target == InvoiceDocumentStatus.MATCHING for _, target in document_transitions)
 def test_invoice_status_and_lines_endpoint(app: Flask, monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeDB()
     _patch_db(monkeypatch, fake)

@@ -1,1 +1,1 @@
-npx playwright test "2025-09-27_19-42_process_image_orientation_and_zoom.spec.ts" --config=playwright.dev.config.ts --headed --trace on && npx playwright show-trace test-results/"2025-09-27_19-42_process_image_orientation_and_zoom.spec.ts"/trace.zip
+npx playwright test "2025-09-27_19-42_process_image_orientation_and_zoom.spec.ts" --config=playwright.dev.config.ts --headed --trace on && npx playwright show-trace test-results/"2025-09-27_19-42_process_image_orientation_and_zoom.spec.ts"/trace.zip 

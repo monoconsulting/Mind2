@@ -2,6 +2,85 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { FiEdit3, FiPlus, FiTrash2, FiSettings, FiMaximize2, FiX, FiSave, FiCheckCircle } from 'react-icons/fi'
 import { api } from '../api'
 
+const MOJIBAKE_PATTERN = /[ÃÂâ][\u0080-\u00FF]/;
+let cachedUtf8Decoder = null;
+
+function ensureUtf8Decoder() {
+  if (cachedUtf8Decoder) {
+    return cachedUtf8Decoder;
+  }
+  if (typeof TextDecoder === 'function') {
+    try {
+      cachedUtf8Decoder = new TextDecoder('utf-8', { fatal: false });
+    } catch (err) {
+      cachedUtf8Decoder = null;
+    }
+  }
+  return cachedUtf8Decoder;
+}
+
+function fixMojibakeString(value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return value;
+  }
+  if (!MOJIBAKE_PATTERN.test(value)) {
+    return value;
+  }
+  try {
+    const decoder = ensureUtf8Decoder();
+    if (decoder) {
+      const bytes = new Uint8Array(value.length);
+      for (let index = 0; index < value.length; index += 1) {
+        bytes[index] = value.charCodeAt(index) & 0xff;
+      }
+      const decoded = decoder.decode(bytes);
+      if (decoded && decoded !== value) {
+        return decoded;
+      }
+    }
+  } catch (err) {
+    // Swallow and fall back
+  }
+  if (typeof Buffer !== 'undefined') {
+    try {
+      const decoded = Buffer.from(value, 'latin1').toString('utf8');
+      if (decoded && decoded !== value) {
+        return decoded;
+      }
+    } catch (err) {
+      // Ignore buffer fallback failure
+    }
+  }
+  if (typeof decodeURIComponent === 'function' && typeof escape === 'function') {
+    try {
+      const decoded = decodeURIComponent(escape(value));
+      if (decoded && decoded !== value) {
+        return decoded;
+      }
+    } catch (err) {
+      // Ignore URI fallback
+    }
+  }
+  return value;
+}
+
+function fixEncodingDeep(value) {
+  if (typeof value === 'string') {
+    return fixMojibakeString(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => fixEncodingDeep(entry));
+  }
+  if (value && typeof value === 'object') {
+    const next = {};
+    for (const [key, nested] of Object.entries(value)) {
+      next[key] = fixEncodingDeep(nested);
+    }
+    return next;
+  }
+  return value;
+}
+
 // Modal component for expanded prompt editing
 function PromptModal({ isOpen, onClose, prompt, onSave }) {
   const [editedPrompt, setEditedPrompt] = useState(prompt)
@@ -410,11 +489,12 @@ export default function AiPage() {
 
   const normalizePrompt = (prompt) => {
     if (!prompt) return { id: null, title: '', description: '', prompt_content: '', selected_model_id: null }
+    const safePrompt = fixEncodingDeep(prompt)
     return {
-      ...prompt,
-      prompt_content: prompt.prompt_content || '',
-      description: prompt.description || '',
-      selected_model_id: parseModelId(prompt.selected_model_id)
+      ...safePrompt,
+      prompt_content: safePrompt.prompt_content || '',
+      description: safePrompt.description || '',
+      selected_model_id: parseModelId(safePrompt.selected_model_id)
     }
   }
 
@@ -480,7 +560,7 @@ export default function AiPage() {
     try {
       const response = await api.fetch('/ai/api/ai-config/providers')
       if (!response.ok) throw new Error('Failed to fetch providers')
-      const data = await response.json()
+      const data = fixEncodingDeep(await response.json())
       setProviders(data.providers || [])
     } catch (err) {
       setError('Kunde inte hämta leverantörer: ' + err.message)
@@ -491,7 +571,7 @@ export default function AiPage() {
     try {
       const response = await api.fetch('/ai/api/ai-config/prompts')
       if (!response.ok) throw new Error('Failed to fetch prompts')
-      const data = await response.json()
+      const data = fixEncodingDeep(await response.json())
       const prompts = (data.prompts || []).map((prompt) => normalizePrompt(prompt))
       setSystemPrompts(prompts)
       setOriginalPrompts(prompts.map((prompt) => ({ ...prompt })))
@@ -592,7 +672,7 @@ export default function AiPage() {
         method: 'POST'
       })
 
-      const data = await response.json()
+      const data = fixEncodingDeep(await response.json())
 
       if (response.ok) {
         setTestResults(prev => ({ ...prev, [providerId]: data }))
@@ -654,7 +734,7 @@ export default function AiPage() {
       const contentType = response.headers.get('content-type') || ''
       if (contentType.includes('application/json')) {
         try {
-          const data = await response.json()
+          const data = fixEncodingDeep(await response.json())
           if (data?.prompt) {
             savedPrompt = normalizePrompt(data.prompt)
           } else if (data?.data) {
