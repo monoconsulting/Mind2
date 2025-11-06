@@ -1205,7 +1205,8 @@ export default function Receipts() {
     if (filters.to) params.set('to', filters.to)
     if (filters.tag) params.set('tags', filters.tag)
     if (filters.fileType) params.set('file_type', filters.fileType)
-    params.set('include_credit', '1')
+    // Visa endast kvitton i Process-vyn: exkludera FirstCard/fakturaposter från API-svaret
+    params.set('include_credit', '0')
 
     try {
       const res = await api.fetch(`/ai/api/receipts?${params.toString()}`)
