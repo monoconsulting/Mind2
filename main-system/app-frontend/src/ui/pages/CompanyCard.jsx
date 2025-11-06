@@ -95,9 +95,10 @@ function fixEncodingDeep(value) {
 }
 
 const DOCUMENT_STATUS_MAP = [
-  { ids: ['matched', 'matchad', 'completed', 'done', 'success'], label: 'Matchat', tone: 'success' },
-  { ids: ['processing', 'matching', 'running', 'ready_for_matching'], label: 'Bearbetas', tone: 'processing' },
-  { ids: ['queued', 'pending', 'created', 'uploaded', 'imported'], label: 'I kö', tone: 'pending' },
+  { ids: ['matched', 'matchad', 'completed', 'done', 'success'], label: 'Matchad', tone: 'success' },
+  { ids: ['partially_matched', 'ready_for_matching', 'processed'], label: 'Bearbetad', tone: 'success' },
+  { ids: ['processing', 'matching', 'running', 'ai_processing', 'ocr_done'], label: 'Under bearbetning', tone: 'processing' },
+  { ids: ['queued', 'pending', 'created', 'uploaded', 'imported', 'ocr_pending'], label: 'Ej bearbetad', tone: 'pending' },
   { ids: ['failed', 'error'], label: 'Fel', tone: 'failed' },
 ]
 
@@ -310,6 +311,11 @@ export default function CompanyCard() {
   const [previewImage, setPreviewImage] = React.useState(null)
   const [uploadModalOpen, setUploadModalOpen] = React.useState(false)
   const [logState, setLogState] = React.useState(INITIAL_LOG_STATE)
+
+  const [sortColumn, setSortColumn] = React.useState('updated_at')
+  const [sortDirection, setSortDirection] = React.useState('desc')
+  const [sortLineColumn, setSortLineColumn] = React.useState('transaction_date')
+  const [sortLineDirection, setSortLineDirection] = React.useState('desc')
 
   React.useEffect(() => {
     selectedDocumentIdRef.current = selectedDocumentId
@@ -531,6 +537,175 @@ export default function CompanyCard() {
     [loadStatements, selectedDocumentId],
   )
 
+  const [matchingAllUnmatched, setMatchingAllUnmatched] = React.useState(false)
+
+  const handleMatchAllUnmatched = React.useCallback(async () => {
+    const unmatchedStatements = items.filter((item) => (item.line_counts?.unmatched ?? 0) > 0)
+    if (!unmatchedStatements.length) {
+      setDocumentFeedback({
+        type: 'info',
+        text: 'Inga omatchade poster hittades.',
+      })
+      return
+    }
+
+    setMatchingAllUnmatched(true)
+    let successCount = 0
+    let failCount = 0
+
+    for (const statement of unmatchedStatements) {
+      try {
+        const response = await api.fetch('/ai/api/reconciliation/firstcard/match', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ document_id: statement.id }),
+        })
+
+        if (response.ok) {
+          successCount++
+        } else {
+          failCount++
+        }
+      } catch (error) {
+        console.error(`Failed to match statement ${statement.id}`, error)
+        failCount++
+      }
+    }
+
+    setMatchingAllUnmatched(false)
+    await loadStatements(selectedDocumentIdRef.current)
+    if (selectedDocumentId) {
+      await loadDocumentDetail(selectedDocumentId)
+    }
+
+    if (failCount === 0) {
+      setDocumentFeedback({
+        type: 'success',
+        text: `Matchning klar. ${successCount} utdrag har bearbetats.`,
+      })
+    } else {
+      setDocumentFeedback({
+        type: 'warning',
+        text: `Matchning delvis klar. ${successCount} lyckades, ${failCount} misslyckades.`,
+      })
+    }
+  }, [items, loadStatements, loadDocumentDetail, selectedDocumentId])
+
+  const [resumingDocumentId, setResumingDocumentId] = React.useState(null)
+  const pollingIntervalRef = React.useRef(null)
+
+  // Silent refresh - no loading state, no flickering
+  const silentRefreshStatements = React.useCallback(async () => {
+    try {
+      const res = await api.fetch('/ai/api/reconciliation/firstcard/statements')
+      if (!res.ok) {
+        return null
+      }
+      let data = await res.json()
+      data = fixEncodingDeep(data)
+      return Array.isArray(data?.statements) ? data.statements : []
+    } catch (error) {
+      console.error('Silent refresh failed', error)
+      return null
+    }
+  }, [])
+
+  const startStatusPolling = React.useCallback((statementId) => {
+    // Clear any existing polling
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current)
+    }
+
+    // Poll every 2 seconds
+    pollingIntervalRef.current = setInterval(async () => {
+      try {
+        const refreshedItems = await silentRefreshStatements()
+
+        if (!refreshedItems) return
+
+        // Find the statement we're polling for
+        const statement = refreshedItems.find(item => item.id === statementId)
+
+        if (statement) {
+          const processingStatus = statement.processing_status
+          const status = statement.status
+
+          // Only update state if data has actually changed
+          setItems(prevItems => {
+            const oldStatement = prevItems.find(item => item.id === statementId)
+            const hasChanged = !oldStatement ||
+                              oldStatement.processing_status !== processingStatus ||
+                              oldStatement.status !== status
+
+            return hasChanged ? refreshedItems : prevItems
+          })
+
+          // Stop polling if we reach a terminal state
+          if (processingStatus === 'matching_completed' ||
+              status === 'matched' ||
+              status === 'failed' ||
+              processingStatus === 'ready_for_matching') {
+            clearInterval(pollingIntervalRef.current)
+            pollingIntervalRef.current = null
+            setResumingDocumentId(null)
+          }
+        }
+      } catch (error) {
+        console.error('Polling error:', error)
+      }
+    }, 2000)
+  }, [silentRefreshStatements])
+
+  // Cleanup polling on unmount
+  React.useEffect(() => {
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current)
+      }
+    }
+  }, [])
+
+  const handleResumeOrRestartInvoice = React.useCallback(async (statementId, processingStatus) => {
+    if (!statementId) return
+    setResumingDocumentId(statementId)
+
+    try {
+      // Determine if we should resume or restart based on processing_status
+      const isCompleted = processingStatus === 'matching_completed' || processingStatus === 'ready_for_matching'
+      const action = isCompleted ? 'restart' : 'resume'
+
+      const response = await api.fetch(`/ai/api/reconciliation/firstcard/statements/${statementId}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+
+      if (!response.ok) {
+        throw new Error(`Status ${response.status}`)
+      }
+
+      setDocumentFeedback({
+        type: 'success',
+        text: `Fakturaimport ${action === 'restart' ? 'omstartas' : 'återupptas'}...`,
+      })
+
+      // Immediately reload to show initial status change
+      await loadStatements(statementId)
+      if (selectedDocumentId === statementId) {
+        await loadDocumentDetail(statementId)
+      }
+
+      // Start polling for status updates
+      startStatusPolling(statementId)
+
+    } catch (error) {
+      setDocumentFeedback({
+        type: 'error',
+        text: `Kunde inte återuppta fakturaimport: ${error instanceof Error ? error.message : error}`,
+      })
+      setResumingDocumentId(null)
+    }
+  }, [loadStatements, loadDocumentDetail, selectedDocumentId, startStatusPolling])
+
   const onOpenCandidates = React.useCallback(async (line) => {
     if (!line) return
     setCandidateState({ open: true, line, candidates: [], loading: true })
@@ -611,6 +786,74 @@ export default function CompanyCard() {
     }
   }, [loadStatements])
 
+  const handleSort = React.useCallback((column) => {
+    if (sortColumn === column) {
+      setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortColumn(column)
+      setSortDirection('asc')
+    }
+  }, [sortColumn])
+
+  const sortedItems = React.useMemo(() => {
+    if (!sortColumn) return items
+
+    const sorted = [...items].sort((a, b) => {
+      let aVal, bVal
+
+      switch (sortColumn) {
+        case 'card_name':
+          aVal = (a.card_name || '').toLowerCase()
+          bVal = (b.card_name || '').toLowerCase()
+          break
+        case 'invoice_date':
+          aVal = a.invoice_date || ''
+          bVal = b.invoice_date || ''
+          break
+        case 'due_date':
+          aVal = a.due_date || ''
+          bVal = b.due_date || ''
+          break
+        case 'amount_to_pay':
+          aVal = Number(a.amount_to_pay) || 0
+          bVal = Number(b.amount_to_pay) || 0
+          break
+        case 'status':
+          aVal = (a.status || '').toLowerCase()
+          bVal = (b.status || '').toLowerCase()
+          break
+        case 'overall_confidence':
+          aVal = Number(a.overall_confidence) || 0
+          bVal = Number(b.overall_confidence) || 0
+          break
+        case 'total_lines':
+          aVal = Number(a.line_counts?.total) || 0
+          bVal = Number(b.line_counts?.total) || 0
+          break
+        case 'matched_lines':
+          aVal = Number(a.line_counts?.matched) || 0
+          bVal = Number(b.line_counts?.matched) || 0
+          break
+        case 'unmatched_lines':
+          aVal = Number(a.line_counts?.unmatched) || 0
+          bVal = Number(b.line_counts?.unmatched) || 0
+          break
+        case 'updated_at':
+          aVal = a.updated_at || a.uploaded_at || ''
+          bVal = b.updated_at || b.uploaded_at || ''
+          break
+        default:
+          return 0
+      }
+
+      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1
+      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1
+      return 0
+    })
+
+    return sorted
+  }, [items, sortColumn, sortDirection])
+
   const detailSummaryCards = React.useMemo(() => {
     if (!selectedDocument) {
       return []
@@ -667,6 +910,50 @@ export default function CompanyCard() {
     unmatched: documentLines.filter((line) => !line.match_status || line.match_status === 'unmatched').length,
   }
 
+  const handleSortLines = React.useCallback((column) => {
+    if (sortLineColumn === column) {
+      setSortLineDirection(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortLineColumn(column)
+      setSortLineDirection('asc')
+    }
+  }, [sortLineColumn])
+
+  const sortedDocumentLines = React.useMemo(() => {
+    if (!sortLineColumn) return documentLines
+
+    const sorted = [...documentLines].sort((a, b) => {
+      let aVal, bVal
+
+      switch (sortLineColumn) {
+        case 'transaction_date':
+          aVal = a.transaction_date || ''
+          bVal = b.transaction_date || ''
+          break
+        case 'description':
+          aVal = (a.description || '').toLowerCase()
+          bVal = (b.description || '').toLowerCase()
+          break
+        case 'amount':
+          aVal = Number(a.amount) || 0
+          bVal = Number(b.amount) || 0
+          break
+        case 'match_status':
+          aVal = (a.match_status || '').toLowerCase()
+          bVal = (b.match_status || '').toLowerCase()
+          break
+        default:
+          return 0
+      }
+
+      if (aVal < bVal) return sortLineDirection === 'asc' ? -1 : 1
+      if (aVal > bVal) return sortLineDirection === 'asc' ? 1 : -1
+      return 0
+    })
+
+    return sorted
+  }, [documentLines, sortLineColumn, sortLineDirection])
+
   const renderFeedback = () => {
     const feedback = candidateFeedback ?? documentFeedback
     if (!feedback) return null
@@ -702,16 +989,36 @@ export default function CompanyCard() {
         <table className="w-full text-sm">
           <thead className="bg-gray-800 text-left text-gray-300 uppercase text-xs tracking-wide">
             <tr>
-              <th className="px-4 py-3">Datum</th>
-              <th className="px-4 py-3">Beskrivning</th>
-              <th className="px-4 py-3">Belopp</th>
-              <th className="px-4 py-3">Status</th>
+              <th
+                className="px-4 py-3 cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSortLines('transaction_date')}
+              >
+                Datum {sortLineColumn === 'transaction_date' && (sortLineDirection === 'asc' ? '▲' : '▼')}
+              </th>
+              <th
+                className="px-4 py-3 cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSortLines('description')}
+              >
+                Beskrivning {sortLineColumn === 'description' && (sortLineDirection === 'asc' ? '▲' : '▼')}
+              </th>
+              <th
+                className="px-4 py-3 cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSortLines('amount')}
+              >
+                Belopp {sortLineColumn === 'amount' && (sortLineDirection === 'asc' ? '▲' : '▼')}
+              </th>
+              <th
+                className="px-4 py-3 cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSortLines('match_status')}
+              >
+                Status {sortLineColumn === 'match_status' && (sortLineDirection === 'asc' ? '▲' : '▼')}
+              </th>
               <th className="px-4 py-3">Matchat kvitto</th>
               <th className="px-4 py-3 text-right">Åtgärder</th>
             </tr>
           </thead>
           <tbody>
-            {documentLines.length > 0 ? documentLines.map((line) => {
+            {sortedDocumentLines.length > 0 ? sortedDocumentLines.map((line) => {
               const statusDetails = describeLineStatus(line.match_status)
               const badgeClass = toneClass[statusDetails.tone] ?? 'status-processing'
               const matchedReceipt = line.matched_receipt
@@ -1220,15 +1527,12 @@ const renderStatementTable = () => {
       )
     }
 
-    const rows = items.map((statement) => {
+    const rows = sortedItems.map((statement) => {
       const statusDetails = describeDocumentStatus(statement.status)
       const badgeClass = toneClass[statusDetails.tone] ?? 'status-processing'
       const lineSummary = statement.line_counts ?? {}
       const isSelected = statement.id === selectedDocumentId
-      const cardLabel = statement.card_name
-        || statement.invoice_summary?.card_name
-        || statement.invoice_summary?.card_holder
-        || `Utdrag ${statement.id}`
+      const cardLabel = statement.card_name || `Utdrag ${statement.id}`
       const invoiceNumber = statement.invoice_summary?.invoice_number || statement.invoice_number || statement.id
       const periodRange = statement.period_start && statement.period_end
         ? `${formatDate(statement.period_start, false)} - ${formatDate(statement.period_end, false)}`
@@ -1239,6 +1543,8 @@ const renderStatementTable = () => {
         ? `${Math.round(Number(statement.overall_confidence) * 100)}%`
         : '-'
       const invoiceDateLabel = statement.invoice_date ? formatDate(statement.invoice_date, false) : '-'
+      const dueDateLabel = statement.due_date ? formatDate(statement.due_date, false) : '-'
+      const amountToPayLabel = statement.amount_to_pay ? formatAmount(statement.amount_to_pay) : '-'
 
       return {
         statement,
@@ -1253,6 +1559,8 @@ const renderStatementTable = () => {
         updatedAt,
         confidence,
         invoiceDateLabel,
+        dueDateLabel,
+        amountToPayLabel,
       }
     })
 
@@ -1261,20 +1569,76 @@ const renderStatementTable = () => {
         <table className="min-w-full divide-y divide-gray-700 text-sm">
           <thead className="bg-gray-900/60 text-gray-300 uppercase tracking-wide text-xs">
             <tr>
-              <th className="px-4 py-3 text-left">Kort</th>
-              <th className="px-4 py-3 text-left">Fakturadatum</th>
-              <th className="px-4 py-3 text-left">Status</th>
-              <th className="px-4 py-3 text-left">Bearbetning</th>
-              <th className="px-4 py-3 text-left">AI6</th>
-              <th className="px-4 py-3 text-left">Linjer</th>
-              <th className="px-4 py-3 text-left">Senast uppdaterad</th>
-              <th className="px-4 py-3 text-right">Åtgärder</th>
+              <th
+                className="px-4 py-3 text-left cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSort('card_name')}
+              >
+                Kort {sortColumn === 'card_name' && (sortDirection === 'asc' ? '▲' : '▼')}
+              </th>
+              <th
+                className="px-4 py-3 text-center cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSort('invoice_date')}
+              >
+                Fakturadatum {sortColumn === 'invoice_date' && (sortDirection === 'asc' ? '▲' : '▼')}
+              </th>
+              <th
+                className="px-4 py-3 text-center cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSort('due_date')}
+              >
+                Betalningsdatum {sortColumn === 'due_date' && (sortDirection === 'asc' ? '▲' : '▼')}
+              </th>
+              <th
+                className="px-4 py-3 text-center cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSort('amount_to_pay')}
+              >
+                Belopp {sortColumn === 'amount_to_pay' && (sortDirection === 'asc' ? '▲' : '▼')}
+              </th>
+              <th
+                className="px-4 py-3 text-center cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSort('status')}
+              >
+                Status {sortColumn === 'status' && (sortDirection === 'asc' ? '▲' : '▼')}
+              </th>
+              <th
+                className="px-4 py-3 text-center cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSort('overall_confidence')}
+              >
+                AI - Konfidens {sortColumn === 'overall_confidence' && (sortDirection === 'asc' ? '▲' : '▼')}
+              </th>
+              <th
+                className="px-4 py-3 text-center cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSort('total_lines')}
+              >
+                RADER {sortColumn === 'total_lines' && (sortDirection === 'asc' ? '▲' : '▼')}
+              </th>
+              <th
+                className="px-4 py-3 text-center cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSort('matched_lines')}
+              >
+                Matchade rader {sortColumn === 'matched_lines' && (sortDirection === 'asc' ? '▲' : '▼')}
+              </th>
+              <th
+                className="px-4 py-3 text-center cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSort('unmatched_lines')}
+              >
+                Omatchade rader {sortColumn === 'unmatched_lines' && (sortDirection === 'asc' ? '▲' : '▼')}
+              </th>
+              <th
+                className="px-4 py-3 text-center cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSort('updated_at')}
+              >
+                Senast uppdaterad {sortColumn === 'updated_at' && (sortDirection === 'asc' ? '▲' : '▼')}
+              </th>
+              <th className="px-4 py-3 text-center">Logg</th>
+              <th className="px-4 py-3 text-center">Matcha omatchade rader</th>
+              <th className="px-4 py-3 text-center">Återuppta fakturaimport</th>
               <th className="px-3 py-3 text-right">Ta bort</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800">
-            {rows.map(({ statement, statusDetails, badgeClass, lineSummary, isSelected, cardLabel, invoiceNumber, periodRange, processingDetails, updatedAt, confidence, invoiceDateLabel }) => {
+            {rows.map(({ statement, statusDetails, badgeClass, lineSummary, isSelected, cardLabel, invoiceNumber, periodRange, updatedAt, confidence, invoiceDateLabel, dueDateLabel, amountToPayLabel }) => {
               const rowClasses = isSelected ? 'bg-red-600/10 hover:bg-red-600/20' : 'hover:bg-gray-800/40'
+              const hasUnmatchedRows = (lineSummary.unmatched ?? 0) > 0
 
               return (
                 <tr
@@ -1293,38 +1657,42 @@ const renderStatementTable = () => {
                       Uppladdad {formatDate(statement.created_at || statement.uploaded_at)}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-gray-200">{invoiceDateLabel}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3 text-gray-200 text-center">{invoiceDateLabel}</td>
+                  <td className="px-4 py-3 text-gray-200 text-center">{dueDateLabel}</td>
+                  <td className="px-4 py-3 text-gray-200 text-center">{amountToPayLabel}</td>
+                  <td className="px-4 py-3 text-center">
                     <span className={`status-badge ${badgeClass}`}>{statusDetails.label}</span>
                   </td>
-                  <td className="px-4 py-3 text-gray-200">{processingDetails.label}</td>
-                  <td className="px-4 py-3 text-gray-200">{confidence}</td>
-                  <td className="px-4 py-3 text-gray-200">
-                    <div className="text-xs text-gray-400 leading-relaxed">
-                      <div>Total: {lineSummary.total ?? '–'}</div>
-                      <div>Matchade: {lineSummary.matched ?? '–'}</div>
-                      <div>Obearbetade: {lineSummary.unmatched ?? '–'}</div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-gray-200 whitespace-nowrap">
+                  <td className="px-4 py-3 text-gray-200 text-center">{confidence}</td>
+                  <td className="px-4 py-3 text-gray-200 text-center">{lineSummary.total ?? '–'}</td>
+                  <td className="px-4 py-3 text-gray-200 text-center">{lineSummary.matched ?? '–'}</td>
+                  <td className="px-4 py-3 text-gray-200 text-center">{lineSummary.unmatched ?? '–'}</td>
+                  <td className="px-4 py-3 text-gray-200 text-center whitespace-nowrap">
                     {formatDate(updatedAt)}
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-2">
+                  <td className="px-4 py-3 text-center">
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setSelectedDocumentId(statement.id)
+                        fetchInvoiceLog(statement.id)
+                      }}
+                    >
+                      Visa logg
+                    </button>
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    {hasUnmatchedRows && (
                       <button
                         type="button"
-                        className="btn btn-secondary btn-sm"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          setSelectedDocumentId(statement.id)
-                          fetchInvoiceLog(statement.id)
+                        className="btn btn-sm"
+                        style={{
+                          backgroundColor: '#dc2626',
+                          color: 'white',
+                          border: 'none',
                         }}
-                      >
-                        Visa logg
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-primary btn-sm"
                         onClick={(event) => {
                           event.stopPropagation()
                           onMatchDocument(statement.id)
@@ -1338,12 +1706,35 @@ const renderStatementTable = () => {
                           </>
                         ) : (
                           <>
-                            <FiCheckCircle className="mr-1" />
-                            Auto-matcha
+                            <FiLink className="mr-1" />
+                            Matcha omatchade rader
                           </>
                         )}
                       </button>
-                    </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        handleResumeOrRestartInvoice(statement.id, statement.processing_status)
+                      }}
+                      disabled={resumingDocumentId === statement.id}
+                    >
+                      {resumingDocumentId === statement.id ? (
+                        <>
+                          <div className="loading-spinner mr-1" />
+                          Bearbetar...
+                        </>
+                      ) : (
+                        <>
+                          <FiRefreshCw className="mr-1" />
+                          Återuppta fakturaimport
+                        </>
+                      )}
+                    </button>
                   </td>
                   <td className="px-3 py-3 text-right">
                     <button
@@ -1421,6 +1812,29 @@ const renderStatementTable = () => {
                 <>
                   <FiRefreshCw className="mr-2" />
                   Uppdatera
+                </>
+              )}
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              style={{
+                backgroundColor: '#dc2626',
+                color: 'white',
+                border: 'none',
+              }}
+              onClick={handleMatchAllUnmatched}
+              disabled={matchingAllUnmatched || loading}
+            >
+              {matchingAllUnmatched ? (
+                <>
+                  <div className="loading-spinner mr-2" />
+                  Matchar...
+                </>
+              ) : (
+                <>
+                  <FiLink className="mr-2" />
+                  Matcha omatchade poster
                 </>
               )}
             </button>
