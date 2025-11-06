@@ -947,13 +947,15 @@ def list_receipts() -> Any:
                     "SELECT u.id, u.original_filename, c.name as company_name, u.purchase_datetime, "
                     "u.net_amount_sek, u.gross_amount_sek, u.ai_status, u.file_type, u.workflow_type, "
                     "u.submitted_by, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, "
+                    "u.expense_type, u.credit_card_last_4_digits, u.credit_card_type, u.payment_type, "
                     "COALESCE(GROUP_CONCAT(t.tag), '') as tags "
                     "FROM unified_files u "
                     "LEFT JOIN companies c ON c.id = u.company_id "
                     "LEFT JOIN file_tags t ON t.file_id=u.id "
                     "LEFT JOIN file_locations fl ON fl.file_id=u.id "
                     f"{where_sql} "
-                    "GROUP BY u.id, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, c.name, u.workflow_type "
+                    "GROUP BY u.id, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, c.name, u.workflow_type, "
+                    "u.expense_type, u.credit_card_last_4_digits, u.credit_card_type, u.payment_type "
                     "ORDER BY u.created_at DESC LIMIT %s OFFSET %s"
                 )
                 cur.execute(query, tuple(params + [page_size, offset]))
@@ -974,6 +976,10 @@ def list_receipts() -> Any:
                     lat,
                     lon,
                     acc,
+                    expense_type,
+                    credit_card_last_4,
+                    credit_card_type,
+                    payment_type,
                     tag_csv,
                 ) in results:
                     wf_type = (workflow_type or "").lower()
@@ -1037,6 +1043,10 @@ def list_receipts() -> Any:
                             "submitted_by": submitted_by,
                             "document_type": document_type,
                             "line_item_count": line_items,
+                            "expense_type": expense_type,
+                            "credit_card_last_4": str(credit_card_last_4) if credit_card_last_4 not in (None, 0, "") else None,
+                            "credit_card_type": credit_card_type,
+                            "payment_type": payment_type,
                             "tags": [t for t in (tag_csv or "").split(",") if t],
                         }
                     )
@@ -1611,6 +1621,248 @@ def get_ai_processing_history(rid: str) -> Any:
             logger.error(traceback.format_exc())
             history = []
     return jsonify({"file_id": rid, "history": history}), 200
+
+
+@receipts_bp.get("/receipts/<rid>/log")
+def get_receipt_log(rid: str) -> Any:
+    """Return detailed workflow and AI logs for a receipt."""
+    if db_cursor is None:
+        return jsonify(
+            {
+                "receipt_id": rid,
+                "workflow_runs": [],
+                "ai_history": [],
+                "files": [],
+                "metadata": {},
+            }
+        ), 200
+
+    # Get file records (main file and any related files)
+    file_records: list[dict[str, Any]] = []
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    file_type,
+                    workflow_type,
+                    ai_status,
+                    ai_confidence,
+                    created_at,
+                    updated_at,
+                    ocr_raw,
+                    other_data
+                FROM unified_files
+                WHERE id = %s OR original_file_id = %s
+                ORDER BY created_at ASC, id ASC
+                """,
+                (rid, rid),
+            )
+            rows = cur.fetchall() or []
+    except Exception:
+        rows = []
+
+    file_id_set: set[str] = set()
+    for (
+        file_id,
+        file_type,
+        workflow_type,
+        ai_status,
+        ai_confidence,
+        created_at,
+        updated_at,
+        ocr_raw,
+        other_json,
+    ) in rows:
+        other_payload: dict[str, Any]
+        if other_json:
+            try:
+                other_payload = json.loads(other_json)
+            except Exception:
+                other_payload = {}
+        else:
+            other_payload = {}
+        file_records.append(
+            {
+                "id": str(file_id),
+                "file_type": file_type,
+                "workflow_type": workflow_type,
+                "ai_status": ai_status,
+                "ai_confidence": float(ai_confidence) if ai_confidence is not None else None,
+                "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at),
+                "ocr_raw": ocr_raw or "",
+                "ocr_raw_length": len(ocr_raw or ""),
+                "other_data": other_payload,
+            }
+        )
+        file_id_set.add(str(file_id))
+
+    file_id_set.add(str(rid))
+    related_file_ids = list(sorted(file_id_set))
+
+    # Get workflow runs
+    workflow_runs: list[dict[str, Any]] = []
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    workflow_key,
+                    status,
+                    current_stage,
+                    source_channel,
+                    created_at,
+                    updated_at
+                FROM workflow_runs
+                WHERE file_id = %s
+                ORDER BY created_at DESC, id DESC
+                """,
+                (rid,),
+            )
+            run_rows = cur.fetchall() or []
+    except Exception:
+        run_rows = []
+
+    for (
+        workflow_run_id,
+        workflow_key,
+        status,
+        current_stage,
+        source_channel,
+        created_at,
+        updated_at,
+    ) in run_rows:
+        stages: list[dict[str, Any]] = []
+        try:
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        stage_key,
+                        status,
+                        started_at,
+                        finished_at,
+                        message
+                    FROM workflow_stage_runs
+                    WHERE workflow_run_id = %s
+                    ORDER BY
+                        COALESCE(started_at, finished_at, NOW()) ASC,
+                        id ASC
+                    """,
+                    (workflow_run_id,),
+                )
+                stage_rows = cur.fetchall() or []
+        except Exception:
+            stage_rows = []
+
+        for (
+            stage_key,
+            stage_status,
+            started_at,
+            finished_at,
+            message,
+        ) in stage_rows:
+            duration_ms: int | None = None
+            if started_at and finished_at:
+                try:
+                    duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+                except Exception:
+                    duration_ms = None
+            stages.append(
+                {
+                    "stage_key": stage_key,
+                    "status": stage_status,
+                    "started_at": started_at.isoformat() if hasattr(started_at, "isoformat") else (str(started_at) if started_at else None),
+                    "finished_at": finished_at.isoformat() if hasattr(finished_at, "isoformat") else (str(finished_at) if finished_at else None),
+                    "duration_ms": duration_ms,
+                    "message": message,
+                }
+            )
+
+        workflow_runs.append(
+            {
+                "id": int(workflow_run_id),
+                "workflow_key": workflow_key,
+                "status": status,
+                "current_stage": current_stage,
+                "source_channel": source_channel,
+                "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at),
+                "stages": stages,
+            }
+        )
+
+    # Get AI processing history
+    ai_history: list[dict[str, Any]] = []
+    if related_file_ids:
+        placeholders = ", ".join(["%s"] * len(related_file_ids))
+        query = f"""
+            SELECT
+                id,
+                file_id,
+                job_type,
+                status,
+                created_at,
+                ai_stage_name,
+                log_text,
+                error_message,
+                confidence,
+                processing_time_ms,
+                provider,
+                model_name
+            FROM ai_processing_history
+            WHERE file_id IN ({placeholders})
+            ORDER BY created_at ASC, id ASC
+        """
+        try:
+            with db_cursor() as cur:
+                cur.execute(query, tuple(related_file_ids))
+                history_rows = cur.fetchall() or []
+        except Exception:
+            history_rows = []
+
+        for (
+            history_id,
+            file_id,
+            job_type,
+            status,
+            created_at,
+            ai_stage_name,
+            log_text,
+            error_message,
+            confidence,
+            processing_time_ms,
+            provider,
+            model_name,
+        ) in history_rows:
+            ai_history.append(
+                {
+                    "id": int(history_id),
+                    "file_id": file_id,
+                    "job_type": job_type,
+                    "status": status,
+                    "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                    "ai_stage_name": ai_stage_name,
+                    "log_text": log_text,
+                    "error_message": error_message,
+                    "confidence": float(confidence) if confidence is not None else None,
+                    "processing_time_ms": processing_time_ms,
+                    "provider": provider,
+                    "model": model_name,
+                }
+            )
+
+    payload = {
+        "receipt_id": rid,
+        "workflow_runs": workflow_runs,
+        "ai_history": ai_history,
+        "files": file_records,
+        "metadata": {},
+    }
+    return jsonify(payload), 200
 
 
 @receipts_bp.get("/receipts/<rid>/workflow-status")

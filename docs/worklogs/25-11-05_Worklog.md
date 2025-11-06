@@ -66,7 +66,8 @@
 
 | Time | Title | Change Type | Scope | Tickets | Commits | Files Touched |
 |---|---|---|---|---|---|---|
-| [13:20](13:20) | Biltema receipt auto-match | fix | `creditcard-matching` | N/A | `uncommitted` | `backend/src/services/tasks.py, database schema, docs/worklogs/25-11-05_Worklog.md` |
+| [15:30](#1530) | Kortmatchning table improvements | feat | `frontend-card-matching` | MIND_TASKS.md | `working tree` | `backend/src/api/reconciliation_firstcard.py, main-system/app-frontend/src/ui/pages/CompanyCard.jsx, web/tests/kortmatchning-kontoutdrag-table-structure.spec.ts` |
+| [13:20](#1320) | Biltema receipt auto-match | fix | `creditcard-matching` | N/A | `uncommitted` | `backend/src/services/tasks.py, database schema, docs/worklogs/25-11-05_Worklog.md` |
 
 ### Entry Template (copy & paste below; newest entry goes **above** older ones)
 ```markdown
@@ -104,7 +105,67 @@
 
 > Place your first real entry **here** ?? (and keep placing new ones above the previous):
 
-#### [13:20] Biltema receipt auto-match
+#### [15:30] Kortmatchning table improvements {#1530}
+- **Change type:** feat
+- **Scope (component/module):** `frontend-card-matching`
+- **Tickets/PRs:** MIND_TASKS.md - Meny - Kortmatchning - Kontoutdrag section
+- **Branch:** `kortmatchning-kontoutdrag-improvements`
+- **Commit(s):** `working tree (base 11dde74)`
+- **Environment:** Local Windows + Docker dev stack + Vite dev server (port 5169)
+- **Commands run:**
+  ```bash
+  git checkout -b kortmatchning-kontoutdrag-improvements
+  docker restart mind2-ai-api-1
+  docker restart mind2-mind-web-main-frontend-dev-1
+  npx playwright test web/tests/kortmatchning-kontoutdrag-table-structure.spec.ts --config=playwright.dev.config.ts --project=chromium-ultrawide --headed
+  ```
+- **Result summary:** Successfully implemented all requested table improvements for the Kontoutdrag (Account Statement) table. Updated backend API to include due_date and amount_to_pay from creditcard_invoices_main. Restructured frontend table with new columns (Betalningsdatum, Belopp, RADER, Matchade rader, Omatchade rader), changed "AI6" to "AI - Konfidens", removed "Bearbetning" column and "Auto-matcha" button. Added header button "Matcha omatchade poster" and red per-row "Matcha omatchade rader" button for invoices with unmatched items. All 5 Playwright tests passed (13.0s runtime).
+- **Files changed (exact):**
+  - `backend/src/api/reconciliation_firstcard.py` - L1927-L1968 - function: `list_statements` - added query to fetch due_date and amount_to_pay from creditcard_invoices_main
+  - `main-system/app-frontend/src/ui/pages/CompanyCard.jsx` - L530-L586 - added `handleMatchAllUnmatched` callback function
+  - `main-system/app-frontend/src/ui/pages/CompanyCard.jsx` - L1223-L1261 - updated row data preparation with dueDateLabel and amountToPayLabel
+  - `main-system/app-frontend/src/ui/pages/CompanyCard.jsx` - L1262-L1281 - updated table headers (added new columns, removed old columns, renamed columns)
+  - `main-system/app-frontend/src/ui/pages/CompanyCard.jsx` - L1282-L1380 - updated tbody with new column structure and conditional red button for unmatched rows
+  - `main-system/app-frontend/src/ui/pages/CompanyCard.jsx` - L1474-L1524 - added "Matcha omatchade poster" header button
+  - `web/tests/kortmatchning-kontoutdrag-table-structure.spec.ts` - L1-L123 - new Playwright test suite with 5 tests
+- **Unified diff (minimal, per file or consolidated):**
+  ```diff
+  --- a/backend/src/api/reconciliation_firstcard.py
+  +++ b/backend/src/api/reconciliation_firstcard.py
+  @@ -1927,6 +1927,20 @@
+                   # Extract invoice_summary from metadata
+                   invoice_summary = metadata.get("invoice_summary")
+                   if not isinstance(invoice_summary, dict):
+                       invoice_summary = {}
+  +
+  +                # Get due_date and amount_to_pay from creditcard_invoices_main if available
+  +                due_date = None
+  +                amount_to_pay = None
+  +                creditcard_main_id = metadata.get("creditcard_main_id")
+  +                if creditcard_main_id:
+  +                    try:
+  +                        cur.execute(
+  +                            "SELECT due_date, amount_to_pay FROM creditcard_invoices_main WHERE id=%s",
+  +                            (creditcard_main_id,)
+  +                        )
+  +                        main_row = cur.fetchone()
+  +                        if main_row:
+  +                            due_date = main_row[0]
+  +                            amount_to_pay = main_row[1]
+  +                    except Exception as e:
+  +                        logger.warning(f"Failed to load creditcard_invoices_main data for {creditcard_main_id}: {e}")
+  ```
+- **Tests executed:** `npx playwright test web/tests/kortmatchning-kontoutdrag-table-structure.spec.ts --config=playwright.dev.config.ts --project=chromium-ultrawide --headed` - 5/5 PASSED (13.0s)
+- **Performance note (if any):** N/A
+- **System documentation updated:**
+  - `docs/worklogs/25-11-05_Worklog.md` - added new entry for kortmatchning table improvements
+  - `docs/MIND_TASKS.md` - tasks completed (not modified, tasks are now implemented)
+- **Artifacts:**
+  - Test report: `web/test-results/html/index.html`
+  - Test artifacts in: `web/test-results/_artifacts/kortmatchning-kontoutdrag-table-structure-*/`
+- **Next action:** Commit changes, push to origin, and create pull request
+
+#### [13:20] Biltema receipt auto-match {#1320}
 - **Change type:** fix
 - **Scope (component/module):** `creditcard-matching`
 - **Tickets/PRs:** N/A

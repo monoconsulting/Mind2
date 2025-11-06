@@ -1929,6 +1929,27 @@ def list_statements() -> Any:
                 if not isinstance(invoice_summary, dict):
                     invoice_summary = {}
 
+                # Get data from creditcard_invoices_main if available
+                due_date = None
+                amount_to_pay = None
+                card_name_from_main = None
+                invoice_date_from_main = None
+                creditcard_main_id = metadata.get("creditcard_main_id")
+                if creditcard_main_id:
+                    try:
+                        cur.execute(
+                            "SELECT due_date, amount_to_pay, card_name, invoice_date FROM creditcard_invoices_main WHERE id=%s",
+                            (creditcard_main_id,)
+                        )
+                        main_row = cur.fetchone()
+                        if main_row:
+                            due_date = main_row[0]
+                            amount_to_pay = main_row[1]
+                            card_name_from_main = main_row[2]
+                            invoice_date_from_main = main_row[3]
+                    except Exception as e:
+                        logger.warning(f"Failed to load creditcard_invoices_main data for {creditcard_main_id}: {e}")
+
                 item = {
                     "id": doc_id,
                     "uploaded_at": str(uploaded_at) if uploaded_at else None,
@@ -1945,7 +1966,10 @@ def list_statements() -> Any:
                     },
                     "overall_confidence": metadata.get("overall_confidence"),
                     "invoice_number": invoice_summary.get("invoice_number") or metadata.get("invoice_number"),
-                    "invoice_date": invoice_summary.get("invoice_date"),
+                    "invoice_date": str(invoice_date_from_main) if invoice_date_from_main else invoice_summary.get("invoice_date"),
+                    "due_date": str(due_date) if due_date else None,
+                    "amount_to_pay": float(amount_to_pay) if amount_to_pay is not None else None,
+                    "card_name": card_name_from_main or invoice_summary.get("card_name"),
                     "invoice_summary": invoice_summary,
                 }
 
@@ -1955,7 +1979,9 @@ def list_statements() -> Any:
 
                 if isinstance(invoice_summary, dict):
                     item["card_type"] = invoice_summary.get("card_type")
-                    item["card_name"] = invoice_summary.get("card_name")
+                    # Only use invoice_summary values if card_name_from_main is not available
+                    if not card_name_from_main:
+                        item["card_name"] = invoice_summary.get("card_name")
                     item["card_label"] = invoice_summary.get("card_label")
                     item["card_holder"] = invoice_summary.get("card_holder")
                     item["card_number_masked"] = invoice_summary.get("card_number_masked")
@@ -2062,6 +2088,142 @@ def delete_statement(sid: str) -> Any:
         return jsonify({"error": "delete_failed"}), 500
 
     return jsonify({"ok": True}), 200
+
+
+@recon_bp.post("/reconciliation/firstcard/statements/<sid>/resume")
+def resume_statement_workflow(sid: str) -> Any:
+    """Resume a stalled invoice workflow."""
+    if db_cursor is None:
+        return jsonify({"error": "db_unavailable"}), 503
+
+    # Get the latest workflow_run for this invoice
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, status, current_stage
+                FROM workflow_runs
+                WHERE file_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (sid,),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return jsonify({"error": "no_workflow_found"}), 404
+
+            workflow_run_id, status, current_stage = row
+
+            # Update status to show it's processing again
+            try:
+                cur.execute(
+                    "UPDATE invoice_documents SET status='matching', processing_status=%s WHERE id=%s",
+                    (current_stage or 'ocr_pending', sid),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update status for resume {sid}: {e}")
+
+            # Dispatch the workflow to resume
+            if dispatch_workflow(workflow_run_id):
+                log_event(
+                    logger,
+                    "invoice.workflow.resumed",
+                    invoice_id=sid,
+                    workflow_run_id=workflow_run_id,
+                    previous_status=status,
+                    previous_stage=current_stage,
+                )
+                return jsonify({
+                    "ok": True,
+                    "workflow_run_id": workflow_run_id,
+                    "action": "resumed",
+                }), 200
+            else:
+                return jsonify({"error": "dispatch_failed"}), 500
+
+    except Exception as e:
+        logger.error(f"Failed to resume workflow for {sid}: {e}")
+        return jsonify({"error": "resume_failed", "details": str(e)}), 500
+
+
+@recon_bp.post("/reconciliation/firstcard/statements/<sid>/restart")
+def restart_statement_workflow(sid: str) -> Any:
+    """Restart invoice processing from the beginning (WF3)."""
+    if db_cursor is None:
+        return jsonify({"error": "db_unavailable"}), 503
+
+    # Get content_hash from unified_files
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT content_hash FROM unified_files WHERE id = %s",
+                (sid,),
+            )
+            row = cur.fetchone()
+
+            if not row or not row[0]:
+                return jsonify({"error": "file_not_found"}), 404
+
+            content_hash = row[0]
+
+    except Exception as e:
+        logger.error(f"Failed to get content_hash for {sid}: {e}")
+        return jsonify({"error": "lookup_failed", "details": str(e)}), 500
+
+    # Create a new workflow run
+    workflow_run_id = _create_workflow_run(
+        workflow_key="WF3_FIRSTCARD_INVOICE",
+        source_channel="kortmatchning_restart",
+        file_id=sid,
+        content_hash=content_hash,
+    )
+
+    if not workflow_run_id:
+        return jsonify({"error": "workflow_creation_failed"}), 500
+
+    # Dispatch the new workflow
+    if dispatch_workflow(workflow_run_id):
+        log_event(
+            logger,
+            "invoice.workflow.restarted",
+            invoice_id=sid,
+            workflow_run_id=workflow_run_id,
+        )
+
+        # Update invoice_documents metadata
+        try:
+            with db_cursor() as cur:
+                cur.execute(
+                    "SELECT metadata_json FROM invoice_documents WHERE id=%s",
+                    (sid,),
+                )
+                row = cur.fetchone()
+                metadata = {}
+                if row and row[0]:
+                    try:
+                        metadata = json.loads(row[0])
+                    except Exception:
+                        pass
+
+                metadata["workflow_run_id"] = workflow_run_id
+                metadata["processing_status"] = "ocr_pending"
+
+                cur.execute(
+                    "UPDATE invoice_documents SET metadata_json=%s, processing_status='ocr_pending', status='imported' WHERE id=%s",
+                    (json.dumps(metadata), sid),
+                )
+        except Exception as e:
+            logger.warning(f"Failed to update metadata for restart {sid}: {e}")
+
+        return jsonify({
+            "ok": True,
+            "workflow_run_id": workflow_run_id,
+            "action": "restarted",
+        }), 200
+    else:
+        return jsonify({"error": "dispatch_failed"}), 500
 
 
 @recon_bp.post("/reconciliation/firstcard/statements/<sid>/confirm")
