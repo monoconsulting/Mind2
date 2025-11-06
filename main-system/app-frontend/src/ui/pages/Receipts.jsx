@@ -15,10 +15,21 @@ import {
   FiTag,
   FiChevronLeft,
   FiChevronRight,
-  FiTrash2
+  FiTrash2,
+  FiFileText,
+  FiAlertCircle
 } from 'react-icons/fi'
 import { api } from '../api'
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal'
+
+const INITIAL_LOG_STATE = {
+  open: false,
+  loading: false,
+  error: null,
+  data: null,
+  receiptId: null,
+}
+// Force Vite reload
 
 const initialFilters = {
   from: '',
@@ -39,7 +50,7 @@ function formatCurrency(value) {
   return formatter.format(value)
 }
 
-function formatDate(value) {
+function formatDate(value, includeTime = false) {
   if (!value) {
     return '-'
   }
@@ -52,10 +63,20 @@ function formatDate(value) {
     if (Number.isNaN(parsed.getTime())) {
       return raw
     }
+    if (includeTime) {
+      return `${parsed.toLocaleDateString('sv-SE')} ${parsed.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' })}`
+    }
     return parsed.toLocaleDateString('sv-SE')
   } catch (error) {
     return typeof value === 'string' ? value : '-'
   }
+}
+
+function formatDurationMs(ms) {
+  if (ms == null || ms === 0) return '0ms'
+  if (ms < 1000) return `${ms}ms`
+  const sec = (ms / 1000).toFixed(1)
+  return `${sec}s`
 }
 
 function Banner({ banner, onDismiss }) {
@@ -592,6 +613,49 @@ export default function ReceiptsList() {
   const [isItemsOpen, setItemsOpen] = React.useState(false)
   const [selectedReceipt, setSelectedReceipt] = React.useState(null)
   const previewCache = React.useRef(new Map())
+  const [sortColumn, setSortColumn] = React.useState('purchase_datetime')
+  const [sortDirection, setSortDirection] = React.useState('desc')
+  const [logState, setLogState] = React.useState(INITIAL_LOG_STATE)
+
+  const fetchReceiptLog = React.useCallback(async (receiptId) => {
+    if (!receiptId) {
+      return
+    }
+    setLogState((prev) => ({
+      open: true,
+      loading: true,
+      error: null,
+      data: prev.receiptId === receiptId ? prev.data : null,
+      receiptId,
+    }))
+    try {
+      const res = await api.fetch(`/ai/api/receipts/${receiptId}/log`)
+      if (!res.ok) {
+        throw new Error(`Status ${res.status}`)
+      }
+      const payload = await res.json()
+      setLogState({
+        open: true,
+        loading: false,
+        error: null,
+        data: payload,
+        receiptId,
+      })
+    } catch (error) {
+      console.error('Failed to fetch receipt log', error)
+      setLogState({
+        open: true,
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+        data: null,
+        receiptId,
+      })
+    }
+  }, [])
+
+  const closeLogViewer = React.useCallback(() => {
+    setLogState(INITIAL_LOG_STATE)
+  }, [])
 
   const updateReceiptInList = React.useCallback((updated) => {
     if (!updated || !updated.id) {
@@ -638,7 +702,15 @@ export default function ReceiptsList() {
         return true
       })
       const fetchedMeta = payload?.meta || {}
-      setItems(filteredList)
+
+      // Only update state if data has actually changed (prevents flickering during silent refresh)
+      setItems(prevItems => {
+        if (silent && JSON.stringify(prevItems) === JSON.stringify(filteredList)) {
+          return prevItems
+        }
+        return filteredList
+      })
+
       setMeta({
         page: fetchedMeta.page ?? page,
         page_size: fetchedMeta.page_size ?? pageSize,
@@ -682,14 +754,78 @@ export default function ReceiptsList() {
     return () => clearInterval(intervalId)
   }, [loadReceipts])
 
+  const handleSort = React.useCallback((column) => {
+    if (sortColumn === column) {
+      setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortColumn(column)
+      setSortDirection('asc')
+    }
+  }, [sortColumn])
+
+  const sortedItems = React.useMemo(() => {
+    if (!sortColumn) return items
+
+    const sorted = [...items].sort((a, b) => {
+      let aVal, bVal
+
+      switch (sortColumn) {
+        case 'company':
+          aVal = (a.company || a.merchant_name || '').toLowerCase()
+          bVal = (b.company || b.merchant_name || '').toLowerCase()
+          break
+        case 'purchase_datetime':
+          aVal = a.purchase_datetime || ''
+          bVal = b.purchase_datetime || ''
+          break
+        case 'net_amount':
+          aVal = Number(a.net_amount) || 0
+          bVal = Number(b.net_amount) || 0
+          break
+        case 'gross_amount':
+          aVal = Number(a.gross_amount) || 0
+          bVal = Number(b.gross_amount) || 0
+          break
+        case 'firstcard_matched':
+          aVal = a.firstcard_matched_line_id ? 1 : 0
+          bVal = b.firstcard_matched_line_id ? 1 : 0
+          break
+        case 'expense_type':
+          aVal = (a.expense_type || '').toLowerCase()
+          bVal = (b.expense_type || '').toLowerCase()
+          break
+        case 'credit_card_last_4':
+          aVal = a.credit_card_last_4 || ''
+          bVal = b.credit_card_last_4 || ''
+          break
+        case 'credit_card_type':
+          aVal = (a.credit_card_type || '').toLowerCase()
+          bVal = (b.credit_card_type || '').toLowerCase()
+          break
+        case 'payment_type':
+          aVal = (a.payment_type || '').toLowerCase()
+          bVal = (b.payment_type || '').toLowerCase()
+          break
+        default:
+          return 0
+      }
+
+      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1
+      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1
+      return 0
+    })
+
+    return sorted
+  }, [items, sortColumn, sortDirection])
+
   const displayedItems = React.useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
     if (!term) {
-      return items
+      return sortedItems
     }
     const numericValue = Number(term.replace(',', '.'))
     const hasNumeric = !Number.isNaN(numericValue)
-    return items.filter((item) => {
+    return sortedItems.filter((item) => {
       const merchantMatch = item.merchant?.toLowerCase().includes(term)
       const fileMatch = item.original_filename?.toLowerCase().includes(term)
       const idMatch = String(item.id || '').toLowerCase().includes(term)
@@ -698,7 +834,7 @@ export default function ReceiptsList() {
         : false
       return merchantMatch || fileMatch || idMatch || amountMatch
     })
-  }, [items, searchTerm])
+  }, [sortedItems, searchTerm])
 
   const totalPages = React.useMemo(() => {
     const perPage = meta.page_size || pageSize || 1
@@ -799,6 +935,261 @@ export default function ReceiptsList() {
 
   const dismissBanner = () => setBanner(null)
 
+  const renderLogModal = () => {
+    if (!logState.open) {
+      return null
+    }
+
+    const logData = logState.data ?? {}
+    const workflowRuns = Array.isArray(logData?.workflow_runs) ? logData.workflow_runs : []
+    const aiHistory = Array.isArray(logData?.ai_history) ? logData.ai_history : []
+    const files = Array.isArray(logData?.files) ? logData.files : []
+    const receiptIdForModal = logData?.receipt_id || logState.receiptId
+
+    const handleBackdrop = (event) => {
+      if (event.target === event.currentTarget) {
+        closeLogViewer()
+      }
+    }
+
+    return (
+      <div className="modal-backdrop" role="dialog" aria-label="Bearbetningslogg" onClick={handleBackdrop}>
+        <div
+          className="modal"
+          onClick={(event) => event.stopPropagation()}
+          style={{ maxWidth: '960px' }}
+        >
+          <div className="modal-header">
+            <div>
+              <h3>Bearbetningslogg</h3>
+              <p className="text-xs text-gray-400 mt-1">
+                Kvitto: {receiptIdForModal || 'okänt'}
+              </p>
+            </div>
+            <button type="button" className="icon-button" onClick={closeLogViewer} aria-label="Stäng logg">
+              <FiX />
+            </button>
+          </div>
+
+          <div className="modal-body space-y-6 max-h-[70vh] overflow-y-auto">
+            {logState.loading ? (
+              <div className="flex items-center justify-center gap-3 py-10 text-gray-200">
+                <div className="loading-spinner" />
+                <span>Hämtar logg...</span>
+              </div>
+            ) : logState.error ? (
+              <div className="alert alert-error">
+                <FiAlertCircle className="mr-2" />
+                <span>{`Misslyckades att hämta logg: ${logState.error}`}</span>
+              </div>
+            ) : (
+              <>
+                <section>
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-semibold text-gray-200 uppercase tracking-wide">
+                      Workflowkörningar
+                    </h4>
+                    <span className="text-xs text-gray-500">
+                      {workflowRuns.length ? `${workflowRuns.length} st` : 'Inga loggar'}
+                    </span>
+                  </div>
+                  {workflowRuns.length === 0 ? (
+                    <p className="text-xs text-gray-400 mt-2">Inga workflow-loggar hittades för detta kvitto.</p>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      {workflowRuns.map((run) => (
+                        <div key={run.id} className="bg-gray-900 border border-gray-700 rounded-lg p-4 space-y-3">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <div className="text-sm font-semibold text-gray-100">
+                                {run.workflow_key} · {run.status}
+                              </div>
+                              <div className="text-xs text-gray-400">
+                                Run-ID: {run.id} · Källa: {run.source_channel || 'okänd'}
+                              </div>
+                            </div>
+                            <div className="text-xs text-gray-400 text-right">
+                              <div>Start: {formatDate(run.created_at, true)}</div>
+                              <div>Senast: {formatDate(run.updated_at, true)}</div>
+                            </div>
+                          </div>
+                          {Array.isArray(run.stages) && run.stages.length > 0 ? (
+                            <div className="space-y-2">
+                              {run.stages.map((stage, index) => (
+                                <div
+                                  key={`${run.id}-${stage.stage_key}-${stage.started_at || stage.finished_at || index}`}
+                                  className="bg-gray-800/70 border border-gray-700/70 rounded-md px-3 py-2 space-y-1"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between text-sm font-medium text-gray-100">
+                                    <span>{stage.stage_key}</span>
+                                    <span>{stage.status}</span>
+                                  </div>
+                                  <div className="flex flex-wrap items-center justify-between text-xs text-gray-400">
+                                    <span>
+                                      {formatDate(stage.started_at, true)}{stage.finished_at ? ` → ${formatDate(stage.finished_at, true)}` : ''}
+                                    </span>
+                                    {stage.duration_ms != null && (
+                                      <span>{formatDurationMs(stage.duration_ms)}</span>
+                                    )}
+                                  </div>
+                                  {stage.message && (
+                                    <pre className="mt-2 text-xs text-gray-300 whitespace-pre-wrap font-mono">
+                                      {stage.message}
+                                    </pre>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-500">Inga steg registrerade.</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section>
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-semibold text-gray-200 uppercase tracking-wide">
+                      AI-historik
+                    </h4>
+                    <span className="text-xs text-gray-500">
+                      {aiHistory.length ? `${aiHistory.length} poster` : 'Inga AI-loggar'}
+                    </span>
+                  </div>
+                  {aiHistory.length === 0 ? (
+                    <p className="text-xs text-gray-400 mt-2">
+                      Ingen AI-historik registrerad för detta kvitto.
+                    </p>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      {aiHistory.map((entry) => (
+                        <div key={entry.id} className="bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <div className="text-sm font-semibold text-gray-100">
+                                {(entry.ai_stage_name || entry.job_type || 'Okänt steg')} · {entry.status}
+                              </div>
+                              <div className="text-xs text-gray-400">
+                                Fil: {entry.file_id} · {formatDate(entry.created_at, true)}
+                              </div>
+                            </div>
+                            <div className="text-xs text-gray-400 text-right space-y-1">
+                              {(entry.provider || entry.model) && (
+                                <div>
+                                  {entry.provider || 'okänd'}{entry.model ? ` · ${entry.model}` : ''}
+                                </div>
+                              )}
+                              {entry.processing_time_ms != null && (
+                                <div>Tid: {formatDurationMs(entry.processing_time_ms)}</div>
+                              )}
+                              {entry.confidence != null && (
+                                <div>Konfidens: {Math.round(entry.confidence * 100)}%</div>
+                              )}
+                            </div>
+                          </div>
+                          {entry.log_text && (
+                            <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono bg-gray-800/70 border border-gray-700/70 rounded-md p-2">
+                              {entry.log_text}
+                            </pre>
+                          )}
+                          {entry.error_message && (
+                            <div className="text-xs text-red-300 bg-red-900/30 border border-red-800/40 rounded-md p-2 whitespace-pre-wrap font-mono">
+                              {entry.error_message}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section>
+                  <h4 className="text-sm font-semibold text-gray-200 uppercase tracking-wide">
+                    Filer
+                  </h4>
+                  {files.length === 0 ? (
+                    <p className="text-xs text-gray-400 mt-2">
+                      Inga relaterade filer hittades i unified_files.
+                    </p>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      {files.map((file) => (
+                        <div key={file.id} className="bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-gray-100">
+                            <span className="font-semibold">{file.id}</span>
+                            <span className="text-xs text-gray-400">
+                              Skapad: {formatDate(file.created_at, true)}
+                              {file.updated_at ? ` · Uppdaterad: ${formatDate(file.updated_at, true)}` : ''}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-300">
+                            <div>Filtyp: {file.file_type || '–'}</div>
+                            <div>Workflow-typ: {file.workflow_type || '–'}</div>
+                            <div>Status: {file.ai_status || '–'}</div>
+                            <div>
+                              Konfidens: {file.ai_confidence != null ? `${Math.round(file.ai_confidence * 100)}%` : '–'}
+                            </div>
+                            <div>OCR-tecken: {file.ocr_raw_length ?? 0}</div>
+                          </div>
+                          {file.ocr_raw_length > 0 && (
+                            <details className="bg-gray-800/60 border border-gray-700/60 rounded-md p-2">
+                              <summary className="text-xs text-gray-300 cursor-pointer">
+                                Visa OCR-text ({file.ocr_raw_length} tecken)
+                              </summary>
+                              <pre className="mt-2 text-xs text-gray-200 whitespace-pre-wrap font-mono max-h-48 overflow-y-auto">
+                                {file.ocr_raw}
+                              </pre>
+                            </details>
+                          )}
+                          {file.other_data && Object.keys(file.other_data).length > 0 && (
+                            <details className="bg-gray-800/50 border border-gray-700/60 rounded-md p-2">
+                              <summary className="text-xs text-gray-300 cursor-pointer">
+                                Visa other_data
+                              </summary>
+                              <pre className="mt-2 text-xs text-gray-200 whitespace-pre-wrap font-mono overflow-x-auto">
+                                {JSON.stringify(file.other_data, null, 2)}
+                              </pre>
+                            </details>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              </>
+            )}
+          </div>
+
+          <div className="modal-footer">
+            <button type="button" className="btn btn-text" onClick={closeLogViewer}>
+              Stäng
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => logState.receiptId && fetchReceiptLog(logState.receiptId)}
+              disabled={logState.loading || !logState.receiptId}
+            >
+              {logState.loading ? (
+                <>
+                  <div className="loading-spinner mr-2" />
+                  Hämtar...
+                </>
+              ) : (
+                <>
+                  <FiRefreshCw className="mr-2" />
+                  Ladda om
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6">
       <div className="card hero-card">
@@ -852,16 +1243,34 @@ export default function ReceiptsList() {
           <table className="table-dark">
             <thead>
               <tr>
-                <th>Preview</th>
-                <th>Företag</th>
-                <th>Köpdatum</th>
-                <th className="text-right">Belopp ex moms</th>
-                <th className="text-right">Belopp ink moms</th>
-                <th className="text-center">Match First Card</th>
-                <th>Utgiftstyp</th>
-                <th>Kort sista 4</th>
-                <th>Korttyp</th>
-                <th>Betalningssätt</th>
+                <th>Förhandsvisning</th>
+                <th className="cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('company')}>
+                  Företag {sortColumn === 'company' && (sortDirection === 'asc' ? '▲' : '▼')}
+                </th>
+                <th className="cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('purchase_datetime')}>
+                  Inköpsdatum {sortColumn === 'purchase_datetime' && (sortDirection === 'asc' ? '▲' : '▼')}
+                </th>
+                <th className="text-right cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('net_amount')}>
+                  Belopp ex moms {sortColumn === 'net_amount' && (sortDirection === 'asc' ? '▲' : '▼')}
+                </th>
+                <th className="text-right cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('gross_amount')}>
+                  Belopp ink moms {sortColumn === 'gross_amount' && (sortDirection === 'asc' ? '▲' : '▼')}
+                </th>
+                <th className="text-center cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('firstcard_matched')}>
+                  Matchning {sortColumn === 'firstcard_matched' && (sortDirection === 'asc' ? '▲' : '▼')}
+                </th>
+                <th className="cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('expense_type')}>
+                  Utgiftstyp {sortColumn === 'expense_type' && (sortDirection === 'asc' ? '▲' : '▼')}
+                </th>
+                <th className="cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('credit_card_last_4')}>
+                  Kort sista 4 {sortColumn === 'credit_card_last_4' && (sortDirection === 'asc' ? '▲' : '▼')}
+                </th>
+                <th className="cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('credit_card_type')}>
+                  Korttyp {sortColumn === 'credit_card_type' && (sortDirection === 'asc' ? '▲' : '▼')}
+                </th>
+                <th className="cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('payment_type')}>
+                  Betalningssätt {sortColumn === 'payment_type' && (sortDirection === 'asc' ? '▲' : '▼')}
+                </th>
                 <th className="text-center">Åtgärder</th>
               </tr>
             </thead>
@@ -916,9 +1325,9 @@ export default function ReceiptsList() {
                       )}
                     </td>
                     <td>{receipt.expense_type || '-'}</td>
-                    <td className="font-mono">{receipt.card_last_four || '-'}</td>
-                    <td>{receipt.card_type || '-'}</td>
-                    <td>{receipt.payment_method || '-'}</td>
+                    <td className="font-mono">{receipt.credit_card_last_4 || '-'}</td>
+                    <td>{receipt.credit_card_type || '-'}</td>
+                    <td>{receipt.payment_type || '-'}</td>
                     <td className="text-center">
                       <div className="flex gap-2 justify-center">
                         <button
@@ -936,6 +1345,14 @@ export default function ReceiptsList() {
                           title="Visa varor"
                         >
                           <FiShoppingCart />
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => fetchReceiptLog(receipt.id)}
+                          title="Visa logg"
+                        >
+                          <FiFileText />
                         </button>
                         <button
                           type="button"
@@ -966,6 +1383,7 @@ export default function ReceiptsList() {
       />
       <MapModal open={isMapOpen} receipt={selectedReceipt} onClose={closeMap} />
       <ItemsModal open={isItemsOpen} receipt={selectedReceipt} onClose={closeItems} />
+      {renderLogModal()}
     </div>
   )
 }
