@@ -6,10 +6,15 @@
 
 | Fil | Rader | Problem | Prioritet |
 |-----|-------|---------|-----------|
+| `backend/src/api/reconciliation_firstcard.py` | 2,418 | **WORKFLOW STANNAR!** Spridd state management, 15 endpoints, ingen central coordinator | 🔥 AKUT |
 | `backend/src/services/tasks.py` | 3,950 | 59 funktioner, alla Celery tasks i en fil | 🔴 KRITISK |
-| `backend/src/api/reconciliation_firstcard.py` | 2,144 | Alla FirstCard endpoints, ingen separation | 🔴 KRITISK |
 | `main-system/app-frontend/src/ui/pages/Process.jsx` | 2,112 | 17 komponenter i en fil, monolitisk | 🔴 KRITISK |
 | `main-system/app-frontend/src/ui/pages/CompanyCard.jsx` | 2,080 | Komplex state, många sub-komponenter | 🔴 KRITISK |
+
+### ⚠️ VARFÖR FIRSTCARD ÄR HÖGST PRIORITET:
+- **Produktion-problem:** Workflow stannar, invoices fastnar, status rapporteras fel
+- **Rot-orsak:** Status-transitions spridda på 15 platser, ingen state machine
+- **Snabb lösning:** Skapa Workflow Coordinator = 80% av problemen försvinner
 
 ## 🟡 Viktiga Filer (Hög Prioritet)
 
@@ -22,7 +27,23 @@
 
 ## Snabb Åtgärdsplan
 
-### Vecka 1-2: `tasks.py`
+### 🔥 Vecka 1-2: `reconciliation_firstcard.py` (FÖRST!)
+```
+Skapa Workflow Coordinator:
+- workflow_coordinator.py med central state machine
+- Migrera alla transition_* anrop
+- Implementera locking för concurrent updates
+- Tester för state transitions
+
+Extrahera endpoints:
+- log.py (245 rader)
+- upload.py + import.py
+- status.py + detail.py
+- lines.py + matching.py
+- statements.py
+```
+
+### Vecka 3-4: `tasks.py`
 ```
 Dela upp i:
 - ocr_tasks.py
@@ -32,7 +53,7 @@ Dela upp i:
 - file_management_tasks.py
 ```
 
-### Vecka 3-4: `Process.jsx`
+### Vecka 5-6: `Process.jsx`
 ```
 Extrahera komponenter:
 - StatusBadge, FilterPanel, ExportModal
@@ -40,22 +61,23 @@ Extrahera komponenter:
 - Pagination, WorkflowBadges
 ```
 
-### Vecka 5-6: `reconciliation_firstcard.py`
-```
-Dela upp endpoints:
-- upload.py
-- status.py
-- lines.py
-- matching.py
-```
+## Nästa Steg
 
-## Förväntad Effekt
+1. ✅ Läs full rapport: `REFACTORING_ANALYSIS_LARGE_FILES.md`
+2. 🔥 **BÖRJA MED:** `reconciliation_firstcard.py` - Workflow Coordinator
+   - Detta löser de akuta produktionsproblemen med stuck workflows
+3. Skapa feature branch: `refactor/firstcard-workflow-coordinator`
+4. Implementera Workflow Coordinator först (lösning på state-problem)
+5. Sedan bryt ned endpoints i separata filer
+6. Comprehensive testing efter varje steg
 
-- **-81%** genomsnittlig filstorlek
-- **+85%** testbarhet
-- **+80%** läsbarhet
-- **-70%** merge conflicts
+## 🎯 Workflow-problemen som kommer lösas:
 
+✅ **Status transitions centraliserade** (inte spridda på 15 platser)  
+✅ **Inga race conditions** (locking i coordinator)  
+✅ **Konsistent state** (validation vid varje transition)  
+✅ **Tydlig workflow lifecycle** (lätt att debugga)  
+✅ **Färre stuck invoices** (robust state machine)
 ## Nästa Steg
 
 1. ✅ Läs full rapport: `REFACTORING_ANALYSIS_LARGE_FILES.md`

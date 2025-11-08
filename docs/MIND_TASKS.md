@@ -2,6 +2,32 @@
 
 ## BÖRJA HÄR
 
+# REFACTORING PART 1: Tasks.py
+
+Då ett större antal filer blivit alldeles för stora så behöver vi göra en omfattande refactoring för att få detta att amamma Single Responsibility Principle.
+
+En genomgång har gjorts och denna ska du nu läsa igenom - /docs/REFACTORING_ANALYSIS_LARGE_FILES.md
+
+Den största filen heter backend/src/services/tasks.py. Codex Cloud har tagit fram tre olika förslag på hur refactoring ska genomföras av den.
+
+#PR 
+
+Ditt uppdrag är att granska var och en av dessa 3 PR och efter analys ge en genomtänkt rekommendation på vilken av dessa tre - eller ingen alls - vi ska välja för merge.
+
+Jämför med befintlig kodbas, och jämför med planen /docs/REFACTORING_ANALYSIS_LARGE_FILES.md
+
+Redovisa därefter din slutsats med motivation. 
+
+
+
+Vi har ett antal filer som blivit alldeles för stora i systemet och nu behöver delas upp för att få en effektivare struktur. En genomgång är gjord, och vi ska nu fortsätta med filen `backend/src/api/reconciliation_firstcard.py`. Börja läsa @docs/REFACTORING_ANALYSIS_LARGE_FILES.md och genomför denna omstrukturering på filen med flest rader - backend/src/services/tasks.py. Gör refactory på `backend/src/api/reconciliation_firstcard.py`enligt dokumentet.
+
+
+
+
+
+
+
 Läs först /.prompts/start.prompt.md
 
 Läs därefter /docs/MIND_PROCESS_IMPORT_STATUS_DIAGRAM.md. Denna fil innehåller den exakta processen för import och återupptag av konvertering. Detta är din bibel och ditt facit - EXAKT DETTA ska du lösa.
