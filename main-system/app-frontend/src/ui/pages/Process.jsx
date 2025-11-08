@@ -124,6 +124,66 @@ function translateStatus(status) {
   if (!status) {
     return ''
   }
+
+  // Check if this is a workflow stage status (format: "stage_key status")
+  const statusStr = String(status)
+  const parts = statusStr.split(' ')
+  if (parts.length >= 2) {
+    const stageKey = parts[0]
+    const stageStatus = parts[1]
+
+    // Map stage status
+    const statusMap = {
+      running: 'pågående',
+      succeeded: 'klar',
+      failed: 'misslyckades',
+      queued: 'i kö',
+      skipped: 'hoppades över'
+    }
+
+    // Map stage keys to Swedish
+    const stageMap = {
+      src_portal: 'Portal',
+      src_portal_start: 'Portal start',
+      src_portal_end: 'Portal klar',
+      src_ftp: 'FTP',
+      src_ftp_start: 'FTP start',
+      src_ftp_end: 'FTP klar',
+      src_fc: 'FC-uppladdning',
+      src_fc_start: 'FC start',
+      src_fc_end: 'FC klar',
+      ingest_store: 'Lagrar fil',
+      ingest_store_start: 'Lagrar fil start',
+      ingest_store_end: 'Lagrar fil klar',
+      ingest_wf1: 'Startar kvittoflöde',
+      fc_create: 'Skapar FC-faktura',
+      fc_ocr: 'FC OCR',
+      fc_parse: 'FC-parsing',
+      fc_ready: 'FC redo för matchning',
+      detect_type: 'Dokumentklassning',
+      r_ocr: 'OCR',
+      r_ai3: 'Dataextraktion',
+      r_ai4: 'Normalisering',
+      r_persist: 'Sparar data',
+      r_queue_match: 'Köar matchning',
+      ai5: 'Kortmatchning',
+      m_link: 'Länka kvitto',
+      m_unmatched: 'Omatchad',
+      finalize_ok: 'Slutför',
+      finalize_fail: 'Slutför (fel)',
+      manual_review: 'Manuell granskning',
+      resume_dispatch: 'Återupptar',
+      restart_dispatch: 'Omstartar',
+      KLAR: 'KLAR'
+    }
+
+    const translatedStage = stageMap[stageKey] || stageKey
+    const translatedStatus = statusMap[stageStatus.toLowerCase()] || stageStatus
+
+    return `${translatedStage} - ${translatedStatus}`
+  }
+
+  // Fallback to legacy status mapping
   const normalized = String(status).toLowerCase()
   const map = {
     // Legacy statuses
@@ -148,9 +208,29 @@ function translateStatus(status) {
 }
 
 function StatusBadge({ status }) {
-  const normalized = String(status || '').toLowerCase()
+  const statusStr = String(status || '')
   const translated = translateStatus(status)
-  const badgeClass = statusClassMap[normalized] || 'status-pending'
+
+  // Extract status type from workflow stage status (e.g., "src_portal running" -> "running")
+  let badgeClass = 'status-pending'
+  const parts = statusStr.split(' ')
+  if (parts.length >= 2) {
+    const stageStatus = parts[1].toLowerCase()
+    if (stageStatus === 'succeeded') {
+      badgeClass = 'status-passed'
+    } else if (stageStatus === 'running') {
+      badgeClass = 'status-processing'
+    } else if (stageStatus === 'failed') {
+      badgeClass = 'status-failed'
+    } else if (stageStatus === 'queued') {
+      badgeClass = 'status-queued'
+    }
+  } else {
+    // Legacy status mapping
+    const normalized = statusStr.toLowerCase()
+    badgeClass = statusClassMap[normalized] || 'status-pending'
+  }
+
   return <span className={`status-badge ${badgeClass}`}>{translated || 'Okänd'}</span>
 }
 
@@ -2074,7 +2154,7 @@ export default function Receipts() {
                     <td className="text-right">{formatCurrency(receipt.net_amount)}</td>
                     <td className="text-right text-lg font-semibold">{formatCurrency(receipt.gross_amount)}</td>
                     <td className="text-center">
-                      <StatusBadge status={receipt.status || receipt.ai_status} />
+                      <StatusBadge status={receipt.workflow_stage_status || receipt.status || receipt.ai_status} />
                     </td>
                     <td>
                       <div className="font-medium text-sm">

@@ -40,4 +40,4 @@ def log_event(
             continue
         payload[str(key)] = _serialize(value)
     log_method = getattr(logger, level.lower(), logger.info)
-    log_method(json.dumps(payload, ensure_ascii=True))
+    log_method(json.dumps(payload, ensure_ascii=False))

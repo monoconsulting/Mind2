@@ -15,7 +15,15 @@ import hashlib
 from flask import Blueprint, jsonify, request
 from werkzeug.utils import secure_filename
 
-from services.tasks import dispatch_workflow, auto_match_invoice_lines, refresh_invoice_match_state
+from services.tasks import (
+    auto_match_invoice_lines,
+    begin_import_stage,
+    complete_import_stage,
+    dispatch_workflow,
+    log_import_decision,
+    log_import_event,
+    refresh_invoice_match_state,
+)
 from services.file_detection import detect_file
 from services.pdf_conversion import pdf_to_png_pages
 from services.storage import FileStorage
@@ -41,6 +49,7 @@ from services.invoice_status import (
     InvoiceDocumentStatus,
     InvoiceLineMatchStatus,
     InvoiceProcessingStatus,
+    invoice_documents_supports_updated_at,
     transition_document_status,
     transition_line_status_and_link,
     transition_processing_status,
@@ -134,27 +143,32 @@ def _count_invoice_lines(invoice_id: str) -> tuple[int, int]:
     return (0, 0)
 
 
-def _load_invoice_document(invoice_id: str) -> Optional[tuple[str, dict[str, Any]]]:
+def _load_invoice_document(
+    invoice_id: str,
+    include_deleted: bool = False,
+) -> Optional[tuple[str, dict[str, Any], Optional[datetime]]]:
     """Load invoice document status and metadata.
     
     Returns:
-        (status, metadata) or None if not found
+        (status, metadata, deleted_at) or None if not found
     """
     if db_cursor is None:
         return None
     
     try:
         with db_cursor() as cur:
-            cur.execute(
-                "SELECT status, metadata_json FROM invoice_documents WHERE id=%s",
-                (invoice_id,),
-            )
+            query = "SELECT status, metadata_json, deleted_at FROM invoice_documents WHERE id=%s"
+            params: tuple[Any, ...] = (invoice_id,)
+            if not include_deleted:
+                query += " AND deleted_at IS NULL"
+            cur.execute(query, params)
             row = cur.fetchone()
             if not row:
                 return None
             
             status = row[0]
             metadata_raw = row[1]
+            deleted_at = row[2]
             metadata: dict[str, Any] = {}
             
             if metadata_raw:
@@ -165,7 +179,7 @@ def _load_invoice_document(invoice_id: str) -> Optional[tuple[str, dict[str, Any
                 except Exception:
                     metadata = {}
             
-            return (status, metadata)
+            return (status, metadata, deleted_at)
     except Exception:
         return None
 
@@ -230,17 +244,26 @@ def _create_invoice_document(
             )
             exists = cur.fetchone() is not None
             
-            metadata_json = json.dumps(metadata or {})
-            
+            payload = dict(metadata or {})
+            if not invoice_documents_supports_updated_at():
+                payload["last_progress_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+            metadata_json = json.dumps(payload)
+
             if exists:
                 # Update existing
-                cur.execute(
-                    """
-                    UPDATE invoice_documents
+                set_clause = """
                     SET invoice_type=%s,
                         status=%s,
                         processing_status=COALESCE(%s, processing_status),
-                        metadata_json=%s
+                        metadata_json=%s,
+                        deleted_at=NULL
+                """
+                if invoice_documents_supports_updated_at():
+                    set_clause += ", updated_at=NOW()"
+                cur.execute(
+                    f"""
+                    UPDATE invoice_documents
+                    {set_clause}
                     WHERE id=%s
                     """,
                     (
@@ -267,6 +290,7 @@ def _create_invoice_document(
                         metadata_json,
                     ),
                 )
+
         return True
     except Exception as e:
         logger.error(f"Failed to create/update invoice document: {e}")
@@ -279,10 +303,16 @@ def _write_invoice_metadata(invoice_id: str, metadata: dict[str, Any]) -> bool:
         return False
     
     try:
+        payload = dict(metadata or {})
+        if not invoice_documents_supports_updated_at():
+            payload["last_progress_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
         with db_cursor() as cur:
+            set_clause = "metadata_json=%s"
+            if invoice_documents_supports_updated_at():
+                set_clause += ", updated_at=NOW()"
             cur.execute(
-                "UPDATE invoice_documents SET metadata_json=%s WHERE id=%s",
-                (json.dumps(metadata or {}), invoice_id),
+                f"UPDATE invoice_documents SET {set_clause} WHERE id=%s",
+                (json.dumps(payload), invoice_id),
             )
         return True
     except Exception as e:
@@ -468,8 +498,11 @@ def _ensure_processing_state(invoice_id: str) -> None:
         return
     try:
         with db_cursor() as cur:
+            set_clause = "processing_status=%s"
+            if invoice_documents_supports_updated_at():
+                set_clause += ", updated_at=NOW()"
             cur.execute(
-                "UPDATE invoice_documents SET processing_status=%s WHERE id=%s AND processing_status IS NULL",
+                f"UPDATE invoice_documents SET {set_clause} WHERE id=%s AND processing_status IS NULL",
                 (InvoiceProcessingStatus.UPLOADED.value, invoice_id),
             )
     except Exception:
@@ -597,21 +630,52 @@ def upload_invoice() -> Any:
         content_hash=file_hash,
     )
 
+    if workflow_run_id:
+        begin_import_stage(
+            workflow_run_id,
+            "src_fc",
+            message=f"Fil {safe_name} ({len(data)} bytes)",
+        )
+
     if not workflow_run_id or not dispatch_workflow(workflow_run_id):
         logger.error(
             "Failed to dispatch WF3 workflow for invoice %s (run_id=%s)",
             invoice_id,
             workflow_run_id,
         )
+        if workflow_run_id:
+            complete_import_stage(
+                workflow_run_id,
+                "src_fc",
+                success=False,
+                message="Kunde inte starta WF3",
+            )
         return jsonify({"error": "workflow_dispatch_failed"}), 500
 
     metadata["workflow_run_id"] = workflow_run_id
+    begin_import_stage(
+        workflow_run_id,
+        "fc_create",
+        message="Skapar invoice_document-post",
+    )
     _create_invoice_document(
         invoice_id=invoice_id,
         invoice_type="credit_card_invoice",
         status=InvoiceDocumentStatus.IMPORTED.value,
         metadata=metadata,
         processing_status=metadata.get("processing_status"),
+    )
+    complete_import_stage(
+        workflow_run_id,
+        "fc_create",
+        success=True,
+        message="Invoice_document registrerat",
+    )
+    complete_import_stage(
+        workflow_run_id,
+        "src_fc",
+        success=True,
+        message="Fil uppladdad",
     )
 
     response = {
@@ -738,7 +802,7 @@ def invoice_status(invoice_id: str) -> Any:
     if not doc:
         return jsonify({"error": "not_found"}), 404
 
-    status, metadata = doc
+    status, metadata, _ = doc
     source_file_id = metadata.get("source_file_id") or invoice_id
     files = _list_invoice_files(source_file_id)
 
@@ -848,6 +912,7 @@ def invoice_detail(invoice_id: str) -> Any:
                        metadata_json
                   FROM invoice_documents
                  WHERE id = %s
+                   AND deleted_at IS NULL
                 """,
                 (invoice_id,),
             )
@@ -1095,21 +1160,10 @@ def invoice_log(invoice_id: str) -> Any:
             }
         ), 200
 
-    metadata: dict[str, Any] = {}
-    try:
-        with db_cursor() as cur:
-            cur.execute(
-                "SELECT metadata_json FROM invoice_documents WHERE id=%s",
-                (invoice_id,),
-            )
-            row = cur.fetchone()
-            if row and row[0]:
-                try:
-                    metadata = json.loads(row[0])
-                except Exception:
-                    metadata = {}
-    except Exception:
-        metadata = {}
+    doc = _load_invoice_document(invoice_id)
+    if not doc:
+        return jsonify({"error": "not_found"}), 404
+    _, metadata, _ = doc
 
     file_records: list[dict[str, Any]] = []
     related_file_ids: list[str] = []
@@ -1208,6 +1262,17 @@ def invoice_log(invoice_id: str) -> Any:
         created_at,
         updated_at,
     ) in run_rows:
+        # Fix encoding for Swedish characters if needed
+        if source_channel and isinstance(source_channel, str):
+            try:
+                # Check if contains non-ASCII (potential mojibake)
+                if any(ord(c) > 127 for c in source_channel):
+                    fixed = source_channel.encode('latin1', errors='ignore').decode('utf-8', errors='ignore')
+                    if fixed != source_channel and len(fixed) > 0:
+                        source_channel = fixed
+            except (UnicodeDecodeError, UnicodeEncodeError, AttributeError):
+                pass
+
         stages: list[dict[str, Any]] = []
         try:
             with db_cursor() as cur:
@@ -1238,6 +1303,21 @@ def invoice_log(invoice_id: str) -> Any:
             finished_at,
             message,
         ) in stage_rows:
+            # Fix encoding for Swedish characters if needed
+            # The problem: data was saved as UTF-8 but read as latin1, resulting in mojibake
+            # Solution: encode as latin1 (to get original bytes) then decode as utf-8
+            if message and isinstance(message, str):
+                try:
+                    # Check if message contains mojibake characters
+                    if any(ord(c) > 127 for c in message):
+                        # Try to fix: encode back to bytes using latin1, then decode as utf-8
+                        fixed = message.encode('latin1', errors='ignore').decode('utf-8', errors='ignore')
+                        if fixed != message and len(fixed) > 0:
+                            message = fixed
+                except (UnicodeDecodeError, UnicodeEncodeError, AttributeError):
+                    # If that fails, keep original
+                    pass
+
             duration_ms: int | None = None
             if started_at and finished_at:
                 try:
@@ -1354,6 +1434,9 @@ def invoice_lines(invoice_id: str) -> Any:
 
     if db_cursor is None:  # pragma: no cover
         return jsonify({"items": [], "total": 0, "matched": 0, "limit": limit, "offset": offset, "next_offset": None}), 200
+
+    if not _load_invoice_document(invoice_id):
+        return jsonify({"error": "not_found"}), 404
 
     total = 0
     matched = 0
@@ -1651,6 +1734,10 @@ def match_invoice_lines() -> Any:
     if not invoice_id:
         return jsonify({"error": "missing_document_id"}), 400
 
+    doc = _load_invoice_document(invoice_id)
+    if not doc:
+        return jsonify({"error": "not_found"}), 404
+
     log_event(
         logger,
         "matching.api.invoice.requested",
@@ -1890,9 +1977,16 @@ def list_statements() -> Any:
                 cur.execute(
                     """
                     SELECT id, uploaded_at, updated_at, status, processing_status,
-                           period_start, period_end, metadata_json
+                           period_start, period_end, metadata_json,
+                           (SELECT current_stage_key
+                            FROM workflow_runs
+                            WHERE entity_type = 'invoice_document'
+                              AND entity_id = invoice_documents.id
+                            ORDER BY created_at DESC
+                            LIMIT 1) as current_stage_key
                     FROM invoice_documents
                     WHERE invoice_type IN ('company_card', 'credit_card_invoice')
+                      AND deleted_at IS NULL
                     ORDER BY uploaded_at DESC LIMIT 100
                     """
                 )
@@ -1900,15 +1994,22 @@ def list_statements() -> Any:
                 cur.execute(
                     """
                     SELECT id, uploaded_at, NULL as updated_at, status, processing_status,
-                           period_start, period_end, metadata_json
+                           period_start, period_end, metadata_json,
+                           (SELECT current_stage_key
+                            FROM workflow_runs
+                            WHERE entity_type = 'invoice_document'
+                              AND entity_id = invoice_documents.id
+                            ORDER BY created_at DESC
+                            LIMIT 1) as current_stage_key
                     FROM invoice_documents
                     WHERE invoice_type IN ('company_card', 'credit_card_invoice')
+                      AND deleted_at IS NULL
                     ORDER BY uploaded_at DESC LIMIT 100
                     """
                 )
 
             for row in cur.fetchall() or []:
-                doc_id, uploaded_at, updated_at, status, processing_status, period_start, period_end, metadata_raw = row
+                doc_id, uploaded_at, updated_at, status, processing_status, period_start, period_end, metadata_raw, current_stage_key = row
 
                 # Parse metadata to get line counts
                 metadata: dict[str, Any] = {}
@@ -1950,13 +2051,21 @@ def list_statements() -> Any:
                     except Exception as e:
                         logger.warning(f"Failed to load creditcard_invoices_main data for {creditcard_main_id}: {e}")
 
+                metadata_updated_at = metadata.get("last_progress_at") if isinstance(metadata, dict) else None
+                updated_ts = str(updated_at) if updated_at else None
+                if not updated_ts and metadata_updated_at:
+                    updated_ts = str(metadata_updated_at)
+                if not updated_ts and uploaded_at:
+                    updated_ts = str(uploaded_at)
+
                 item = {
                     "id": doc_id,
                     "uploaded_at": str(uploaded_at) if uploaded_at else None,
                     "created_at": str(uploaded_at) if uploaded_at else None,
-                    "updated_at": str(updated_at) if updated_at else str(uploaded_at) if uploaded_at else None,
+                    "updated_at": updated_ts,
                     "status": status,
                     "processing_status": processing_status or metadata.get("processing_status"),
+                    "current_stage_key": current_stage_key,
                     "period_start": str(period_start) if period_start else metadata.get("period_start"),
                     "period_end": str(period_end) if period_end else metadata.get("period_end"),
                     "line_counts": {
@@ -1996,16 +2105,17 @@ def list_statements() -> Any:
 
 @recon_bp.delete("/reconciliation/firstcard/statements/<sid>")
 def delete_statement(sid: str) -> Any:
-    """Delete a FirstCard invoice statement and all derived artifacts."""
+    """Soft delete a FirstCard invoice statement and related files."""
     if db_cursor is None:
         return jsonify({"error": "db_unavailable"}), 503
 
     metadata: dict[str, Any] = {}
     related_file_ids: list[str] = [sid]
+    existing_deleted_at: Optional[datetime] = None
     try:
         with db_cursor() as cur:
             cur.execute(
-                "SELECT metadata_json FROM invoice_documents WHERE id=%s",
+                "SELECT metadata_json, deleted_at FROM invoice_documents WHERE id=%s",
                 (sid,),
             )
             row = cur.fetchone()
@@ -2016,6 +2126,7 @@ def delete_statement(sid: str) -> Any:
                     metadata = json.loads(row[0])
                 except Exception:
                     metadata = {}
+            existing_deleted_at = row[1]
 
             cur.execute(
                 "SELECT id FROM unified_files WHERE original_file_id=%s",
@@ -2027,67 +2138,39 @@ def delete_statement(sid: str) -> Any:
         logger.error("Failed to load statement metadata for %s: %s", sid, exc)
         return jsonify({"error": "delete_failed"}), 500
 
-    creditcard_main_id: Optional[int] = None
-    try:
-        main_val = metadata.get("creditcard_main_id")
-        if isinstance(main_val, (int, float)) and not isinstance(main_val, bool):
-            creditcard_main_id = int(main_val)
-        elif isinstance(main_val, str) and main_val.isdigit():
-            creditcard_main_id = int(main_val)
-    except Exception:
-        creditcard_main_id = None
+    deletion_iso = metadata.get("deleted_at")
+    if not deletion_iso:
+        deletion_iso = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        metadata["deleted_at"] = deletion_iso
 
     try:
         with db_cursor() as cur:
-            # Remove workflow run history (cascade clears stages)
-            cur.execute("DELETE FROM workflow_runs WHERE file_id=%s", (sid,))
-
-            # Remove AI processing logs tied to invoice or derived files
+            cur.execute(
+                """
+                UPDATE invoice_documents
+                   SET metadata_json=%s,
+                       deleted_at=COALESCE(deleted_at, NOW())
+                 WHERE id=%s
+                """,
+                (json.dumps(metadata), sid),
+            )
             if related_file_ids:
                 placeholders = ", ".join(["%s"] * len(related_file_ids))
                 cur.execute(
-                    f"DELETE FROM ai_processing_history WHERE file_id IN ({placeholders})",
+                    f"UPDATE unified_files SET deleted_at=COALESCE(deleted_at, NOW()) WHERE id IN ({placeholders})",
                     tuple(related_file_ids),
                 )
-
-            # Remove invoice line artifacts
-            cur.execute("DELETE FROM invoice_lines WHERE invoice_id=%s", (sid,))
-
-            if creditcard_main_id is not None:
-                cur.execute(
-                    """
-                    DELETE FROM creditcard_receipt_matches
-                    WHERE invoice_item_id IN (
-                        SELECT id FROM creditcard_invoice_items WHERE main_id=%s
-                    )
-                    """,
-                    (creditcard_main_id,),
-                )
-                cur.execute(
-                    "DELETE FROM creditcard_invoice_items WHERE main_id=%s",
-                    (creditcard_main_id,),
-                )
-                cur.execute(
-                    "DELETE FROM creditcard_invoices_main WHERE id=%s",
-                    (creditcard_main_id,),
-                )
-
-            # Remove unified file entries (original + derived)
-            cur.execute(
-                "DELETE FROM unified_files WHERE id=%s OR original_file_id=%s",
-                (sid, sid),
-            )
-
-            # Finally remove invoice document
-            cur.execute(
-                "DELETE FROM invoice_documents WHERE id=%s",
-                (sid,),
-            )
     except Exception as exc:
-        logger.error("Failed to delete FirstCard invoice %s: %s", sid, exc)
+        logger.error("Failed to soft delete FirstCard invoice %s: %s", sid, exc)
         return jsonify({"error": "delete_failed"}), 500
 
-    return jsonify({"ok": True}), 200
+    return jsonify(
+        {
+            "ok": True,
+            "deleted_at": deletion_iso,
+            "already_deleted": existing_deleted_at is not None,
+        }
+    ), 200
 
 
 @recon_bp.post("/reconciliation/firstcard/statements/<sid>/resume")
@@ -2095,6 +2178,9 @@ def resume_statement_workflow(sid: str) -> Any:
     """Resume a stalled invoice workflow."""
     if db_cursor is None:
         return jsonify({"error": "db_unavailable"}), 503
+
+    if not _load_invoice_document(sid):
+        return jsonify({"error": "not_found"}), 404
 
     # Get the latest workflow_run for this invoice
     try:
@@ -2118,12 +2204,23 @@ def resume_statement_workflow(sid: str) -> Any:
 
             # Update status to show it's processing again
             try:
+                set_clause = "status='matching', processing_status=%s"
+                if invoice_documents_supports_updated_at():
+                    set_clause += ", updated_at=NOW()"
                 cur.execute(
-                    "UPDATE invoice_documents SET status='matching', processing_status=%s WHERE id=%s",
-                    (current_stage or 'ocr_pending', sid),
+                    f"UPDATE invoice_documents SET {set_clause} WHERE id=%s",
+                    (InvoiceProcessingStatus.OCR_PENDING.value, sid),
                 )
             except Exception as e:
                 logger.warning(f"Failed to update status for resume {sid}: {e}")
+
+            # Log resume stage to workflow_stage_runs so frontend sees immediate change
+            log_import_event(
+                workflow_run_id,
+                "resume_dispatch",
+                status="running",
+                message=f"Återupptar matchning (tidigare status: {status})",
+            )
 
             # Dispatch the workflow to resume
             if dispatch_workflow(workflow_run_id):
@@ -2139,6 +2236,9 @@ def resume_statement_workflow(sid: str) -> Any:
                     "ok": True,
                     "workflow_run_id": workflow_run_id,
                     "action": "resumed",
+                    "processing_status": InvoiceProcessingStatus.OCR_PENDING.value,
+                    "status": "matching",
+                    "current_stage_key": "resume_dispatch",
                 }), 200
             else:
                 return jsonify({"error": "dispatch_failed"}), 500
@@ -2153,6 +2253,9 @@ def restart_statement_workflow(sid: str) -> Any:
     """Restart invoice processing from the beginning (WF3)."""
     if db_cursor is None:
         return jsonify({"error": "db_unavailable"}), 503
+
+    if not _load_invoice_document(sid):
+        return jsonify({"error": "not_found"}), 404
 
     # Get content_hash from unified_files
     try:
@@ -2183,6 +2286,14 @@ def restart_statement_workflow(sid: str) -> Any:
     if not workflow_run_id:
         return jsonify({"error": "workflow_creation_failed"}), 500
 
+    # Log restart stage to workflow_stage_runs so frontend sees immediate change
+    log_import_event(
+        workflow_run_id,
+        "restart_dispatch",
+        status="running",
+        message="Omstartar fakturaimport från början",
+    )
+
     # Dispatch the new workflow
     if dispatch_workflow(workflow_run_id):
         log_event(
@@ -2209,9 +2320,14 @@ def restart_statement_workflow(sid: str) -> Any:
 
                 metadata["workflow_run_id"] = workflow_run_id
                 metadata["processing_status"] = "ocr_pending"
+                if not invoice_documents_supports_updated_at():
+                    metadata["last_progress_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
+                set_clause = "metadata_json=%s, processing_status='ocr_pending', status='imported'"
+                if invoice_documents_supports_updated_at():
+                    set_clause += ", updated_at=NOW()"
                 cur.execute(
-                    "UPDATE invoice_documents SET metadata_json=%s, processing_status='ocr_pending', status='imported' WHERE id=%s",
+                    f"UPDATE invoice_documents SET {set_clause} WHERE id=%s",
                     (json.dumps(metadata), sid),
                 )
         except Exception as e:
@@ -2221,6 +2337,9 @@ def restart_statement_workflow(sid: str) -> Any:
             "ok": True,
             "workflow_run_id": workflow_run_id,
             "action": "restarted",
+            "processing_status": "ocr_pending",
+            "status": "imported",
+            "current_stage_key": "restart_dispatch",
         }), 200
     else:
         return jsonify({"error": "dispatch_failed"}), 500
@@ -2231,6 +2350,9 @@ def confirm_statement(sid: str) -> Any:
     """Mark a FirstCard invoice as completed once all lines are matched."""
     if db_cursor is None:
         return jsonify({"error": "db_unavailable"}), 503
+
+    if not _load_invoice_document(sid):
+        return jsonify({"error": "not_found"}), 404
 
     total_lines, matched_lines = refresh_invoice_match_state(sid)
     if total_lines and matched_lines < total_lines:
@@ -2264,6 +2386,8 @@ def confirm_statement(sid: str) -> Any:
 def list_statement_lines(sid: str) -> Any:
     items: list[dict[str, Any]] = []
     if db_cursor is not None:
+        if not _load_invoice_document(sid):
+            return jsonify({"error": "not_found"}), 404
         try:
             with db_cursor() as cur:
                 cur.execute(
@@ -2287,4 +2411,7 @@ def list_statement_lines(sid: str) -> Any:
                     )
         except Exception:
             items = []
+    else:  # pragma: no cover - DB unavailable fallback
+        return jsonify({"error": "db_unavailable"}), 503
+
     return jsonify({"items": items, "total": len(items)}), 200

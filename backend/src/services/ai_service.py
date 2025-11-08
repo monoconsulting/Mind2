@@ -817,9 +817,11 @@ class AIService:
 
         receipt_tokens = ["kvitto", "receipt", "summa", "moms", "butik", "kundens kvitto"]
         invoice_tokens = ["invoice", "faktura", "förfallodatum", "ocr", "betalning"]
+        fc_tokens = ["firstcard", "first card", "kortmatchning", "kontoutdrag", "firstcard company", "kortfaktura"]
 
         receipt_hits = sum(token in text for token in receipt_tokens)
         invoice_hits = sum(token in text for token in invoice_tokens)
+        fc_hits = sum(token in text for token in fc_tokens)
 
         llm_result = self._provider_generate(
             "document_analysis", {"ocr_text": request.ocr_text or ""}
@@ -829,7 +831,11 @@ class AIService:
             confidence = float(llm_result.get("confidence", confidence))
             reasoning_parts.append("LLM-assisted classification")
 
-        if receipt_hits and receipt_hits >= invoice_hits:
+        if fc_hits:
+            doc_type = "fc_invoice"
+            confidence = min(0.98, 0.5 + 0.1 * fc_hits)
+            reasoning_parts.append("FirstCard invoice keywords detected")
+        elif receipt_hits and receipt_hits >= invoice_hits:
             doc_type = "receipt"
             confidence = min(0.95, 0.4 + 0.1 * receipt_hits)
             reasoning_parts.append("Receipt keywords detected")

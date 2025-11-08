@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
 from services.storage import FileStorage
-from services.tasks import dispatch_workflow
+from services.tasks import (
+    begin_import_stage,
+    complete_import_stage,
+    dispatch_workflow,
+)
 from services.workflow_runs import create_workflow_run
 
 logger = logging.getLogger(__name__)
@@ -218,14 +222,54 @@ def _dispatch_receipt_workflow(file_id: str, content_hash: str, source_channel: 
         logger.error("Failed to create workflow run for FTP file %s", file_id)
         return
 
+    begin_import_stage(
+        workflow_run_id,
+        "src_ftp",
+        message=f"{source_channel} import för {file_id}",
+    )
+    complete_import_stage(
+        workflow_run_id,
+        "src_ftp",
+        success=True,
+        message="FTP-fil sparad lokalt",
+    )
+    begin_import_stage(
+        workflow_run_id,
+        "ingest_store",
+        message=f"Skrev unified_files {file_id}",
+    )
+    complete_import_stage(
+        workflow_run_id,
+        "ingest_store",
+        success=True,
+        message="Metadata från FTP registrerad",
+    )
+    begin_import_stage(
+        workflow_run_id,
+        "ingest_wf1",
+        message="Skapar WF1 workflow_run",
+    )
+
     if not dispatch_workflow(workflow_run_id):
         logger.error(
             "Dispatch of workflow_run %s failed for file %s",
             workflow_run_id,
             file_id,
         )
+        complete_import_stage(
+            workflow_run_id,
+            "ingest_wf1",
+            success=False,
+            message="WF1 kunde inte dispatchas",
+        )
         return
 
+    complete_import_stage(
+        workflow_run_id,
+        "ingest_wf1",
+        success=True,
+        message="WF1 dispatchad",
+    )
     set_ai_status(file_id, "processing")
     logger.info(
         "Dispatched WF1 workflow (run_id=%s) for FTP file %s",

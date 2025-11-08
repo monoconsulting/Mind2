@@ -21,12 +21,15 @@ import hashlib
 from services.storage import FileStorage
 from services.pdf_conversion import pdf_to_png_pages
 try:
-    from services.db.files import insert_unified_file, update_other_data, DuplicateFileError
+    from services.db.files import insert_unified_file, update_other_data, DuplicateFileError, set_ai_status
 except ImportError:
     # Stub for linting if the file is not yet created
     insert_unified_file = lambda **kwargs: None
     update_other_data = lambda **kwargs: None
     class DuplicateFileError(Exception): pass
+    def set_ai_status(file_id: str, status: str) -> bool:  # type: ignore
+        _ = (file_id, status)
+        return False
 from observability.events import log_event
 from observability.metrics import record_invoice_decision, track_task
 from services.ocr import run_ocr
@@ -38,6 +41,7 @@ from services.invoice_status import (
     InvoiceDocumentStatus,
     InvoiceProcessingStatus,
     InvoiceLineMatchStatus,
+    invoice_documents_supports_updated_at,
     transition_document_status,
     transition_processing_status,
     transition_line_status,
@@ -303,10 +307,16 @@ def _update_invoice_metadata(invoice_id: str, metadata: dict[str, Any]) -> bool:
     if db_cursor is None:
         return False
     try:
+        payload = dict(metadata or {})
+        if not invoice_documents_supports_updated_at():
+            payload["last_progress_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
         with db_cursor() as cur:
+            set_clause = "metadata_json=%s"
+            if invoice_documents_supports_updated_at():
+                set_clause += ", updated_at=NOW()"
             cur.execute(
-                "UPDATE invoice_documents SET metadata_json=%s WHERE id=%s",
-                (json.dumps(metadata or {}), invoice_id),
+                f"UPDATE invoice_documents SET {set_clause} WHERE id=%s",
+                (json.dumps(payload), invoice_id),
             )
         return True
     except Exception:
@@ -937,9 +947,24 @@ def _ensure_creditcard_pages_and_ocr(
     parent_info: dict[str, Any],
 ) -> Tuple[str, dict[str, Any]]:
     """Ensure credit card invoice pages exist and OCR text is available."""
+    import time
+
     other_data = dict(parent_info.get("other_data", {}) or {})
     existing_combined = other_data.get("combined_ocr_text")
     if existing_combined:
+        log_event(
+            logger,
+            "convert.creditcard.cached_result",
+            file_id=file_id,
+            characters=len(existing_combined),
+        )
+        _history(
+            file_id,
+            "pdf_convert",
+            "skipped",
+            ai_stage_name="PDF-Conversion",
+            log_text="OCR text already cached; skipping conversion.",
+        )
         return existing_combined, other_data
 
     storage_dir = os.getenv("STORAGE_DIR", "/data/storage")
@@ -976,6 +1001,15 @@ def _ensure_creditcard_pages_and_ocr(
         page["file_type"] = "cc_image"
         page_refs.append(page)
 
+    log_event(
+        logger,
+        "convert.creditcard.ensure_state",
+        file_id=file_id,
+        is_pdf_source=is_pdf_source,
+        existing_pages=len(page_refs),
+        has_combined_text=bool(existing_combined),
+    )
+
     # Convert PDF to pages if not already done
     if is_pdf_source and not page_refs:
         originals_root = (fs.base / "originals").resolve()
@@ -990,61 +1024,123 @@ def _ensure_creditcard_pages_and_ocr(
         if not original_path.exists():
             raise FileNotFoundError(f"Original file not found in storage for {file_id}")
 
+        log_event(
+            logger,
+            "convert.creditcard.conversion_start",
+            file_id=file_id,
+            original_filename=original_filename or original_path.name,
+            storage_path=str(original_path),
+        )
+
         data = original_path.read_bytes()
         converted_root = (fs.base / "converted" / file_id).resolve()
         converted_root.mkdir(parents=True, exist_ok=True)
 
-        pages = pdf_to_png_pages(data, converted_root, file_id, dpi=300)
-        if not pages:
-            raise RuntimeError("PDF conversion resulted in no pages.")
+        conversion_started = time.perf_counter()
+        try:
+            pages = pdf_to_png_pages(data, converted_root, file_id, dpi=300)
+            if not pages:
+                raise RuntimeError("PDF conversion resulted in no pages.")
 
-        safe_filename = original_filename or original_path.name
-        page_refs = []
-        for page in pages:
-            page_number = page.index + 1
-            page_id = str(uuid.uuid4())
-            page_hash = hashlib.sha256(page.bytes).hexdigest()
-            try:
-                insert_unified_file(
-                    file_id=page_id,
+            safe_filename = original_filename or original_path.name
+            page_refs = []
+            for page in pages:
+                page_number = page.index + 1
+                page_id = str(uuid.uuid4())
+                page_hash = hashlib.sha256(page.bytes).hexdigest()
+                try:
+                    insert_unified_file(
+                        file_id=page_id,
+                        file_type="cc_image",
+                        workflow_type="creditcard_invoice",
+                        content_hash=page_hash,
+                        submitted_by="workflow",
+                        original_filename=f"{safe_filename}-page-{page_number:04d}.png",
+                        ai_status="uploaded",
+                        mime_type="image/png",
+                        file_suffix=".png",
+                        original_file_id=file_id,
+                        original_file_name=safe_filename,
+                        original_file_size=len(page.bytes),
+                        other_data={
+                            "detected_kind": "invoice_page",
+                            "page_number": page_number,
+                            "source_pdf": file_id,
+                        },
+                    )
+                except DuplicateFileError:
+                    log_event(
+                        logger,
+                        "convert.creditcard.page_duplicate",
+                        file_id=file_id,
+                        page_number=page_number,
+                    )
+                    # If a page already exists, reuse it by locating the ID
+                    with db_cursor() as cur:
+                        cur.execute(
+                            "SELECT id, other_data FROM unified_files WHERE original_file_id=%s AND other_data LIKE %s",
+                            (file_id, f'%\"page_number\": {page_number}%'),
+                        )
+                        row = cur.fetchone()
+                    if row:
+                        page_id = row[0]
+
+                stored_page_name = f"page-{page_number:04d}.png"
+                fs.adopt(page_id, stored_page_name, page.path)
+                _enforce_file_metadata(
+                    page_id,
                     file_type="cc_image",
                     workflow_type="creditcard_invoice",
-                    content_hash=page_hash,
-                    submitted_by="workflow",
-                    original_filename=f"{safe_filename}-page-{page_number:04d}.png",
-                    ai_status="uploaded",
-                    mime_type="image/png",
-                    file_suffix=".png",
-                    original_file_id=file_id,
-                    original_file_name=safe_filename,
-                    original_file_size=len(page.bytes),
-                    other_data={
-                        "detected_kind": "invoice_page",
-                        "page_number": page_number,
-                        "source_pdf": file_id,
-                    },
                 )
-            except DuplicateFileError:
-                # If a page already exists, reuse it by locating the ID
-                with db_cursor() as cur:
-                    cur.execute(
-                        "SELECT id, other_data FROM unified_files WHERE original_file_id=%s AND other_data LIKE %s",
-                        (file_id, f'%\"page_number\": {page_number}%'),
-                    )
-                    row = cur.fetchone()
-                if row:
-                    page_id = row[0]
+                page_refs.append(
+                    {"file_id": page_id, "page_number": page_number, "file_type": "cc_image"}
+                )
+        except Exception as exc:
+            duration_ms = int((time.perf_counter() - conversion_started) * 1000)
+            error_msg = f"{type(exc).__name__}: {exc}"
+            log_event(
+                logger,
+                "convert.creditcard.conversion_failed",
+                file_id=file_id,
+                error=error_msg,
+                duration_ms=duration_ms,
+            )
+            _history(
+                file_id,
+                "pdf_convert",
+                "error",
+                ai_stage_name="PDF-Conversion",
+                log_text="Failed to convert credit card PDF to page images.",
+                error_message=error_msg,
+                processing_time_ms=duration_ms,
+                provider="pymupdf",
+                model_name="fitz-dpi-300",
+            )
+            raise
 
-            stored_page_name = f"page-{page_number:04d}.png"
-            fs.adopt(page_id, stored_page_name, page.path)
-            _enforce_file_metadata(
-                page_id,
-                file_type="cc_image",
-                workflow_type="creditcard_invoice",
-            )
-            page_refs.append(
-                {"file_id": page_id, "page_number": page_number, "file_type": "cc_image"}
-            )
+        duration_ms = int((time.perf_counter() - conversion_started) * 1000)
+        converted_page_ids = [page.get("file_id") for page in page_refs if page.get("file_id")]
+        log_event(
+            logger,
+            "convert.creditcard.conversion_succeeded",
+            file_id=file_id,
+            page_count=len(page_refs),
+            duration_ms=duration_ms,
+            page_ids=converted_page_ids,
+        )
+        _history(
+            file_id,
+            "pdf_convert",
+            "success",
+            ai_stage_name="PDF-Conversion",
+            log_text=(
+                f"Converted credit card PDF to {len(page_refs)} page image(s): "
+                f"page_ids={converted_page_ids}"
+            ),
+            processing_time_ms=duration_ms,
+            provider="pymupdf",
+            model_name="fitz-dpi-300",
+        )
 
         logger.info(
             "WF3 creditcard invoice %s generated %d page image(s): %s",
@@ -1058,11 +1154,37 @@ def _ensure_creditcard_pages_and_ocr(
             file_id,
             expected_parent_type,
         )
+        log_event(
+            logger,
+            "convert.creditcard.single_image_source",
+            file_id=file_id,
+            file_type=expected_parent_type,
+        )
+        _history(
+            file_id,
+            "pdf_convert",
+            "skipped",
+            ai_stage_name="PDF-Conversion",
+            log_text=f"Skipped PDF conversion for {file_id}: source is non-PDF ({expected_parent_type}).",
+        )
     else:
         logger.info(
             "WF3 creditcard invoice %s reusing %d existing page image(s).",
             file_id,
             len(page_refs),
+        )
+        log_event(
+            logger,
+            "convert.creditcard.pages_reused",
+            file_id=file_id,
+            page_count=len(page_refs),
+        )
+        _history(
+            file_id,
+            "pdf_convert",
+            "skipped",
+            ai_stage_name="PDF-Conversion",
+            log_text=f"Reused {len(page_refs)} existing page image(s) for credit card PDF conversion.",
         )
     other_data["pages"] = page_refs
     update_other_data(file_id, other_data)
@@ -1080,19 +1202,62 @@ def _ensure_creditcard_pages_and_ocr(
                 texts.append(text)
                 _update_file_fields(page_id, ocr_raw=text)
                 _update_file_status(page_id, "ocr_done")
+                log_event(
+                    logger,
+                    "convert.creditcard.page_ocr_completed",
+                    file_id=file_id,
+                    page_id=page_id,
+                    page_number=page.get("page_number"),
+                    characters=len(text),
+                )
+            else:
+                log_event(
+                    logger,
+                    "convert.creditcard.page_ocr_empty",
+                    file_id=file_id,
+                    page_id=page_id,
+                    page_number=page.get("page_number"),
+                )
     else:
         result = run_ocr(file_id, storage_dir)
         text = (result or {}).get("text") or ""
         if text:
             texts.append(text)
             _update_file_fields(file_id, ocr_raw=text)
+            log_event(
+                logger,
+                "convert.creditcard.single_ocr_completed",
+                file_id=file_id,
+                characters=len(text),
+            )
+        else:
+            log_event(
+                logger,
+                "convert.creditcard.single_ocr_empty",
+                file_id=file_id,
+            )
 
     combined_text = "\n\n--- PAGE BREAK ---\n\n".join(texts).strip()
     if not combined_text:
         logger.warning("Credit card invoice %s produced no OCR text.", file_id)
+        log_event(
+            logger,
+            "convert.creditcard.ocr_empty",
+            file_id=file_id,
+            page_count=len(page_refs) or 1,
+        )
     other_data["combined_ocr_text"] = combined_text
     update_other_data(file_id, other_data)
     _update_file_status(file_id, "ocr_done")
+
+    if combined_text:
+        log_event(
+            logger,
+            "convert.creditcard.ocr_completed",
+            file_id=file_id,
+            page_count=len(page_refs) or 1,
+            characters=len(combined_text),
+        )
 
     return combined_text, other_data
 
@@ -1804,6 +1969,21 @@ def refresh_invoice_match_state(document_id: str) -> tuple[int, int]:
     except Exception:
         pass
 
+
+class UnsupportedDocumentTypeError(RuntimeError):
+    """Raised when AI1 can not categorize a document into an allowed type."""
+
+
+def _move_to_manual_review(file_id: str, reason: str | None = None) -> None:
+    """Best-effort helper that marks a file as requiring manual review."""
+
+    try:
+        set_ai_status(file_id, "manual_review")
+    except Exception:
+        logger.debug("Failed to set manual review status for %s", file_id)
+    if reason:
+        log_event(logger, "ai.manual_review", file_id=file_id, reason=reason)
+
     log_event(
         logger,
         "matching.invoice_state.refreshed",
@@ -2243,6 +2423,140 @@ def mark_stage(
         return False
 
 
+_IMPORT_STAGE_WITH_BOUNDARIES = {
+    "src_portal",
+    "src_ftp",
+    "src_fc",
+    "ingest_store",
+    "ingest_wf1",
+    "fc_create",
+    "fc_ocr",
+    "fc_parse",
+    "fc_ready",
+    "detect_type",
+    "r_ocr",
+    "r_ai3",
+    "r_ai4",
+    "r_persist",
+    "r_queue_match",
+    "ai5",
+    "m_link",
+    "m_unmatched",
+    "finalize_ok",
+    "finalize_fail",
+}
+
+
+def _log_import_stage(
+    workflow_run_id: Optional[int],
+    stage_key: str,
+    status: str,
+    *,
+    message: str | None = None,
+    start: bool = False,
+    end: bool = False,
+) -> None:
+    if workflow_run_id is None:
+        return
+    try:
+        mark_stage(
+            workflow_run_id,
+            stage_key,
+            status,
+            message=message,
+            start=start,
+            end=end,
+            update_workflow_status=False,
+        )
+    except Exception:
+        logger.debug("Failed to log import stage %s for workflow %s", stage_key, workflow_run_id)
+
+
+def begin_import_stage(workflow_run_id: Optional[int], stage_base: str, *, message: str | None = None) -> None:
+    """Log the start of a high-level import stage (with optional boundary nodes)."""
+
+    if stage_base in _IMPORT_STAGE_WITH_BOUNDARIES:
+        _log_import_stage(
+            workflow_run_id,
+            f"{stage_base}_start",
+            "succeeded",
+            message=message,
+            start=True,
+            end=True,
+        )
+    _log_import_stage(workflow_run_id, stage_base, "running", message=message, start=True)
+
+    # Update ai_status to 'processing' when source stage begins (src_portal, src_ftp, src_fc)
+    if stage_base in ("src_portal", "src_ftp", "src_fc"):
+        wfr = get_workflow_run(workflow_run_id)
+        if wfr and wfr.get("file_id"):
+            from services.db.files import set_ai_status
+            set_ai_status(wfr["file_id"], "processing")
+            logger.info("Set ai_status='processing' for file_id=%s at stage=%s", wfr["file_id"], stage_base)
+
+
+def complete_import_stage(
+    workflow_run_id: Optional[int],
+    stage_base: str,
+    *,
+    success: bool = True,
+    message: str | None = None,
+) -> None:
+    """Log completion of an import stage and annotate boundary markers if applicable."""
+
+    status = "succeeded" if success else "failed"
+    _log_import_stage(workflow_run_id, stage_base, status, message=message, end=True)
+    if stage_base in _IMPORT_STAGE_WITH_BOUNDARIES:
+        _log_import_stage(
+            workflow_run_id,
+            f"{stage_base}_end",
+            status,
+            message=message,
+            start=True,
+            end=True,
+        )
+
+    # Update ai_status when finalize_ok completes successfully
+    if stage_base == "finalize_ok" and success:
+        wfr = get_workflow_run(workflow_run_id)
+        if wfr and wfr.get("file_id"):
+            from services.db.files import set_ai_status
+            set_ai_status(wfr["file_id"], "completed")
+            logger.info("Set ai_status='completed' for file_id=%s after finalize_ok", wfr["file_id"])
+
+
+def log_import_decision(
+    workflow_run_id: Optional[int],
+    stage_key: str,
+    *,
+    success: bool,
+    message: str | None = None,
+) -> None:
+    """Log decision nodes such as fc_is_fc or m_found."""
+
+    status = "succeeded" if success else "failed"
+    _log_import_stage(workflow_run_id, stage_key, status, message=message, start=True, end=True)
+
+
+def log_import_event(
+    workflow_run_id: Optional[int],
+    stage_key: str,
+    *,
+    status: str = "succeeded",
+    message: str | None = None,
+) -> None:
+    """Log instantaneous stages such as manual_review or KLAR."""
+
+    _log_import_stage(workflow_run_id, stage_key, status, message=message, start=True, end=True)
+
+
+def log_finalize_failure(workflow_run_id: Optional[int], reason: str) -> None:
+    """Convenience helper for finalize_fail stage logging."""
+
+    begin_import_stage(workflow_run_id, "finalize_fail", message=reason)
+    complete_import_stage(workflow_run_id, "finalize_fail", success=False, message=reason)
+
+
 def dispatch_workflow(workflow_run_id: int) -> bool:
     """Dispatch workflow based on workflow_key.
 
@@ -2372,6 +2686,7 @@ def wf1_run_ocr(workflow_run_id: int) -> int:
         mark_stage(workflow_run_id, "ocr", "failed", message="File ID missing in workflow run.")
         raise ValueError("File ID is missing.")
 
+    begin_import_stage(workflow_run_id, "r_ocr", message=f"OCR startar för fil {file_id}")
     mark_stage(workflow_run_id, "ocr", "running", start=True)
     start_time = time.time()
 
@@ -2391,9 +2706,11 @@ def wf1_run_ocr(workflow_run_id: int) -> int:
         text_len = len(result.get("text", ""))
         message = f"OCR succeeded, extracted {text_len} chars in {elapsed}ms."
         mark_stage(workflow_run_id, "ocr", "succeeded", message=message, end=True)
+        complete_import_stage(workflow_run_id, "r_ocr", success=True, message=message)
     else:
         message = f"OCR failed: {error_msg or 'OCR returned no results'}"
         mark_stage(workflow_run_id, "ocr", "failed", message=message, end=True)
+        complete_import_stage(workflow_run_id, "r_ocr", success=False, message=message)
         # Do not raise an exception, allow the workflow to be inspected.
         # A failed stage will already halt the workflow chain by default.
 
@@ -2428,7 +2745,7 @@ def wf1_run_ai_pipeline(workflow_run_id: int) -> int:
     start_time = time.time()
 
     try:
-        steps = _run_ai_pipeline(file_id)
+        steps = _run_ai_pipeline(file_id, workflow_run_id)
         elapsed = int((time.time() - start_time) * 1000)
         message = f"AI pipeline completed {len(steps)} stages in {elapsed}ms: {', '.join(steps)}"
         mark_stage(workflow_run_id, "ai_pipeline", "succeeded", message=message, end=True)
@@ -2489,6 +2806,26 @@ def wf1_finalize(workflow_run_id: int) -> int:
         workflow_status_override=final_status,
     )
 
+    if final_status == "succeeded":
+        begin_import_stage(
+            workflow_run_id,
+            "finalize_ok",
+            message="WF1 slutförd",
+        )
+        complete_import_stage(
+            workflow_run_id,
+            "finalize_ok",
+            success=True,
+            message="Kvittoflödet avslutat utan fel",
+        )
+        log_import_event(
+            workflow_run_id,
+            "KLAR",
+            message="WF1 slutförd",
+        )
+    else:
+        log_finalize_failure(workflow_run_id, message or "WF1 misslyckades")
+
     return workflow_run_id
 
 
@@ -2500,6 +2837,8 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
     - Creates a unified_file record for each page.
     - Triggers the parallel OCR tasks for each page.
     """
+    import time
+
     wfr = ensure_workflow(workflow_run_id, expected_prefix="WF2_")
     file_id = wfr.get("file_id")
     if not file_id:
@@ -2511,18 +2850,43 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
     parent_info = _load_unified_file_info(file_id) or {}
     mime_type = str(parent_info.get("mime_type") or "").lower()
     file_type = str(parent_info.get("file_type") or "").lower()
+    log_event(
+        logger,
+        "convert.wf2.prepare_start",
+        workflow_run_id=workflow_run_id,
+        file_id=file_id,
+        mime_type=mime_type,
+        file_type=file_type,
+    )
     if mime_type and mime_type != "application/pdf":
         message = f"Unsupported mime_type for WF2: {mime_type}"
+        log_event(
+            logger,
+            "convert.wf2.prepare_failed",
+            workflow_run_id=workflow_run_id,
+            file_id=file_id,
+            reason="unsupported_mime",
+            mime_type=mime_type,
+        )
         mark_stage(workflow_run_id, "prepare_pages", "failed", message=message, end=True)
         raise ValueError(message)
     if not mime_type and file_type not in {"pdf", "invoice"}:
         message = f"Unsupported file_type for WF2: {file_type or 'unknown'}"
+        log_event(
+            logger,
+            "convert.wf2.prepare_failed",
+            workflow_run_id=workflow_run_id,
+            file_id=file_id,
+            reason="unsupported_file_type",
+            file_type=file_type or "unknown",
+        )
         mark_stage(workflow_run_id, "prepare_pages", "failed", message=message, end=True)
         raise ValueError(message)
 
     storage_dir = os.getenv("STORAGE_DIR", "/data/storage")
     fs = FileStorage(storage_dir)
 
+    conversion_started: float | None = None
     try:
         originals_root = (fs.base / "originals").resolve()
         original_filename = str(
@@ -2539,6 +2903,15 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
         if not original_path.exists():
             raise FileNotFoundError(f"Original file not found in storage for {file_id}")
 
+        log_event(
+            logger,
+            "convert.wf2.read_original",
+            workflow_run_id=workflow_run_id,
+            file_id=file_id,
+            original_filename=original_filename or original_path.name,
+            storage_path=str(original_path),
+        )
+
         data = original_path.read_bytes()
         safe_filename = original_filename or original_path.name
 
@@ -2546,6 +2919,7 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
         converted_root.mkdir(parents=True, exist_ok=True)
 
         # Convert PDF to PNG pages
+        conversion_started = time.perf_counter()
         pages = pdf_to_png_pages(data, converted_root, file_id, dpi=300)
         if not pages:
             raise RuntimeError("PDF conversion resulted in no pages.")
@@ -2579,6 +2953,31 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
             fs.adopt(page_id, stored_page_name, page.path)
             page_refs.append({"file_id": page_id, "page_number": page_number})
 
+        duration_ms = int((time.perf_counter() - conversion_started) * 1000) if conversion_started else None
+        converted_page_ids = [page["file_id"] for page in page_refs]
+        log_event(
+            logger,
+            "convert.wf2.conversion_succeeded",
+            workflow_run_id=workflow_run_id,
+            file_id=file_id,
+            page_count=len(page_refs),
+            duration_ms=duration_ms,
+            page_ids=converted_page_ids,
+        )
+        _history(
+            file_id,
+            "pdf_convert",
+            "success",
+            ai_stage_name="PDF-Conversion",
+            log_text=(
+                f"WF2 converted PDF into {len(page_refs)} page(s): page_ids={converted_page_ids}; "
+                f"workflow_run_id={workflow_run_id}"
+            ),
+            processing_time_ms=duration_ms,
+            provider="pymupdf",
+            model_name="fitz-dpi-300",
+        )
+
         # Update the parent PDF unified_file with page info
         other_data = dict(parent_info.get("other_data", {}) or {})
         other_data.update({"page_count": len(page_refs), "pages": page_refs})
@@ -2591,6 +2990,13 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
             message=f"Split PDF into {len(page_refs)} pages.",
             end=True,
         )
+        log_event(
+            logger,
+            "convert.wf2.prepare_succeeded",
+            workflow_run_id=workflow_run_id,
+            file_id=file_id,
+            page_count=len(page_refs),
+        )
 
         # Now, trigger the parallel OCR
         if page_refs:
@@ -2599,8 +3005,35 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
             )
             callback = wf2_merge_ocr_results.s(workflow_run_id)
             chord(ocr_tasks)(callback)
+            log_event(
+                logger,
+                "convert.wf2.ocr_dispatched",
+                workflow_run_id=workflow_run_id,
+                file_id=file_id,
+                page_count=len(page_refs),
+            )
 
     except DuplicateFileError as dup_exc:
+        duration_ms = int((time.perf_counter() - conversion_started) * 1000) if conversion_started else None
+        log_event(
+            logger,
+            "convert.wf2.conversion_failed",
+            workflow_run_id=workflow_run_id,
+            file_id=file_id,
+            error=f"Duplicate page detected: {dup_exc}",
+            duration_ms=duration_ms,
+        )
+        _history(
+            file_id,
+            "pdf_convert",
+            "error",
+            ai_stage_name="PDF-Conversion",
+            log_text="Duplicate page detected during WF2 PDF conversion.",
+            error_message=str(dup_exc),
+            processing_time_ms=duration_ms,
+            provider="pymupdf",
+            model_name="fitz-dpi-300",
+        )
         mark_stage(
             workflow_run_id,
             "prepare_pages",
@@ -2610,6 +3043,26 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
         )
         raise
     except Exception as e:
+        duration_ms = int((time.perf_counter() - conversion_started) * 1000) if conversion_started else None
+        log_event(
+            logger,
+            "convert.wf2.conversion_failed",
+            workflow_run_id=workflow_run_id,
+            file_id=file_id,
+            error=str(e),
+            duration_ms=duration_ms,
+        )
+        _history(
+            file_id,
+            "pdf_convert",
+            "error",
+            ai_stage_name="PDF-Conversion",
+            log_text="WF2 PDF conversion failed.",
+            error_message=str(e),
+            processing_time_ms=duration_ms,
+            provider="pymupdf",
+            model_name="fitz-dpi-300",
+        )
         mark_stage(workflow_run_id, "prepare_pages", "failed", message=str(e), end=True)
         raise
 
@@ -2815,10 +3268,16 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             end=True,
             workflow_status_override="failed",
         )
+        log_finalize_failure(workflow_run_id, "Workflow run saknar file_id")
         raise ValueError("Workflow run missing file_id")
 
     metadata = _load_invoice_metadata(file_id) or {}
 
+    begin_import_stage(
+        workflow_run_id,
+        "fc_ocr",
+        message=f"Förbereder OCR för FirstCard {file_id}",
+    )
     try:
         transition_processing_status(
             file_id,
@@ -2953,7 +3412,51 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             end=True,
             workflow_status_override="failed",
         )
+        complete_import_stage(
+            workflow_run_id,
+            "fc_ocr",
+            success=False,
+            message=str(exc),
+        )
+        log_finalize_failure(workflow_run_id, f"OCR-misslyckande: {exc}")
         raise
+    else:
+        complete_import_stage(
+            workflow_run_id,
+            "fc_ocr",
+            success=True,
+            message=f"OCR klar ({ocr_length} tecken)",
+        )
+
+    if combined_text:
+        classification = classify_document_internal(
+            DocumentClassificationRequest(file_id=file_id, ocr_text=combined_text)
+        )
+        doc_type_norm = (classification.document_type or "").strip().lower()
+        is_fc_invoice = doc_type_norm == "fc_invoice"
+        log_import_decision(
+            workflow_run_id,
+            "fc_is_fc",
+            success=is_fc_invoice,
+            message=f"AI1 identifierade dokumenttyp: {classification.document_type}",
+        )
+        if not is_fc_invoice:
+            reason = (
+                f"AI1 klassificerade dokumentet som '{classification.document_type}' "
+                "men endast FC-fakturor tillåts i detta flöde."
+            )
+            log_import_event(workflow_run_id, "manual_review", message=reason)
+            _move_to_manual_review(file_id, reason)
+            log_finalize_failure(workflow_run_id, reason)
+            mark_stage(
+                workflow_run_id,
+                "firstcard_invoice",
+                "failed",
+                message=reason,
+                end=True,
+                workflow_status_override="failed",
+            )
+            raise UnsupportedDocumentTypeError(reason)
 
     try:
         transition_processing_status(
@@ -2962,6 +3465,9 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             (
                 InvoiceProcessingStatus.OCR_DONE,
                 InvoiceProcessingStatus.AI_PROCESSING,
+                InvoiceProcessingStatus.READY_FOR_MATCHING,
+                InvoiceProcessingStatus.MATCHING_COMPLETED,
+                InvoiceProcessingStatus.COMPLETED,
             ),
         )
     except Exception:
@@ -2982,7 +3488,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     start_time = time.time()
     ai6_provider = ai_service.prompt_provider_names.get("credit_card_invoice_parsing", "unknown")
     ai6_model = ai_service.prompt_model_names.get("credit_card_invoice_parsing", "unknown")
-
+    begin_import_stage(workflow_run_id, "fc_parse", message="AI6 tolkning av faktura")
     try:
         extraction = ai_service.parse_credit_card_invoice(request)
         elapsed = int((time.time() - start_time) * 1000)
@@ -3006,6 +3512,12 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             provider=ai6_provider,
             model_name=ai6_model,
         )
+        complete_import_stage(
+            workflow_run_id,
+            "fc_parse",
+            success=True,
+            message=f"Tolkade {len(extraction.lines)} rader",
+        )
         ai7_stats = run_box_enrichment(file_id)
         if not ai7_stats.get("success"):
             logger.warning(
@@ -3027,6 +3539,12 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             processing_time_ms=elapsed,
             provider=ai6_provider,
             model_name=ai6_model,
+        )
+        complete_import_stage(
+            workflow_run_id,
+            "fc_parse",
+            success=False,
+            message=error_msg,
         )
         transition_processing_status(
             file_id,
@@ -3053,6 +3571,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             end=True,
             workflow_status_override="failed",
         )
+        log_finalize_failure(workflow_run_id, f"AI6 misslyckades: {exc}")
         raise
 
     main_id = _persist_creditcard_invoice_main(file_id, extraction.header, combined_text)
@@ -3081,6 +3600,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             end=True,
             workflow_status_override="failed",
         )
+        log_finalize_failure(workflow_run_id, "Misslyckades att spara huvuddata")
         raise RuntimeError("Failed to persist credit card invoice header")
 
     items_inserted = _persist_creditcard_invoice_items(main_id, extraction.lines)
@@ -3137,12 +3657,20 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     metadata["processing_status"] = InvoiceProcessingStatus.READY_FOR_MATCHING.value
     _update_invoice_metadata(file_id, metadata)
 
+    begin_import_stage(
+        workflow_run_id,
+        "fc_ready",
+        message="Förbereder fakturan för matchning",
+    )
     transition_processing_status(
         file_id,
         InvoiceProcessingStatus.READY_FOR_MATCHING,
         (
             InvoiceProcessingStatus.AI_PROCESSING,
             InvoiceProcessingStatus.OCR_DONE,
+            InvoiceProcessingStatus.READY_FOR_MATCHING,
+            InvoiceProcessingStatus.MATCHING_COMPLETED,
+            InvoiceProcessingStatus.COMPLETED,
         ),
     )
     transition_document_status(
@@ -3151,7 +3679,16 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
         (
             InvoiceDocumentStatus.IMPORTED,
             InvoiceDocumentStatus.MATCHING,
+            InvoiceDocumentStatus.MATCHED,
+            InvoiceDocumentStatus.PARTIALLY_MATCHED,
+            InvoiceDocumentStatus.COMPLETED,
         ),
+    )
+    complete_import_stage(
+        workflow_run_id,
+        "fc_ready",
+        success=True,
+        message="Fakturan redo för AI5",
     )
 
     try:
@@ -3161,6 +3698,11 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             "running",
             start=True,
             update_workflow_status=False,
+        )
+        begin_import_stage(
+            workflow_run_id,
+            "ai5",
+            message="AI5 kortmatchning startar",
         )
         matched_auto, evaluated = auto_match_invoice_lines(file_id)
         total_lines, matched_lines = refresh_invoice_match_state(file_id)
@@ -3172,6 +3714,44 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             end=True,
             update_workflow_status=False,
         )
+        complete_import_stage(
+            workflow_run_id,
+            "ai5",
+            success=True,
+            message=f"AI5 matchade {matched_lines}/{total_lines} rader",
+        )
+        has_match = matched_lines > 0
+        log_import_decision(
+            workflow_run_id,
+            "m_found",
+            success=has_match,
+            message="Match hittad" if has_match else "Inga automatiska matchningar",
+        )
+        if has_match:
+            begin_import_stage(
+                workflow_run_id,
+                "m_link",
+                message="Länkar kvitton till fakturarader",
+            )
+            complete_import_stage(
+                workflow_run_id,
+                "m_link",
+                success=True,
+                message=f"{matched_lines} rader länkade",
+            )
+        unmatched_count = max(total_lines - matched_lines, 0)
+        if unmatched_count > 0:
+            begin_import_stage(
+                workflow_run_id,
+                "m_unmatched",
+                message="Flaggar omatchade rader",
+            )
+            complete_import_stage(
+                workflow_run_id,
+                "m_unmatched",
+                success=True,
+                message=f"{unmatched_count} rader kvar att hantera",
+            )
     except Exception as exc:
         mark_stage(
             workflow_run_id,
@@ -3180,6 +3760,12 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             message=f"Auto-match failed: {exc}",
             end=True,
             update_workflow_status=False,
+        )
+        complete_import_stage(
+            workflow_run_id,
+            "ai5",
+            success=False,
+            message=f"AI5 misslyckades: {exc}",
         )
 
     mark_stage(
@@ -3190,6 +3776,22 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
         end=True,
         workflow_status_override="succeeded",
     )
+    begin_import_stage(
+        workflow_run_id,
+        "finalize_ok",
+        message="FirstCard-flödet klart",
+    )
+    complete_import_stage(
+        workflow_run_id,
+        "finalize_ok",
+        success=True,
+        message="Fakturaflödet avslutades utan fel",
+    )
+    log_import_event(
+        workflow_run_id,
+        "KLAR",
+        message="WF3 slutförd",
+    )
     return workflow_run_id
 
 
@@ -3198,7 +3800,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
 ########################################
 
 
-def _run_ai_pipeline(file_id: str) -> List[str]:
+def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[str]:
     """Run the complete AI pipeline (AI1-AI4) with detailed logging."""
     import time
     from services.ai_service import AIService
@@ -3227,6 +3829,7 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
     start_time = time.time()
     ai1_provider = ai_service.prompt_provider_names.get("document_analysis", "unknown")
     ai1_model = ai_service.prompt_model_names.get("document_analysis", "unknown")
+    begin_import_stage(workflow_run_id, "detect_type", message=f"AI1 klassificering för fil {file_id}")
     try:
         result = classify_document_internal(
             DocumentClassificationRequest(file_id=file_id, ocr_text=ocr_text or "")
@@ -3267,6 +3870,23 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
                     )
             except Exception:
                 pass  # Best-effort update, don't fail the pipeline
+        doc_type_norm = (result.document_type or "").strip().lower()
+        allowed_doc_types = {"receipt", "invoice", "fc_invoice"}
+        if doc_type_norm not in allowed_doc_types:
+            reason = (
+                f"AI1 kunde inte kategorisera dokumentet (fick '{result.document_type}' "
+                "utanför tillåtna typer)."
+            )
+            complete_import_stage(workflow_run_id, "detect_type", success=False, message=reason)
+            log_import_event(workflow_run_id, "manual_review", message=reason)
+            _move_to_manual_review(file_id, reason)
+            raise UnsupportedDocumentTypeError(reason)
+        complete_import_stage(
+            workflow_run_id,
+            "detect_type",
+            success=True,
+            message=f"Klassificerad som {result.document_type}",
+        )
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
         error_msg = f"{type(exc).__name__}: {str(exc)}"
@@ -3280,6 +3900,12 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             processing_time_ms=elapsed,
             provider=ai1_provider,
             model_name=ai1_model,
+        )
+        complete_import_stage(
+            workflow_run_id,
+            "detect_type",
+            success=False,
+            message=error_msg,
         )
         raise
 
@@ -3350,6 +3976,7 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
     start_time = time.time()
     ai3_provider = ai_service.prompt_provider_names.get("data_extraction", "unknown")
     ai3_model = ai_service.prompt_model_names.get("data_extraction", "unknown")
+    begin_import_stage(workflow_run_id, "r_ai3", message="AI3 dataextraktion startar")
     try:
         result = extract_data_internal(
             DataExtractionRequest(
@@ -3448,6 +4075,24 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             provider=ai3_provider,
             model_name=ai3_model,
         )
+        complete_import_stage(
+            workflow_run_id,
+            "r_ai3",
+            success=True,
+            message=f"AI3 extraherade {item_count} artiklar",
+        )
+
+        begin_import_stage(
+            workflow_run_id,
+            "r_persist",
+            message=f"Sparar AI3-resultat för {item_count} artiklar",
+        )
+        complete_import_stage(
+            workflow_run_id,
+            "r_persist",
+            success=True,
+            message="AI3-data sparat i unified_files",
+        )
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
         error_msg = f"{type(exc).__name__}: {str(exc)}"
@@ -3462,10 +4107,17 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             provider=ai3_provider,
             model_name=ai3_model,
         )
+        complete_import_stage(
+            workflow_run_id,
+            "r_ai3",
+            success=False,
+            message=error_msg,
+        )
         raise
 
     # AI4 - Accounting Classification
     accounting_inputs = _load_accounting_inputs(file_id)
+    begin_import_stage(workflow_run_id, "r_ai4", message="AI4 normalisering startar")
     if accounting_inputs:
         gross, net, vat_amount, vendor_name = accounting_inputs
         receipt_items = _load_receipt_items(file_id)
@@ -3536,6 +4188,12 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
                 provider=ai4_provider,
                 model_name=ai4_model,
             )
+            complete_import_stage(
+                workflow_run_id,
+                "r_ai4",
+                success=True,
+                message=f"AI4 skapade {proposal_count} konteringsförslag",
+            )
         except Exception as exc:
             elapsed = int((time.time() - start_time) * 1000)
             error_msg = f"{type(exc).__name__}: {str(exc)}"
@@ -3550,6 +4208,12 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
                 provider=ai4_provider,
                 model_name=ai4_model,
             )
+            complete_import_stage(
+                workflow_run_id,
+                "r_ai4",
+                success=False,
+                message=error_msg,
+            )
             raise
     else:
         _history(
@@ -3559,6 +4223,20 @@ def _run_ai_pipeline(file_id: str) -> List[str]:
             ai_stage_name="AI4-AccountingClassification",
             log_text="Skipped: No accounting inputs available (missing gross_amount_sek, net_amount_sek, or company_id)",
         )
+        complete_import_stage(
+            workflow_run_id,
+            "r_ai4",
+            success=True,
+            message="AI4 hoppades över – saknar konteringsunderlag",
+        )
+
+    begin_import_stage(workflow_run_id, "r_queue_match", message="Köar kvitto för AI5-matchning")
+    complete_import_stage(
+        workflow_run_id,
+        "r_queue_match",
+        success=True,
+        message=f"Kvitto {file_id} markerat som redo för matchning",
+    )
 
     return steps
 

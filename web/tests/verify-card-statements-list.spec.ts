@@ -40,4 +40,37 @@ test.describe('Card Statements List', () => {
     // Check for a known column header
     await expect(page.getByRole('cell', { name: 'Kort' })).toBeVisible();
   });
+
+  test('should update Senast uppdaterad after Återuppta fakturaimport', async ({ page }) => {
+    await page.waitForSelector('table.min-w-full');
+
+    const rows = page.locator('table.min-w-full > tbody > tr');
+    const rowCount = await rows.count();
+    expect(rowCount).toBeGreaterThan(0);
+
+    const firstRow = rows.first();
+    const fakturaLine = await firstRow
+      .locator('div')
+      .filter({ hasText: /Fakturanummer:/ })
+      .first()
+      .innerText();
+    const invoiceRef = fakturaLine.split(':').pop()?.trim() ?? '';
+    expect(invoiceRef.length).toBeGreaterThan(0);
+
+    const findRowByInvoice = () =>
+      page.locator('table.min-w-full > tbody > tr').filter({ hasText: invoiceRef }).first();
+
+    const initialTimestamp = (await findRowByInvoice().locator('td').nth(9).innerText()).trim();
+
+    await findRowByInvoice().getByRole('button', { name: /Återuppta fakturaimport/i }).click();
+    await page.waitForTimeout(1500);
+
+    await page.getByRole('button', { name: 'Uppdatera' }).click();
+    await page.waitForLoadState('networkidle');
+    await expect(findRowByInvoice()).toBeVisible();
+
+    const refreshedTimestamp = (await findRowByInvoice().locator('td').nth(9).innerText()).trim();
+    expect(refreshedTimestamp).not.toBe('');
+    expect(refreshedTimestamp).not.toBe(initialTimestamp);
+  });
 });

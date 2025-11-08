@@ -948,7 +948,13 @@ def list_receipts() -> Any:
                     "u.net_amount_sek, u.gross_amount_sek, u.ai_status, u.file_type, u.workflow_type, "
                     "u.submitted_by, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, "
                     "u.expense_type, u.credit_card_last_4_digits, u.credit_card_type, u.payment_type, "
-                    "COALESCE(GROUP_CONCAT(t.tag), '') as tags "
+                    "COALESCE(GROUP_CONCAT(t.tag), '') as tags, "
+                    # Get latest workflow stage status
+                    "(SELECT CONCAT(wsr.stage_key, ' ', wsr.status) "
+                    " FROM workflow_runs wr "
+                    " JOIN workflow_stage_runs wsr ON wsr.workflow_run_id = wr.id "
+                    " WHERE wr.file_id = u.id "
+                    " ORDER BY wsr.started_at DESC LIMIT 1) as workflow_stage_status "
                     "FROM unified_files u "
                     "LEFT JOIN companies c ON c.id = u.company_id "
                     "LEFT JOIN file_tags t ON t.file_id=u.id "
@@ -981,6 +987,7 @@ def list_receipts() -> Any:
                     credit_card_type,
                     payment_type,
                     tag_csv,
+                    workflow_stage_status,
                 ) in results:
                     wf_type = (workflow_type or "").lower()
                     file_type_lower = (str(file_type or "")).lower()
@@ -1038,6 +1045,7 @@ def list_receipts() -> Any:
                             "gross_amount": gross_value,
                             "status": status,
                             "ai_status": status,  # Add ai_status field so frontend deps can detect changes
+                            "workflow_stage_status": workflow_stage_status,  # Current workflow stage
                             "file_type": file_type,
                             "workflow_type": workflow_type,
                             "submitted_by": submitted_by,
