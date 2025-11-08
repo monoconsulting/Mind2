@@ -223,7 +223,7 @@ class DocumentClassificationRequest(BaseModel):
 class DocumentClassificationResponse(BaseModel):
     """Response for AI1 - Document Type Classification."""
     file_id: str
-    document_type: Literal["receipt", "invoice", "other", "Manual Review"]
+    document_type: Literal["receipt", "invoice", "fc_invoice", "other", "Manual Review"]
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: Optional[str] = None
 
@@ -327,3 +327,4 @@ class BatchProcessingResponse(BaseModel):
     processed: int
     failed: int
     results: List[dict]
+

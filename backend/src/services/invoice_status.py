@@ -21,8 +21,9 @@ pipeline from accidental regressions or race conditions where two workers try
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from enum import Enum
-from typing import Iterable
+from typing import Iterable, Optional
 
 try:  # pragma: no cover - imported lazily during tests
     from services.db.connection import db_cursor
@@ -33,6 +34,56 @@ from observability.metrics import record_invoice_state_assertion
 
 
 logger = logging.getLogger(__name__)
+_HAS_INVOICE_UPDATED_AT: Optional[bool] = None
+
+
+def invoice_documents_supports_updated_at() -> bool:
+    """Detect whether invoice_documents.updated_at exists (cached)."""
+
+    global _HAS_INVOICE_UPDATED_AT
+    if _HAS_INVOICE_UPDATED_AT is not None:
+        return _HAS_INVOICE_UPDATED_AT
+    if db_cursor is None:
+        return False
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                  FROM information_schema.columns
+                 WHERE table_schema = DATABASE()
+                   AND table_name = 'invoice_documents'
+                   AND column_name = 'updated_at'
+                """
+            )
+            row = cur.fetchone()
+            _HAS_INVOICE_UPDATED_AT = bool(row and row[0])
+    except Exception:  # pragma: no cover - defensive schema detection
+        _HAS_INVOICE_UPDATED_AT = False
+    return _HAS_INVOICE_UPDATED_AT
+
+
+def _record_fallback_timestamp(document_id: str) -> None:
+    """Store last progress timestamp in metadata when updated_at is unavailable."""
+
+    if invoice_documents_supports_updated_at() or db_cursor is None:
+        return
+    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                UPDATE invoice_documents
+                SET metadata_json = CASE
+                    WHEN metadata_json IS NULL THEN JSON_OBJECT('last_progress_at', %s)
+                    ELSE JSON_SET(metadata_json, '$.last_progress_at', %s)
+                END
+                WHERE id=%s
+                """,
+                (now, now, document_id),
+            )
+    except Exception:  # pragma: no cover - best-effort fallback
+        logger.debug("Failed to persist fallback timestamp for invoice %s", document_id)
 
 
 class InvoiceProcessingStatus(str, Enum):
@@ -198,8 +249,11 @@ def transition_processing_status(
     if db_cursor is None:
         return False
     placeholders = ", ".join(["%s"] * len(states))
+    set_clause = "processing_status=%s"
+    if invoice_documents_supports_updated_at():
+        set_clause += ", updated_at=NOW()"
     sql = (
-        f"UPDATE invoice_documents SET processing_status=%s "
+        f"UPDATE invoice_documents SET {set_clause} "
         f"WHERE id=%s AND processing_status IN ({placeholders})"
     )
     params: tuple[object, ...] = (target.value, document_id, *[state.value for state in states])
@@ -207,6 +261,7 @@ def transition_processing_status(
         with db_cursor() as cur:
             cur.execute(sql, params)
             if cur.rowcount:
+                _record_fallback_timestamp(document_id)
                 return True
     except Exception:
         logger.exception("Failed to update invoice processing status")
@@ -226,12 +281,16 @@ def transition_document_status(
     if db_cursor is None:
         return False
     placeholders = ", ".join(["%s"] * len(states))
-    sql = f"UPDATE invoice_documents SET status=%s WHERE id=%s AND status IN ({placeholders})"
+    set_clause = "status=%s"
+    if invoice_documents_supports_updated_at():
+        set_clause += ", updated_at=NOW()"
+    sql = f"UPDATE invoice_documents SET {set_clause} WHERE id=%s AND status IN ({placeholders})"
     params: tuple[object, ...] = (target.value, document_id, *[state.value for state in states])
     try:
         with db_cursor() as cur:
             cur.execute(sql, params)
             if cur.rowcount:
+                _record_fallback_timestamp(document_id)
                 return True
     except Exception:
         logger.exception("Failed to update invoice document status")

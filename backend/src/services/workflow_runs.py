@@ -13,6 +13,47 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
+def get_active_workflow_run(file_id: str, workflow_key: str) -> Optional[int]:
+    """Check if there's an active (running) workflow_run for a given file.
+
+    Returns:
+        workflow_run_id if found, None otherwise
+    """
+    if db_cursor is None:
+        return None
+
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT id FROM workflow_runs
+                WHERE file_id = %s
+                  AND workflow_key = %s
+                  AND status IN ('running', 'queued')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (file_id, workflow_key),
+            )
+            row = cur.fetchone()
+            if row:
+                logger.info(
+                    "Found active workflow_run %s for file_id=%s, workflow=%s",
+                    row[0],
+                    file_id,
+                    workflow_key,
+                )
+                return int(row[0])
+            return None
+    except Exception as exc:  # pragma: no cover
+        logger.error(
+            "Failed to check active workflow_run for file_id=%s: %s",
+            file_id,
+            exc,
+        )
+        return None
+
+
 def create_workflow_run(
     *,
     workflow_key: str,

@@ -33,6 +33,12 @@ except Exception:  # pragma: no cover
 
 configure_json_logging()
 app = Flask(__name__)
+
+# Configure Flask to use UTF-8 for JSON responses
+# This ensures Swedish characters (å, ä, ö) are correctly encoded
+app.config['JSON_AS_ASCII'] = False
+app.config['JSON_SORT_KEYS'] = False
+
 limiter.init_app(app)
 app.register_blueprint(receipts_bp)
 
@@ -75,7 +81,12 @@ def _maybe_preflight():
 
 @app.after_request
 def _cors(resp):
-    return apply_cors(resp)
+    resp = apply_cors(resp)
+    # Ensure JSON responses have explicit UTF-8 charset
+    if resp.content_type and 'application/json' in resp.content_type:
+        if 'charset' not in resp.content_type.lower():
+            resp.content_type = 'application/json; charset=utf-8'
+    return resp
 
 
 @app.get("/health")

@@ -1,7 +1,7 @@
 @echo off
 REM Playwright Codegen - Generera tester genom att klicka runt i browsern
 REM Usage: playwright_codegen.bat [URL]
-REM Example: playwright_codegen.bat http://localhost:8008
+REM Example: playwright_codegen.bat http://localhost:5169
 
 echo ====================================
 echo Playwright Codegen - Test Generator

@@ -15,7 +15,7 @@ import {
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal'
 import { api } from '../api'
 
-const MOJIBAKE_PATTERN = /[ÃÂâ][\u0080-\u00FF]/;
+const MOJIBAKE_PATTERN = /\u00c3[\x80-\xBF]/;
 let cachedUtf8Decoder = null;
 
 function ensureUtf8Decoder() {
@@ -111,11 +111,58 @@ const LINE_STATUS_MAP = {
   pending: { label: 'I kö', tone: 'pending' },
 }
 
+const IMPORT_STAGE_LABELS = {
+  src_portal: 'Portaluppladdning',
+  src_ftp: 'FTP-import',
+  src_fc: 'FirstCard-uppladdning',
+  ingest_store: 'Lagra filmetadata',
+  ingest_wf1: 'Skapa WF1',
+  fc_create: 'Skapa FC-dokument',
+  fc_ocr: 'OCR FirstCard',
+  fc_parse: 'AI6 – FC-parsning',
+  fc_ready: 'FC redo för matchning',
+  fc_is_fc: 'FC-verifiering',
+  detect_type: 'AI1 – Dokumentklassning',
+  r_ocr: 'OCR kvitto',
+  r_ai3: 'AI3 – Dataextraktion',
+  r_ai4: 'AI4 – Normalisering',
+  r_persist: 'Spara extraherad data',
+  r_queue_match: 'Köa för matchning',
+  ai5: 'AI5 – Matchning',
+  m_found: 'Match hittad?',
+  m_link: 'Länka kvitto',
+  m_unmatched: 'Omatchade rader',
+  finalize_ok: 'Slutförd',
+  finalize_fail: 'Avslutad med fel',
+  manual_review: 'Manuell granskning',
+  resume_dispatch: 'Återupptar',
+  restart_dispatch: 'Omstartar',
+  KLAR: 'KLAR',
+}
+
 const toneClass = {
   success: 'status-passed',
   processing: 'status-processing',
   pending: 'status-pending',
   failed: 'status-failed',
+}
+
+// Map stage keys to tone colors
+function getStageResultTone(stageKey) {
+  if (!stageKey) return 'pending'
+
+  // Completed/success stages
+  if (['finalize_ok', 'KLAR', 'm_link', 'fc_ready'].includes(stageKey)) {
+    return 'success'
+  }
+
+  // Failed stages
+  if (['finalize_fail'].includes(stageKey) || stageKey.includes('fail')) {
+    return 'failed'
+  }
+
+  // Processing stages (everything else is in progress)
+  return 'processing'
 }
 
 function normalizeStatus(status) {
@@ -177,6 +224,62 @@ function describeProcessingStatus(status) {
     default:
       return { label: status || 'Okänd', tone: 'processing' }
   }
+}
+
+function describeFirstCardStatus(statement) {
+  if (!statement) {
+    return { label: 'Okänd', tone: 'pending' }
+  }
+
+  // Use current_stage_key from workflow if available
+  const stageKey = statement.current_stage_key
+  if (stageKey && IMPORT_STAGE_LABELS[stageKey]) {
+    return {
+      label: IMPORT_STAGE_LABELS[stageKey],
+      tone: getStageResultTone(stageKey),
+    }
+  }
+
+  // Fallback to processing_status if no stage key
+  const processing = normalizeStatus(statement.processing_status || statement.status)
+  switch (processing) {
+    case 'uploaded':
+    case 'imported':
+    case 'ocr_pending':
+      return { label: 'PDF', tone: 'pending' }
+    case 'ocr_done':
+    case 'ai_processing':
+      return { label: 'OCR', tone: 'processing' }
+    case 'ready_for_matching':
+      return { label: 'AI5', tone: 'processing' }
+    case 'matching_completed':
+    case 'completed':
+      return { label: 'Match Done (AI6)', tone: 'success' }
+    case 'failed':
+      return { label: 'Fel', tone: 'failed' }
+    default:
+      return describeDocumentStatus(statement.status)
+  }
+}
+
+function formatStageLabel(key) {
+  if (!key) {
+    return 'Okänd'
+  }
+  if (IMPORT_STAGE_LABELS[key]) {
+    return IMPORT_STAGE_LABELS[key]
+  }
+  if (key.endsWith('_start')) {
+    const base = key.replace(/_start$/, '')
+    const label = IMPORT_STAGE_LABELS[base] || base
+    return `${label} – start`
+  }
+  if (key.endsWith('_end')) {
+    const base = key.replace(/_end$/, '')
+    const label = IMPORT_STAGE_LABELS[base] || base
+    return `${label} – klart`
+  }
+  return key
 }
 
 
@@ -683,12 +786,28 @@ export default function CompanyCard() {
         throw new Error(`Status ${response.status}`)
       }
 
+      const result = await response.json()
+
       setDocumentFeedback({
         type: 'success',
         text: `Fakturaimport ${action === 'restart' ? 'omstartas' : 'återupptas'}...`,
       })
 
-      // Immediately reload to show initial status change
+      // Update the statement in state immediately with the new status
+      if (result.processing_status || result.status || result.current_stage_key) {
+        setStatements(prev => prev.map(stmt =>
+          stmt.id === statementId
+            ? {
+                ...stmt,
+                processing_status: result.processing_status || stmt.processing_status,
+                status: result.status || stmt.status,
+                current_stage_key: result.current_stage_key || stmt.current_stage_key,
+              }
+            : stmt
+        ))
+      }
+
+      // Also reload from server to get full details
       await loadStatements(statementId)
       if (selectedDocumentId === statementId) {
         await loadDocumentDetail(statementId)
@@ -1039,7 +1158,7 @@ export default function CompanyCard() {
                     {matchedReceipt ? (
                       <div className="flex flex-col gap-1">
                         <span className="font-medium text-gray-100">{matchedReceipt.vendor_name || 'Okänd leverantör'}</span>
-                        <span className="text-xs text-gray-400">{formatDate(matchedReceipt.purchase_datetime, false)} · {formatAmount(matchedReceipt.gross_amount)}</span>
+                        <span className="text-xs text-gray-400">{formatDate(matchedReceipt.purchase_datetime, false)}  –  {formatAmount(matchedReceipt.gross_amount)}</span>
                         <button
                           type="button"
                           className="btn btn-text btn-xxs self-start"
@@ -1311,10 +1430,10 @@ export default function CompanyCard() {
                           <div className="flex flex-wrap items-start justify-between gap-2">
                             <div>
                               <div className="text-sm font-semibold text-gray-100">
-                                {run.workflow_key} · {run.status}
+                                {run.workflow_key}  –  {run.status}
                               </div>
                               <div className="text-xs text-gray-400">
-                                Run-ID: {run.id} · Källa: {run.source_channel || 'okänd'}
+                                Run-ID: {run.id}  –  Source: {run.source_channel || 'okänd'}
                               </div>
                             </div>
                             <div className="text-xs text-gray-400 text-right">
@@ -1330,7 +1449,7 @@ export default function CompanyCard() {
                                   className="bg-gray-800/70 border border-gray-700/70 rounded-md px-3 py-2 space-y-1"
                                 >
                                   <div className="flex flex-wrap items-center justify-between text-sm font-medium text-gray-100">
-                                    <span>{stage.stage_key}</span>
+                                  <span>{formatStageLabel(stage.stage_key)}</span>
                                     <span>{stage.status}</span>
                                   </div>
                                   <div className="flex flex-wrap items-center justify-between text-xs text-gray-400">
@@ -1378,16 +1497,16 @@ export default function CompanyCard() {
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div>
                               <div className="text-sm font-semibold text-gray-100">
-                                {(entry.ai_stage_name || entry.job_type || 'Okänt steg')} · {entry.status}
+                                {(entry.ai_stage_name || entry.job_type || 'Okänt steg')}  –  {entry.status}
                               </div>
                               <div className="text-xs text-gray-400">
-                                Fil: {entry.file_id} · {formatDate(entry.created_at)}
+                                Fil: {entry.file_id}  –  {formatDate(entry.created_at)}
                               </div>
                             </div>
                             <div className="text-xs text-gray-400 text-right space-y-1">
                               {(entry.provider || entry.model) && (
                                 <div>
-                                  {entry.provider || 'okänd'}{entry.model ? ` · ${entry.model}` : ''}
+                                  {entry.provider || 'okänd'}{entry.model ? `  –  ${entry.model}` : ''}
                                 </div>
                               )}
                               {entry.processing_time_ms != null && (
@@ -1430,7 +1549,7 @@ export default function CompanyCard() {
                             <span className="font-semibold">{file.id}</span>
                             <span className="text-xs text-gray-400">
                               Skapad: {formatDate(file.created_at)}
-                              {file.updated_at ? ` · Uppdaterad: ${formatDate(file.updated_at)}` : ''}
+                              {file.updated_at ? `  –  Uppdaterad: ${formatDate(file.updated_at)}` : ''}
                             </span>
                           </div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-300">
@@ -1528,7 +1647,7 @@ const renderStatementTable = () => {
     }
 
     const rows = sortedItems.map((statement) => {
-      const statusDetails = describeDocumentStatus(statement.status)
+      const statusDetails = describeFirstCardStatus(statement)
       const badgeClass = toneClass[statusDetails.tone] ?? 'status-processing'
       const lineSummary = statement.line_counts ?? {}
       const isSelected = statement.id === selectedDocumentId
@@ -1883,15 +2002,15 @@ const renderStatementTable = () => {
                 <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
                   <div className="text-xs text-gray-400 uppercase tracking-wide">Status</div>
                   <div className="mt-2 flex items-center gap-2">
-                    <span className={`status-badge ${toneClass[describeDocumentStatus(selectedDocument.status).tone] || 'status-processing'}`}>
-                      {describeDocumentStatus(selectedDocument.status).label}
+                    <span className={`status-badge ${toneClass[describeFirstCardStatus(selectedDocument).tone] || 'status-processing'}`}>
+                      {describeFirstCardStatus(selectedDocument).label}
                     </span>
                   </div>
                 </div>
                 <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
                   <div className="text-xs text-gray-400 uppercase tracking-wide">Linjer</div>
                   <div className="mt-2 text-gray-100 text-lg font-semibold">{lineCounts.total}</div>
-                  <div className="text-xs text-gray-400 mt-1">Matchade: {lineCounts.matched} · Obearbetade: {lineCounts.unmatched}</div>
+                  <div className="text-xs text-gray-400 mt-1">Matchade: {lineCounts.matched}  –  Obearbetade: {lineCounts.unmatched}</div>
                 </div>
                 <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
                   <div className="text-xs text-gray-400 uppercase tracking-wide">Senast uppdaterad</div>

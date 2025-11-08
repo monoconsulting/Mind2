@@ -1,0 +1,56 @@
+
+Running 1 test using 1 worker
+
+
+=== Test 1: Checking for Preview Modal ===
+Looking for matched receipts in transactions...
+Found 44 "Förhandsgranska" buttons in transaction lines
+Clicking "Förhandsgranska" button...
+Text button not visible, clicking primary button...
+Preview modal visible: false
+✗ Preview modal did NOT open
+
+=== Test 2: Checking Log Date Grouping ===
+Log data: {
+  "dates": [
+    "2025-11-06",
+    "2025-03-02",
+    "2025-03-24",
+    "2025-04-02",
+    "2025-02-03",
+    "2025-02-23",
+    "2025-02-04",
+    "2025-02-05",
+    "2025-02-06",
+    "2025-02-07",
+    "2025-02-08",
+    "2025-02-09",
+    "2025-02-11",
+    "2025-02-12",
+    "2025-02-13",
+    "2025-02-14",
+    "2025-02-15",
+    "2025-02-16",
+    "2025-02-17",
+    "2025-02-18",
+    "2025-02-19",
+    "2025-02-21",
+    "2025-02-22"
+  ],
+  "wf3Count": 1,
+  "ai6Count": 2,
+  "fullText": "ImportloggKontoutdrag: d8c8812f-7172-4d34-a6fa-3321a4a52498Workflowkörningar1 stWF3_FIRSTCARD_INVOICE · succeededRun-ID: 229 · Källa: kortmatchning_uploadStart: 2025-11-06 13:12Senast: 2025-11-06 13:19firstcard_invoicesucceeded2025-11-06 13:12 → 2025-11-06 13:196m 44sParsed credit card invoice: main_id=13, lines=44/44ocr_mergesucceeded2025-11-06 13:14 → 2025-11-06 13:140 msPersisted merged OCR (5212 chars) to creditcard_invoices_main id=40auto_matchsucceeded2025-11-06 13:19 → 2025-11-06 13:191 s"
+}
+Found 23 unique dates
+Found 1 WF3 entries
+Found 2 AI6 entries
+
+=== Test Complete ===
+  ✓  1 [chromium-ultrawide] › web\tests\codegen\fc_preview_and_log.codegen.spec.ts:10:5 › test (14.6s)
+
+  1 passed (16.5s)
+
+To open last HTML report run:
+[36m[39m
+[36m  npx playwright show-report web\test-results\html[39m
+[36m[39m

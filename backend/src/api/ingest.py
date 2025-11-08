@@ -13,7 +13,12 @@ from werkzeug.utils import secure_filename
 from api.middleware import auth_required
 from services.file_detection import detect_file
 from services.storage import FileStorage
-from services.tasks import dispatch_workflow
+from services.tasks import (
+    begin_import_stage,
+    complete_import_stage,
+    dispatch_workflow,
+    log_import_event,
+)
 from services.workflow_runs import create_workflow_run
 from services.db.files import (
     list_unprocessed,
@@ -152,11 +157,55 @@ def upload_files() -> Any:
                 content_hash=file_hash
             )
 
+            if workflow_run_id:
+                begin_import_stage(
+                    workflow_run_id,
+                    "src_portal",
+                    message=f"Fil {safe_filename} ({len(data)} bytes)",
+                )
+                complete_import_stage(
+                    workflow_run_id,
+                    "src_portal",
+                    success=True,
+                    message="Portaluppladdning klar",
+                )
+                begin_import_stage(
+                    workflow_run_id,
+                    "ingest_store",
+                    message=f"Skrev unified_files {file_id}",
+                )
+                complete_import_stage(
+                    workflow_run_id,
+                    "ingest_store",
+                    success=True,
+                    message="Lagrade metadata i databasen",
+                )
+                if workflow_key == "WF1_RECEIPT":
+                    begin_import_stage(
+                        workflow_run_id,
+                        "ingest_wf1",
+                        message="Skapar WF1 workflow_run",
+                    )
+
             if workflow_run_id and dispatch_workflow:
                 dispatch_workflow(workflow_run_id)
+                if workflow_key == "WF1_RECEIPT":
+                    complete_import_stage(
+                        workflow_run_id,
+                        "ingest_wf1",
+                        success=True,
+                        message="WF1 dispatchad",
+                    )
                 logger.info(f"File {idx}: Dispatched {workflow_key} run {workflow_run_id} for file {file_id}")
                 uploaded_count += 1
             else:
+                if workflow_run_id and workflow_key == "WF1_RECEIPT":
+                    complete_import_stage(
+                        workflow_run_id,
+                        "ingest_wf1",
+                        success=False,
+                        message="Kunde inte skapa WF1",
+                    )
                 raise RuntimeError(f"Failed to create or dispatch workflow for file {file_id}")
 
         except DuplicateFileError:
@@ -268,18 +317,41 @@ def resume_processing(file_id: str) -> Any:
 
     effective_hash = content_hash or other_data.get("content_hash") or file_id
 
-    workflow_run_id = create_workflow_run(
-        workflow_key=workflow_key,
-        source_channel="manual_resume",
-        file_id=file_id,
-        content_hash=effective_hash,
+    # Check for existing active workflow to prevent duplicate runs
+    from services.workflow_runs import get_active_workflow_run
+
+    existing_run_id = get_active_workflow_run(file_id, workflow_key)
+    if existing_run_id:
+        logger.info(
+            "Resume: Found existing active workflow_run %s for file_id=%s, reusing it",
+            existing_run_id,
+            file_id,
+        )
+        workflow_run_id = existing_run_id
+        # Don't reset status if workflow is already running
+    else:
+        # Create new workflow_run only if none exists
+        workflow_run_id = create_workflow_run(
+            workflow_key=workflow_key,
+            source_channel="manual_resume",
+            file_id=file_id,
+            content_hash=effective_hash,
+        )
+
+        if not workflow_run_id:
+            logger.error("Failed to create workflow run for resume (file_id=%s)", file_id)
+            return jsonify({"queued": False, "error": "workflow_creation_failed"}), 500
+
+        set_ai_status(file_id, "queued")
+
+    # Log resume stage to workflow_stage_runs so frontend sees immediate change
+    log_import_event(
+        workflow_run_id,
+        "resume_dispatch",
+        status="running",
+        message=f"Återupptar bearbetning (tidigare status: {current_status})",
     )
 
-    if not workflow_run_id:
-        logger.error("Failed to create workflow run for resume (file_id=%s)", file_id)
-        return jsonify({"queued": False, "error": "workflow_creation_failed"}), 500
-
-    set_ai_status(file_id, "queued")
     _history(
         file_id=file_id,
         job="resume",
