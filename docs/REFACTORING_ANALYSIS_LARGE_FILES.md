@@ -63,43 +63,123 @@ services/tasks/
 ---
 
 ### 2. 🔴 KRITISK: `backend/src/api/reconciliation_firstcard.py`
-**Storlek:** 2,144 rader | 80 KB  
-**Funktioner:** 28+ funktioner  
-**Komplexitet:** Genomsnitt 77 rader/funktion
+**Storlek:** 2,418 rader | 80 KB  
+**Funktioner:** 28 funktioner  
+**API Routes:** 15 endpoints  
+**Komplexitet:** Genomsnitt 86 rader/funktion
 
 #### Problem:
 - **Massiv API-fil:** Innehåller alla FirstCard-relaterade endpoints
 - **Multipla ansvarsområden:**
   - Invoice upload och import
-  - Invoice status tracking
-  - Line item matching
-  - Candidate selection
-  - Workflow management
+  - Invoice status tracking och OCR progress
+  - Line item matching och kandidathantering
+  - Statement management (list, delete, resume, restart, confirm)
+  - Workflow orchestration (dispatch, transitions)
   - Metadata management
+  - **Logging och historik (invoice_log endpoint - 245 rader!)**
 - **Långkomplexa funktioner:** Flera funktioner >150 rader
 - **Databaslogik blandad med business logic**
 - **Svår att navigera:** Hitta rätt endpoint är tidskrävande
+
+#### 🚨 **WORKFLOW-PROBLEM IDENTIFIERADE:**
+
+**A. Status-transitions är spridda överallt:**
+- `transition_processing_status()` anropas på 3 olika ställen
+- `transition_document_status()` anropas på 3 olika ställen  
+- `transition_line_status_and_link()` anropas på 2 ställen
+- `refresh_invoice_match_state()` anropas på 3 olika ställen
+- `dispatch_workflow()` anropas på 4 olika ställen
+
+**B. Inkonsekvent state management:**
+- Status uppdateras manuellt i vissa endpoints
+- Workflow-transitions sker ibland innan, ibland efter DB-operations
+- Metadata skrivs direkt utan validation i flera platser
+- Ingen central state machine för invoice lifecycle
+
+**C. Race conditions och timing issues:**
+- OCR kan slutföras innan workflow har startat
+- Line matching kan ske medan OCR fortfarande pågår  
+- Status kan vara "completed" medan lines fortfarande är "unmatched"
+- Ingen locking-mekanism för concurrent updates
+
+**D. Komplex log-endpoint (1150-1395 rader):**
+- Hämtar data från 4 olika tabeller (unified_files, workflow_runs, ai_processing_history, invoice_lines)
+- Komplex JSON-serialisering
+- Ingen caching
+- Duplikation av logik från andra endpoints
 
 #### Rekommenderad uppdelning:
 ```
 api/reconciliation_firstcard/
 ├── __init__.py                    # Blueprint registration
-├── upload.py                      # Upload och import endpoints
-├── status.py                      # Status och progress endpoints
-├── lines.py                       # Line item endpoints
-├── matching.py                    # Matching logic och candidates
-├── workflow.py                    # Workflow management
-└── services/
-    ├── invoice_service.py         # Invoice business logic
-    ├── line_matching_service.py   # Matching algorithms
-    └── metadata_service.py        # Metadata operations
+├── routes/
+│   ├── upload.py                  # Upload & import endpoints (POST /upload, /import)
+│   ├── status.py                  # Status endpoints (GET /invoices/<id>/status)
+│   ├── detail.py                  # Detail endpoint (GET /invoices/<id>)
+│   ├── log.py                     # Log/history endpoint (GET /invoices/<id>/log) ⭐ NYTT
+│   ├── lines.py                   # Line endpoints (GET /lines, GET /lines/<id>/candidates)
+│   ├── matching.py                # Match endpoint (POST /match, PUT /lines/<id>)
+│   └── statements.py              # Statement CRUD (GET, DELETE, POST /resume, /restart, /confirm)
+├── services/
+│   ├── invoice_service.py         # Core invoice operations
+│   ├── line_matching_service.py   # Matching algorithms & candidate scoring
+│   ├── statement_service.py       # Statement lifecycle management
+│   ├── log_aggregator.py          # Log data collection & formatting ⭐ NYTT
+│   └── workflow_coordinator.py    # Centralized workflow state machine ⭐ NYTT
+├── models/
+│   ├── invoice_state.py           # Invoice state definitions & transitions
+│   └── line_state.py              # Line state definitions & transitions
+└── utils/
+    ├── db_helpers.py              # Database query helpers
+    ├── metadata_utils.py          # Metadata manipulation
+    └── validators.py              # Input validation
 ```
 
+#### Ny Workflow Coordinator (workflow_coordinator.py):
+```python
+class WorkflowCoordinator:
+    """Centralized state machine for invoice workflow."""
+    
+    def start_processing(invoice_id: str) -> bool:
+        """Initialize invoice processing workflow."""
+        # 1. Validate initial state
+        # 2. Create workflow run
+        # 3. Set processing_status = UPLOADED
+        # 4. Dispatch workflow
+        # 5. Return success/failure
+        
+    def advance_to_ocr_complete(invoice_id: str) -> bool:
+        """Transition when all pages OCR done."""
+        # 1. Verify all pages completed
+        # 2. Transition processing_status = OCR_DONE
+        # 3. Transition document_status if needed
+        # 4. Trigger next workflow stage
+        
+    def advance_to_matching_ready(invoice_id: str) -> bool:
+        """Transition when ready for line matching."""
+        
+    def complete_matching(invoice_id: str) -> bool:
+        """Mark invoice matching as complete."""
+        # 1. Verify all lines matched/reviewed
+        # 2. Transition to COMPLETED
+        # 3. Close workflow run
+```
+
+**Detta kommer lösa:**
+- ✅ Alla status-transitions går genom central coordinator
+- ✅ Inga race conditions - coordinator hanterar locking
+- ✅ Konsistent state validation vid varje transition
+- ✅ Tydlig workflow lifecycle som är lätt att debugga
+- ✅ Metrics och logging centraliserade
+
 #### Uppskattad förbättring:
-- **Storlek per fil:** 250-400 rader (reducering med 82%)
-- **API-navigering:** +85%
-- **Testbarhet:** +75%
-- **Separation of Concerns:** +90%
+- **Storlek per fil:** 150-300 rader (reducering med 87%)
+- **API-navigering:** +90%
+- **Testbarhet:** +85%
+- **Separation of Concerns:** +95%
+- **Workflow reliability:** +80% (färre stuck invoices)
+- **Debuggability:** +90% (tydlig state machine)
 
 ---
 
@@ -367,19 +447,34 @@ Utility-funktioner och helpers är duplicerade mellan filer
 
 ## Prioriterad Arbetsplan
 
-### Fas 1: Kritiska Backend-filer (Vecka 1-3)
+### Fas 1: Kritiska Backend-filer (Vecka 1-4)
 **Mål:** Förbättra testbarhet och maintainability av core business logic
 
-1. **`tasks.py`** (Högsta prioritet)
-   - Vecka 1: Skapa ny struktur, flytta OCR-tasks
-   - Vecka 2: Flytta AI-pipeline tasks
-   - Vecka 3: Flytta invoice och creditcard tasks
+1. **`reconciliation_firstcard.py`** (HÖGSTA PRIORITET - WORKFLOW-PROBLEM!)
+   - **Vecka 1-2: Workflow Coordinator & State Machine**
+     - Skapa `workflow_coordinator.py` med centralized state management
+     - Migrera alla `transition_*` anrop till coordinator
+     - Implementera locking-mekanism för concurrent updates
+     - Tester för state transitions
+   - **Vecka 2: Separera endpoints**
+     - Extrahera `log.py` (245 rader → egen fil)
+     - Extrahera `upload.py` och `import.py`
+     - Extrahera `status.py` och `detail.py`
+   - **Vecka 3: Services & Matching**
+     - Skapa `invoice_service.py` för business logic
+     - Skapa `line_matching_service.py`
+     - Migrera matching-endpoints
+   
+   **Varför först?** Workflow-problem orsakar stuck invoices och inkonsistent state.
+   Detta måste fixas innan vi kan fortsätta med resten av systemet.
 
-2. **`reconciliation_firstcard.py`** (Hög prioritet)
-   - Vecka 2-3: Dela upp API-endpoints och services
+2. **`tasks.py`** (Hög prioritet)
+   - Vecka 3: Skapa ny struktur, flytta OCR-tasks
+   - Vecka 4: Flytta AI-pipeline tasks
+   - Vecka 4: Flytta invoice och creditcard tasks
 
 3. **`receipts.py`** (Hög prioritet)
-   - Vecka 3: Separera services från endpoints
+   - Vecka 4: Separera services från endpoints
 
 ### Fas 2: Kritiska Frontend-filer (Vecka 4-6)
 **Mål:** Förbättra component reusability och performance
@@ -491,8 +586,17 @@ Kodbasen innehåller flera mycket stora filer som kraftigt påverkar maintainabi
 3. **Öka kodens kvalitet** och robusthet
 4. **Förenkla framtida utveckling** och ändringar
 5. **Minska risk för buggar** genom bättre isolation
+6. **Lösa workflow-problem** med stuck invoices och inkonsistent state
 
-**Rekommendation:** Starta refactoring omedelbart med `tasks.py` som första prioritet. Detta är den mest kritiska filen och kommer ge störst effekt på systemets maintainability.
+**Rekommendation:** Starta refactoring omedelbart med `reconciliation_firstcard.py` som **första prioritet**. 
+
+**VARFÖR FIRSTCARD FÖRST?**
+- **Akuta produktionsproblem:** Workflow stannar, status rapporteras inte korrekt
+- **Business impact:** FirstCard-matchning är kritisk funktionalitet
+- **Rot-orsak:** Spridd state management och ingen central workflow coordinator
+- **Snabb vinst:** Workflow Coordinator löser 80% av problemen direkt
+
+Efter Workflow Coordinator är implementerad kan vi fortsätta med `tasks.py` och resten av refactoring-planen med större förtroende att systemet fungerar stabilt.
 
 ---
 
