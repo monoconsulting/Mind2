@@ -1,0 +1,337 @@
+# -*- coding: utf-8 -*-
+# Kontrollrad: ÅÄÖ åäö
+
+"""Invoice lines endpoints for FirstCard reconciliation.
+
+Provides line item listing and candidate matching.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import date
+from decimal import Decimal
+from typing import Any
+
+from flask import jsonify, request
+
+from .. import recon_bp
+from ..utils.db_helpers import (
+    load_invoice_document,
+    as_date,
+    as_decimal,
+)
+
+try:
+    from services.db.connection import db_cursor
+except Exception:  # pragma: no cover
+    db_cursor = None  # type: ignore
+
+
+logger = logging.getLogger(__name__)
+
+
+@recon_bp.get("/reconciliation/firstcard/invoices/<invoice_id>/lines")
+def invoice_lines(invoice_id: str) -> Any:
+    """Return invoice line items with pagination guards."""
+
+    limit_param = request.args.get("limit", "50")
+    offset_param = request.args.get("offset", "0")
+    try:
+        limit = max(1, min(int(limit_param), 200))
+    except ValueError:
+        limit = 50
+    try:
+        offset = max(0, int(offset_param))
+    except ValueError:
+        offset = 0
+
+    if db_cursor is None:  # pragma: no cover
+        return jsonify({"items": [], "total": 0, "matched": 0, "limit": limit, "offset": offset, "next_offset": None}), 200
+
+    if not load_invoice_document(invoice_id):
+        return jsonify({"error": "not_found"}), 404
+
+    total = 0
+    matched = 0
+    items: list[dict[str, Any]] = []
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(1), "
+                "SUM(CASE WHEN match_status IN ('auto','manual','confirmed') THEN 1 ELSE 0 END) "
+                "FROM invoice_lines WHERE invoice_id=%s",
+                (invoice_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                total, matched = int(row[0] or 0), int(row[1] or 0)
+
+            cur.execute(
+                (
+                    "SELECT id, transaction_date, amount, merchant_name, description, "
+                    "match_status, match_score, matched_file_id "
+                    "FROM invoice_lines WHERE invoice_id=%s "
+                    "ORDER BY transaction_date ASC, id ASC LIMIT %s OFFSET %s"
+                ),
+                (invoice_id, limit, offset),
+            )
+            for row in cur.fetchall() or []:
+                (
+                    line_id,
+                    transaction_date,
+                    amount,
+                    merchant_name,
+                    description,
+                    match_status,
+                    match_score,
+                    matched_file_id,
+                ) = row
+                items.append(
+                    {
+                        "id": int(line_id),
+                        "transaction_date": (
+                            transaction_date.isoformat()
+                            if hasattr(transaction_date, "isoformat")
+                            else transaction_date
+                        ),
+                        "amount": float(amount) if amount is not None else None,
+                        "merchant_name": merchant_name,
+                        "description": description,
+                        "match_status": match_status,
+                        "match_score": float(match_score) if match_score is not None else None,
+                        "matched_file_id": matched_file_id,
+                    }
+                )
+    except Exception:
+        items = []
+
+    next_offset = offset + limit if (offset + limit) < total else None
+
+    return (
+        jsonify(
+            {
+                "items": items,
+                "total": total,
+                "matched": matched,
+                "limit": limit,
+                "offset": offset,
+                "next_offset": next_offset,
+            }
+        ),
+        200,
+    )
+
+
+
+@recon_bp.get("/reconciliation/firstcard/lines/<int:line_id>/candidates")
+def line_candidates(line_id: int) -> Any:
+    if db_cursor is None:  # pragma: no cover
+        return jsonify({"line": None, "candidates": []}), 200
+
+    invoice_id = request.args.get("invoice_id")
+
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT ci.id,
+                       ci.main_id,
+                       ci.purchase_date,
+                       ci.amount_original,
+                       ci.amount_sek,
+                       ci.gross_amount,
+                       ci.net_amount,
+                       ci.currency_original,
+                       ci.merchant_name,
+                       ci.description,
+                       ci.matched,
+                       crm.receipt_id,
+                       crm.matched_amount,
+                       uf.purchase_datetime,
+                       uf.gross_amount AS receipt_gross_amount,
+                       uf.credit_card_match,
+                       uf.created_at,
+                       c.name AS vendor_name
+                  FROM creditcard_invoice_items AS ci
+             LEFT JOIN creditcard_receipt_matches AS crm ON crm.invoice_item_id = ci.id
+             LEFT JOIN unified_files AS uf ON uf.id = crm.receipt_id
+             LEFT JOIN companies AS c ON c.id = uf.company_id
+                 WHERE ci.id = %s
+                """,
+                (line_id,),
+            )
+            item_row = cur.fetchone()
+    except Exception:
+        item_row = None
+
+    if not item_row:
+        return jsonify({"line": None, "candidates": []}), 200
+
+    (
+        item_id,
+        main_id,
+        purchase_date,
+        amount_original,
+        amount_sek,
+        gross_amount,
+        net_amount,
+        currency_original,
+        merchant_name,
+        description,
+        matched_flag,
+        matched_receipt_id,
+        matched_amount,
+        matched_purchase_dt,
+        matched_gross_amount,
+        matched_credit_flag,
+        matched_created_at,
+        matched_vendor_name,
+    ) = item_row
+
+    match_value = int(matched_flag or 0)
+    match_status_token = "pending"
+    if match_value == 2:
+        match_status_token = "manual"
+    elif match_value >= 1:
+        match_status_token = "auto"
+
+    matched_receipt_payload: dict[str, Any] | None = None
+    if matched_receipt_id:
+        matched_receipt_payload = {
+            "file_id": matched_receipt_id,
+            "purchase_datetime": matched_purchase_dt.isoformat() if hasattr(matched_purchase_dt, "isoformat") else matched_purchase_dt,
+            "gross_amount": float(matched_gross_amount) if matched_gross_amount is not None else None,
+            "credit_card_match": bool(matched_credit_flag) if matched_credit_flag is not None else False,
+            "vendor_name": matched_vendor_name,
+            "matched_amount": float(matched_amount) if matched_amount is not None else None,
+        }
+
+    display_amount = (
+        as_decimal(amount_sek)
+        or as_decimal(gross_amount)
+        or as_decimal(amount_original)
+        or as_decimal(net_amount)
+    )
+
+    line_payload = {
+        "id": int(item_id),
+        "invoice_id": invoice_id,
+        "transaction_date": purchase_date.isoformat() if hasattr(purchase_date, "isoformat") else purchase_date,
+        "amount": float(display_amount) if display_amount is not None else None,
+        "currency": currency_original,
+        "description": description or merchant_name or "",
+        "match_status": match_status_token,
+        "matched_file_id": matched_receipt_id,
+        "matched_receipt": matched_receipt_payload,
+    }
+
+    target_date = as_date(purchase_date)
+    target_amount = display_amount
+
+    candidates: list[dict[str, Any]] = []
+    try:
+        clauses = [
+            "SELECT uf.id,",
+            "       uf.purchase_datetime,",
+            "       uf.gross_amount,",
+            "       uf.credit_card_match,",
+            "       uf.created_at,",
+            "       c.name",
+            "  FROM unified_files AS uf",
+            " LEFT JOIN creditcard_receipt_matches AS crm ON crm.receipt_id = uf.id",
+            " LEFT JOIN companies AS c ON c.id = uf.company_id",
+            " WHERE uf.purchase_datetime IS NOT NULL",
+            "   AND uf.gross_amount IS NOT NULL",
+            "   AND (crm.invoice_item_id IS NULL OR crm.invoice_item_id = %s)",
+        ]
+        params: list[Any] = [line_id]
+        if target_date is not None:
+            clauses.append("   AND ABS(DATEDIFF(DATE(uf.purchase_datetime), %s)) <= 7")
+            params.append(target_date)
+        if target_amount is not None:
+            clauses.append("   AND ABS(uf.gross_amount - %s) <= 200")
+            params.append(target_amount)
+        clauses.append(
+            " ORDER BY ABS(uf.gross_amount - %s), ABS(DATEDIFF(DATE(uf.purchase_datetime), %s)), uf.created_at DESC LIMIT 50"
+        )
+        params.extend(
+            [
+                target_amount if target_amount is not None else Decimal("0"),
+                target_date if target_date is not None else date.today(),
+            ]
+        )
+        query = "\n".join(clauses)
+        with db_cursor() as cur:
+            cur.execute(query, tuple(params))
+            candidate_rows = cur.fetchall() or []
+    except Exception:
+        candidate_rows = []
+
+    for (
+        receipt_id,
+        purchase_dt,
+        gross_amount_value,
+        credit_flag,
+        created_at,
+        vendor_name,
+    ) in candidate_rows:
+        receipt_amount = as_decimal(gross_amount_value)
+        amount_diff = None
+        if target_amount is not None and receipt_amount is not None:
+            amount_diff = abs(Decimal(str(target_amount)) - receipt_amount)
+        date_diff = None
+        candidate_date = as_date(purchase_dt)
+        if target_date is not None and candidate_date is not None:
+            date_diff = abs((candidate_date - target_date).days)
+
+        score = Decimal("1.0")
+        if amount_diff is not None and target_amount not in (None, 0):
+            denom = abs(Decimal(str(target_amount))) or Decimal("1")
+            score -= Decimal(min((amount_diff / denom), Decimal("1"))) * Decimal("0.7")
+        if date_diff is not None:
+            score -= Decimal(min(Decimal(date_diff) / Decimal("30"), Decimal("1"))) * Decimal("0.3")
+        if score < 0:
+            score = Decimal("0")
+
+        candidates.append(
+            {
+                "file_id": receipt_id,
+                "purchase_datetime": purchase_dt.isoformat() if hasattr(purchase_dt, "isoformat") else purchase_dt,
+                "gross_amount": float(receipt_amount) if receipt_amount is not None else None,
+                "vendor_name": vendor_name,
+                "credit_card_match": bool(credit_flag) if credit_flag is not None else False,
+                "amount_difference": float(amount_diff) if amount_diff is not None else None,
+                "date_difference_days": date_diff,
+                "match_score": float(score),
+                "is_current_match": receipt_id == matched_receipt_id,
+            }
+        )
+
+    if matched_receipt_payload and not any(c["is_current_match"] for c in candidates):
+        candidates.insert(
+            0,
+            {
+                "file_id": matched_receipt_id,
+                "purchase_datetime": matched_purchase_dt.isoformat() if hasattr(matched_purchase_dt, "isoformat") else matched_purchase_dt,
+                "gross_amount": matched_receipt_payload.get("gross_amount"),
+                "vendor_name": matched_vendor_name,
+                "credit_card_match": bool(matched_credit_flag) if matched_credit_flag is not None else False,
+                "amount_difference": 0.0,
+                "date_difference_days": 0,
+                "match_score": 1.0,
+                "is_current_match": True,
+            },
+        )
+
+    candidates.sort(
+        key=lambda entry: (
+            entry.get("is_current_match") is not True,
+            entry.get("amount_difference") if entry.get("amount_difference") is not None else float("inf"),
+            entry.get("date_difference_days") if entry.get("date_difference_days") is not None else 999,
+        )
+    )
+
+    line_payload["candidates_found"] = len(candidates)
+
+    return jsonify({"line": line_payload, "candidates": candidates}), 200
