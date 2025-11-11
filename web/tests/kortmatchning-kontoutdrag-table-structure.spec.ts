@@ -84,6 +84,38 @@ test.describe('Kortmatchning - Kontoutdrag Table Structure', () => {
     }
   });
 
+  test('should successfully auto-match when clicking row button', async ({ page }) => {
+    await page.waitForSelector('table.min-w-full');
+
+    const matchButton = page.locator('button', { hasText: /Matcha omatchade rader/i }).first();
+    await expect(matchButton).toBeVisible();
+
+    const responsePromise = page.waitForResponse((response) => {
+      return response.url().includes('/ai/api/reconciliation/firstcard/match') && response.request().method() === 'POST';
+    });
+
+    await matchButton.click();
+    const response = await responsePromise;
+    const rawBody = await response.text();
+    let payload: unknown;
+    try {
+      payload = JSON.parse(rawBody);
+    } catch (error) {
+      payload = rawBody;
+    }
+    expect(response.status(), 'Auto-match API should return success').toBe(200);
+
+    if (typeof payload !== 'object' || payload === null) {
+      throw new Error(`Unexpected payload: ${String(payload)}`);
+    }
+
+    expect(payload).toMatchObject({
+      invoice_id: expect.any(String),
+      matched: expect.any(Number),
+      total: expect.any(Number),
+    });
+  });
+
   test('should display data in new columns', async ({ page }) => {
     // Wait for the table to be visible
     await page.waitForSelector('table.min-w-full');
