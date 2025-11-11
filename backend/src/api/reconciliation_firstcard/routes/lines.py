@@ -131,102 +131,81 @@ def line_candidates(line_id: int) -> Any:
 
     invoice_id = request.args.get("invoice_id")
 
+    # Read from invoice_lines instead of creditcard_invoice_items
     try:
         with db_cursor() as cur:
             cur.execute(
                 """
-                SELECT ci.id,
-                       ci.main_id,
-                       ci.purchase_date,
-                       ci.amount_original,
-                       ci.amount_sek,
-                       ci.gross_amount,
-                       ci.net_amount,
-                       ci.currency_original,
-                       ci.merchant_name,
-                       ci.description,
-                       ci.matched,
-                       crm.receipt_id,
-                       crm.matched_amount,
+                SELECT il.id,
+                       il.invoice_id,
+                       il.transaction_date,
+                       il.amount,
+                       il.currency,
+                       il.merchant_name,
+                       il.description,
+                       il.match_status,
+                       il.matched_file_id,
                        uf.purchase_datetime,
                        uf.gross_amount AS receipt_gross_amount,
                        uf.credit_card_match,
                        uf.created_at,
                        c.name AS vendor_name
-                  FROM creditcard_invoice_items AS ci
-             LEFT JOIN creditcard_receipt_matches AS crm ON crm.invoice_item_id = ci.id
-             LEFT JOIN unified_files AS uf ON uf.id = crm.receipt_id
+                  FROM invoice_lines AS il
+             LEFT JOIN unified_files AS uf ON uf.id = il.matched_file_id
              LEFT JOIN companies AS c ON c.id = uf.company_id
-                 WHERE ci.id = %s
+                 WHERE il.id = %s
                 """,
                 (line_id,),
             )
-            item_row = cur.fetchone()
+            line_row = cur.fetchone()
     except Exception:
-        item_row = None
+        line_row = None
 
-    if not item_row:
+    if not line_row:
         return jsonify({"line": None, "candidates": []}), 200
 
     (
-        item_id,
-        main_id,
-        purchase_date,
-        amount_original,
-        amount_sek,
-        gross_amount,
-        net_amount,
-        currency_original,
+        line_id_val,
+        line_invoice_id,
+        transaction_date,
+        amount,
+        currency,
         merchant_name,
         description,
-        matched_flag,
-        matched_receipt_id,
-        matched_amount,
+        match_status,
+        matched_file_id,
         matched_purchase_dt,
         matched_gross_amount,
         matched_credit_flag,
         matched_created_at,
         matched_vendor_name,
-    ) = item_row
-
-    match_value = int(matched_flag or 0)
-    match_status_token = "pending"
-    if match_value == 2:
-        match_status_token = "manual"
-    elif match_value >= 1:
-        match_status_token = "auto"
+    ) = line_row
 
     matched_receipt_payload: dict[str, Any] | None = None
-    if matched_receipt_id:
+    if matched_file_id:
         matched_receipt_payload = {
-            "file_id": matched_receipt_id,
+            "file_id": matched_file_id,
             "purchase_datetime": matched_purchase_dt.isoformat() if hasattr(matched_purchase_dt, "isoformat") else matched_purchase_dt,
             "gross_amount": float(matched_gross_amount) if matched_gross_amount is not None else None,
             "credit_card_match": bool(matched_credit_flag) if matched_credit_flag is not None else False,
             "vendor_name": matched_vendor_name,
-            "matched_amount": float(matched_amount) if matched_amount is not None else None,
         }
 
-    display_amount = (
-        as_decimal(amount_sek)
-        or as_decimal(gross_amount)
-        or as_decimal(amount_original)
-        or as_decimal(net_amount)
-    )
+    display_amount = as_decimal(amount)
 
     line_payload = {
-        "id": int(item_id),
-        "invoice_id": invoice_id,
-        "transaction_date": purchase_date.isoformat() if hasattr(purchase_date, "isoformat") else purchase_date,
+        "id": int(line_id_val),
+        "invoice_id": line_invoice_id or invoice_id,
+        "transaction_date": transaction_date.isoformat() if hasattr(transaction_date, "isoformat") else transaction_date,
         "amount": float(display_amount) if display_amount is not None else None,
-        "currency": currency_original,
+        "currency": currency,
         "description": description or merchant_name or "",
-        "match_status": match_status_token,
-        "matched_file_id": matched_receipt_id,
+        "match_status": match_status or "pending",
+        "matched_file_id": matched_file_id,
         "matched_receipt": matched_receipt_payload,
     }
 
-    target_date = as_date(purchase_date)
+    target_date = as_date(transaction_date)
     target_amount = display_amount
 
     candidates: list[dict[str, Any]] = []
@@ -239,13 +218,13 @@ def line_candidates(line_id: int) -> Any:
             "       uf.created_at,",
             "       c.name",
             "  FROM unified_files AS uf",
-            " LEFT JOIN creditcard_receipt_matches AS crm ON crm.receipt_id = uf.id",
+            " LEFT JOIN invoice_lines AS il ON il.matched_file_id = uf.id AND il.id != %s",
             " LEFT JOIN companies AS c ON c.id = uf.company_id",
             " WHERE uf.purchase_datetime IS NOT NULL",
             "   AND uf.gross_amount IS NOT NULL",
-            "   AND (crm.invoice_item_id IS NULL OR crm.invoice_item_id = %s)",
+            "   AND (il.id IS NULL OR il.id = %s)",
         ]
-        params: list[Any] = [line_id]
+        params: list[Any] = [line_id, line_id]
         if target_date is not None:
             clauses.append("   AND ABS(DATEDIFF(DATE(uf.purchase_datetime), %s)) <= 7")
             params.append(target_date)
@@ -304,7 +283,7 @@ def line_candidates(line_id: int) -> Any:
                 "amount_difference": float(amount_diff) if amount_diff is not None else None,
                 "date_difference_days": date_diff,
                 "match_score": float(score),
-                "is_current_match": receipt_id == matched_receipt_id,
+                "is_current_match": receipt_id == matched_file_id,
             }
         )
 
@@ -312,7 +291,7 @@ def line_candidates(line_id: int) -> Any:
         candidates.insert(
             0,
             {
-                "file_id": matched_receipt_id,
+                "file_id": matched_file_id,
                 "purchase_datetime": matched_purchase_dt.isoformat() if hasattr(matched_purchase_dt, "isoformat") else matched_purchase_dt,
                 "gross_amount": matched_receipt_payload.get("gross_amount"),
                 "vendor_name": matched_vendor_name,

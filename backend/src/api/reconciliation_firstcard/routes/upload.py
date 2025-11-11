@@ -51,24 +51,6 @@ def _storage() -> FileStorage:
     return FileStorage(base)
 
 
-def _ensure_processing_state(invoice_id: str) -> None:
-    """Initialise processing_status to 'uploaded' when missing."""
-    if db_cursor is None:
-        return
-    try:
-        from services.invoice_status import invoice_documents_supports_updated_at
-        with db_cursor() as cur:
-            set_clause = "processing_status=%s"
-            if invoice_documents_supports_updated_at():
-                set_clause += ", updated_at=NOW()"
-            cur.execute(
-                f"UPDATE invoice_documents SET {set_clause} WHERE id=%s AND processing_status IS NULL",
-                (InvoiceProcessingStatus.UPLOADED.value, invoice_id),
-            )
-    except Exception:
-        logger.warning("Failed to initialise processing status for invoice %s", invoice_id)
-
-
 @recon_bp.post("/reconciliation/firstcard/upload-invoice")
 def upload_invoice() -> Any:
     """Upload a FirstCard invoice (PDF or image) and dispatch a workflow."""
@@ -122,7 +104,7 @@ def upload_invoice() -> Any:
         return (
             jsonify(
                 {
-                    "error": "duplicate_invoice",
+                    "error": "duplicate_file",
                     "invoice_id": existing_id,
                 }
             ),
@@ -284,7 +266,6 @@ def import_invoice() -> Any:
         except Exception:
             logger.debug("Failed to insert invoice line for %s", invoice_id)
 
-    _ensure_processing_state(invoice_id)
     try:
         transition_processing_status(
             invoice_id,

@@ -19,6 +19,7 @@ from .. import recon_bp
 from ..utils.db_helpers import (
     load_invoice_document,
     count_invoice_lines,
+    write_invoice_metadata,
 )
 from ..services.workflow_coordinator import WorkflowCoordinator
 from services.tasks import (
@@ -70,11 +71,10 @@ def list_statements() -> Any:
                     """
                     SELECT id, uploaded_at, updated_at, status, processing_status,
                            period_start, period_end, metadata_json,
-                           (SELECT current_stage_key
-                            FROM workflow_runs
-                            WHERE entity_type = 'invoice_document'
-                              AND entity_id = invoice_documents.id
-                            ORDER BY created_at DESC
+                           (SELECT wr.current_stage
+                            FROM workflow_runs wr
+                            WHERE wr.file_id = invoice_documents.id
+                            ORDER BY wr.created_at DESC
                             LIMIT 1) as current_stage_key
                     FROM invoice_documents
                     WHERE invoice_type IN ('company_card', 'credit_card_invoice')
@@ -87,11 +87,10 @@ def list_statements() -> Any:
                     """
                     SELECT id, uploaded_at, NULL as updated_at, status, processing_status,
                            period_start, period_end, metadata_json,
-                           (SELECT current_stage_key
-                            FROM workflow_runs
-                            WHERE entity_type = 'invoice_document'
-                              AND entity_id = invoice_documents.id
-                            ORDER BY created_at DESC
+                           (SELECT wr.current_stage
+                            FROM workflow_runs wr
+                            WHERE wr.file_id = invoice_documents.id
+                            ORDER BY wr.created_at DESC
                             LIMIT 1) as current_stage_key
                     FROM invoice_documents
                     WHERE invoice_type IN ('company_card', 'credit_card_invoice')
@@ -195,6 +194,90 @@ def list_statements() -> Any:
     return jsonify({"statements": items, "total": len(items)}), 200
 
 
+@recon_bp.get("/reconciliation/firstcard/summary")
+def system_summary() -> Any:
+    """Return aggregate stats for receipts, purchases, and invoices."""
+    if db_cursor is None:
+        return jsonify(
+            {
+                "receipts": {"matched": 0, "total": 0},
+                "purchases": {"unmatched": 0, "total": 0},
+                "invoices": {"incomplete": 0, "total": 0},
+            }
+        ), 200
+
+    receipts = {"matched": 0, "total": 0}
+    purchases = {"unmatched": 0, "total": 0}
+    invoices = {"incomplete": 0, "total": 0}
+
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN COALESCE(credit_card_match, 0) <> 0 THEN 1 ELSE 0 END) AS matched,
+                    COUNT(*) AS total
+                  FROM unified_files
+                 WHERE deleted_at IS NULL
+                   AND COALESCE(workflow_type, '') NOT IN ('creditcard_invoice', 'creditcard_page')
+                """
+            )
+            row = cur.fetchone() or (0, 0)
+            receipts = {
+                "matched": int(row[0] or 0),
+                "total": int(row[1] or 0),
+            }
+
+            cur.execute(
+                """
+                SELECT
+                    SUM(
+                        CASE
+                            WHEN match_status IS NULL OR match_status IN ('pending', 'unmatched', '')
+                                THEN 1 ELSE 0 END
+                    ) AS unmatched,
+                    COUNT(*) AS total
+                  FROM invoice_lines
+                """
+            )
+            row = cur.fetchone() or (0, 0)
+            purchases = {
+                "unmatched": int(row[0] or 0),
+                "total": int(row[1] or 0),
+            }
+
+            cur.execute(
+                """
+                SELECT
+                    SUM(
+                        CASE
+                            WHEN processing_status IS NULL
+                                 OR processing_status NOT IN ('matching_completed', 'completed')
+                                 THEN 1 ELSE 0 END
+                    ) AS incomplete,
+                    COUNT(*) AS total
+                  FROM invoice_documents
+                 WHERE invoice_type IN ('company_card', 'credit_card_invoice')
+                   AND deleted_at IS NULL
+                """
+            )
+            row = cur.fetchone() or (0, 0)
+            invoices = {
+                "incomplete": int(row[0] or 0),
+                "total": int(row[1] or 0),
+            }
+    except Exception:
+        logger.exception("Failed to build FirstCard summary")
+
+    return jsonify(
+        {
+            "receipts": receipts,
+            "purchases": purchases,
+            "invoices": invoices,
+        }
+    ), 200
+
+
 @recon_bp.delete("/reconciliation/firstcard/statements/<sid>")
 def delete_statement(sid: str) -> Any:
     """Soft delete a FirstCard invoice statement and related files."""
@@ -294,14 +377,21 @@ def resume_statement_workflow(sid: str) -> Any:
 
             workflow_run_id, status, current_stage = row
 
-            # Update status to show it's processing again
+            # Update status to show it's processing again using transitions
+            coordinator = WorkflowCoordinator()
             try:
-                set_clause = "status='matching', processing_status=%s"
-                if invoice_documents_supports_updated_at():
-                    set_clause += ", updated_at=NOW()"
-                cur.execute(
-                    f"UPDATE invoice_documents SET {set_clause} WHERE id=%s",
-                    (InvoiceProcessingStatus.OCR_PENDING.value, sid),
+                # Transition to OCR_PENDING (resume processing)
+                coordinator.start_processing(sid)
+                # Transition document status to MATCHING
+                transition_document_status(
+                    sid,
+                    InvoiceDocumentStatus.MATCHING,
+                    (
+                        InvoiceDocumentStatus.IMPORTED,
+                        InvoiceDocumentStatus.MATCHING,
+                        InvoiceDocumentStatus.FAILED,
+                        InvoiceDocumentStatus.PARTIALLY_MATCHED,
+                    ),
                 )
             except Exception as e:
                 logger.warning(f"Failed to update status for resume {sid}: {e}")
@@ -416,12 +506,29 @@ def restart_statement_workflow(sid: str) -> Any:
                 if not invoice_documents_supports_updated_at():
                     metadata["last_progress_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
-                set_clause = "metadata_json=%s, processing_status='ocr_pending', status='imported'"
-                if invoice_documents_supports_updated_at():
-                    set_clause += ", updated_at=NOW()"
-                cur.execute(
-                    f"UPDATE invoice_documents SET {set_clause} WHERE id=%s",
-                    (json.dumps(metadata), sid),
+                # Update metadata separately using helper function
+                write_invoice_metadata(sid, metadata)
+
+                # Use transitions for status updates
+                transition_processing_status(
+                    sid,
+                    InvoiceProcessingStatus.OCR_PENDING,
+                    (
+                        InvoiceProcessingStatus.UPLOADED,
+                        InvoiceProcessingStatus.FAILED,
+                        InvoiceProcessingStatus.COMPLETED,
+                        InvoiceProcessingStatus.OCR_PENDING,
+                    ),
+                )
+                transition_document_status(
+                    sid,
+                    InvoiceDocumentStatus.IMPORTED,
+                    (
+                        InvoiceDocumentStatus.FAILED,
+                        InvoiceDocumentStatus.COMPLETED,
+                        InvoiceDocumentStatus.MATCHED,
+                        InvoiceDocumentStatus.IMPORTED,
+                    ),
                 )
         except Exception as e:
             logger.warning(f"Failed to update metadata for restart {sid}: {e}")

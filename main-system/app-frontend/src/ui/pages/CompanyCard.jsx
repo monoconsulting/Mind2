@@ -11,6 +11,7 @@ import {
   FiChevronRight,
   FiAlertCircle,
   FiTrash2,
+  FiPercent,
 } from 'react-icons/fi'
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal'
 import { api } from '../api'
@@ -147,6 +148,12 @@ const toneClass = {
   failed: 'status-failed',
 }
 
+const INITIAL_SYSTEM_SUMMARY = {
+  receipts: { matched: 0, total: 0 },
+  purchases: { unmatched: 0, total: 0 },
+  invoices: { incomplete: 0, total: 0 },
+}
+
 // Map stage keys to tone colors
 function getStageResultTone(stageKey) {
   if (!stageKey) return 'pending'
@@ -204,6 +211,14 @@ function formatDate(value, withTime = true) {
   } catch (error) {
     return typeof value === 'string' ? value : '-'
   }
+}
+
+function formatNumber(value) {
+  const numeric = Number(value ?? 0)
+  if (Number.isNaN(numeric)) {
+    return '0'
+  }
+  return numeric.toLocaleString('sv-SE')
 }
 
 function describeProcessingStatus(status) {
@@ -403,6 +418,8 @@ export default function CompanyCard() {
   const [selectedDocument, setSelectedDocument] = React.useState(null)
   const [documentLines, setDocumentLines] = React.useState([])
   const [documentItems, setDocumentItems] = React.useState([])
+  const [systemSummary, setSystemSummary] = React.useState(INITIAL_SYSTEM_SUMMARY)
+  const [systemSummaryLoading, setSystemSummaryLoading] = React.useState(false)
   const [detailLoading, setDetailLoading] = React.useState(false)
 
   const [candidateState, setCandidateState] = React.useState(initialCandidatesState)
@@ -423,6 +440,36 @@ export default function CompanyCard() {
   React.useEffect(() => {
     selectedDocumentIdRef.current = selectedDocumentId
   }, [selectedDocumentId])
+
+  const loadSystemSummary = React.useCallback(async () => {
+    setSystemSummaryLoading(true)
+    try {
+      const res = await api.fetch('/ai/api/reconciliation/firstcard/summary')
+      if (!res.ok) {
+        throw new Error(`Status ${res.status}`)
+      }
+      let payload = await res.json()
+      payload = fixEncodingDeep(payload)
+      setSystemSummary({
+        receipts: {
+          matched: Number(payload?.receipts?.matched) || 0,
+          total: Number(payload?.receipts?.total) || 0,
+        },
+        purchases: {
+          unmatched: Number(payload?.purchases?.unmatched) || 0,
+          total: Number(payload?.purchases?.total) || 0,
+        },
+        invoices: {
+          incomplete: Number(payload?.invoices?.incomplete) || 0,
+          total: Number(payload?.invoices?.total) || 0,
+        },
+      })
+    } catch (error) {
+      console.error('Failed to load FirstCard summary', error)
+    } finally {
+      setSystemSummaryLoading(false)
+    }
+  }, [])
 
   const loadStatements = React.useCallback(async (preferredId = selectedDocumentIdRef.current) => {
     setLoading(true)
@@ -507,13 +554,15 @@ export default function CompanyCard() {
 
   React.useEffect(() => {
     loadStatements()
+    loadSystemSummary()
 
     const intervalId = setInterval(() => {
       loadStatements(selectedDocumentIdRef.current)
+      loadSystemSummary()
     }, 15000) // Poll every 15 seconds
 
     return () => clearInterval(intervalId) // Cleanup on unmount
-  }, [loadStatements])
+  }, [loadStatements, loadSystemSummary])
 
   React.useEffect(() => {
     if (selectedDocumentId) {
@@ -1008,26 +1057,19 @@ export default function CompanyCard() {
     return rows
   }, [selectedDocument])
 
-  const summary = React.useMemo(() => {
-    const base = { matched: 0, pending: 0, failed: 0 }
-    for (const item of items) {
-      const status = normalizeStatus(item?.status)
-      if (['matched', 'matchad', 'completed', 'done', 'success'].includes(status)) {
-        base.matched += 1
-      } else if (['failed', 'error'].includes(status)) {
-        base.failed += 1
-      } else {
-        base.pending += 1
-      }
-    }
-    return { ...base, total: items.length }
-  }, [items])
-
   const lineCounts = selectedDocument?.line_counts ?? {
     total: documentLines.length,
     matched: documentLines.filter((line) => line.match_status && line.match_status !== 'unmatched').length,
     unmatched: documentLines.filter((line) => !line.match_status || line.match_status === 'unmatched').length,
   }
+
+  const receiptStats = systemSummary.receipts ?? INITIAL_SYSTEM_SUMMARY.receipts
+  const purchaseStats = systemSummary.purchases ?? INITIAL_SYSTEM_SUMMARY.purchases
+  const invoiceStats = systemSummary.invoices ?? INITIAL_SYSTEM_SUMMARY.invoices
+  const totalInvoices = Number(invoiceStats.total) || 0
+  const totalItems = Number(purchaseStats.total) || 0
+  const matchedItems = Math.max(totalItems - (Number(purchaseStats.unmatched) || 0), 0)
+  const matchedItemsPercent = totalItems ? Math.round((matchedItems / totalItems) * 100) : 0
 
   const handleSortLines = React.useCallback((column) => {
     if (sortLineColumn === column) {
@@ -1880,32 +1922,66 @@ const renderStatementTable = () => {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="stat-card green">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div className="stat-card blue">
           <div className="flex items-center justify-between mb-2">
             <FiCheckCircle className="text-2xl opacity-80" />
-            <div className="stat-number">{summary.matched}</div>
+            {systemSummaryLoading ? (
+              <div className="loading-spinner" />
+            ) : (
+              <div className="text-right">
+                <div className="stat-number">{formatNumber(totalInvoices)}</div>
+              </div>
+            )}
           </div>
-          <div className="stat-label">Matchade utdrag</div>
-          <div className="stat-subtitle">Utdrag som är helt matchade</div>
+          <div className="stat-label">Inlästa utdrag</div>
+          <div className="stat-subtitle">Totalt antal importerade fakturor</div>
+        </div>
+
+        <div className="stat-card green">
+          <div className="flex items-center justify-between mb-2">
+            <FiFileText className="text-2xl opacity-80" />
+            {systemSummaryLoading ? (
+              <div className="loading-spinner" />
+            ) : (
+              <div className="text-right">
+                <div className="stat-number">{formatNumber(totalItems)}</div>
+              </div>
+            )}
+          </div>
+          <div className="stat-label">Totalt fakturaposter</div>
+          <div className="stat-subtitle">Antal rader (items) i alla utdrag</div>
         </div>
 
         <div className="stat-card blue">
           <div className="flex items-center justify-between mb-2">
-            <FiRefreshCw className="text-2xl opacity-80" />
-            <div className="stat-number">{summary.pending}</div>
+            <FiLink className="text-2xl opacity-80" />
+            {systemSummaryLoading ? (
+              <div className="loading-spinner" />
+            ) : (
+              <div className="text-right">
+                <div className="stat-number">{formatNumber(matchedItems)}</div>
+              </div>
+            )}
           </div>
-          <div className="stat-label">Pågående matchningar</div>
-          <div className="stat-subtitle">Utdrag som bearbetas</div>
+          <div className="stat-label">Matchade kvitton</div>
+          <div className="stat-subtitle">Antal rader som fått kvitto-match</div>
         </div>
 
         <div className="stat-card yellow">
           <div className="flex items-center justify-between mb-2">
-            <FiAlertTriangle className="text-2xl opacity-80" />
-            <div className="stat-number">{summary.failed}</div>
+            <FiPercent className="text-2xl opacity-80" />
+            {systemSummaryLoading ? (
+              <div className="loading-spinner" />
+            ) : (
+              <div className="text-right">
+                <div className="stat-number">{`${matchedItemsPercent}%`}</div>
+                <div className="text-xs text-gray-400">av {formatNumber(totalItems)} rader</div>
+              </div>
+            )}
           </div>
-          <div className="stat-label">Kräver åtgärd</div>
-          <div className="stat-subtitle">Kontrollera status eller kör om matchning</div>
+          <div className="stat-label">Matchningsgrad</div>
+          <div className="stat-subtitle">Andel item-rader som är matchade</div>
         </div>
       </div>
 
