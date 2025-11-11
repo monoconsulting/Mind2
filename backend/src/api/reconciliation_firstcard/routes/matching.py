@@ -48,24 +48,6 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
-def _ensure_processing_state(invoice_id: str) -> None:
-    """Initialise processing_status to 'uploaded' when missing."""
-    if db_cursor is None:
-        return
-    try:
-        from services.invoice_status import invoice_documents_supports_updated_at, InvoiceProcessingStatus
-        with db_cursor() as cur:
-            set_clause = "processing_status=%s"
-            if invoice_documents_supports_updated_at():
-                set_clause += ", updated_at=NOW()"
-            cur.execute(
-                f"UPDATE invoice_documents SET {set_clause} WHERE id=%s AND processing_status IS NULL",
-                (InvoiceProcessingStatus.UPLOADED.value, invoice_id),
-            )
-    except Exception:
-        logger.warning("Failed to initialise processing status for invoice %s", invoice_id)
-
-
 @recon_bp.post("/reconciliation/firstcard/match")
 def match_invoice_lines() -> Any:
     """Attempt automatic matching of invoice lines against receipts."""
@@ -87,7 +69,6 @@ def match_invoice_lines() -> Any:
         invoice_id=invoice_id,
         actor="reconciliation_ui",
     )
-    _ensure_processing_state(invoice_id)
 
     try:
         matched_new, evaluated = auto_match_invoice_lines(invoice_id)
@@ -144,16 +125,15 @@ def update_line_match(line_id: int) -> Any:
         actor="reconciliation_ui",
     )
 
+    # Read from invoice_lines instead of creditcard_invoice_items
     try:
         with db_cursor() as cur:
             cur.execute(
                 """
-                SELECT main_id,
-                       purchase_date,
-                       amount_original,
-                       amount_sek,
-                       gross_amount
-                  FROM creditcard_invoice_items
+                SELECT invoice_id,
+                       transaction_date,
+                       amount
+                  FROM invoice_lines
                  WHERE id=%s
                 """,
                 (line_id,),
@@ -168,17 +148,16 @@ def update_line_match(line_id: int) -> Any:
             "matching.api.line.failed",
             line_id=line_id,
             level="error",
-            reason="invoice_item_missing",
+            reason="invoice_line_missing",
         )
         return jsonify({"ok": False, "reason": "not_found"}), 404
 
-    main_id = int(row[0] or 0)
-    purchase_date = row[1]
-    amount_candidates = (as_decimal(row[2]), as_decimal(row[3]), as_decimal(row[4]))
-    matched_amount = next((val for val in amount_candidates if val is not None), None)
+    line_invoice_id = row[0]
+    transaction_date = row[1]
+    matched_amount = as_decimal(row[2])
 
     if not invoice_id:
-        invoice_id = find_invoice_id_for_main(main_id)
+        invoice_id = line_invoice_id
     if not invoice_id:
         log_event(
             logger,
@@ -189,21 +168,10 @@ def update_line_match(line_id: int) -> Any:
         )
         return jsonify({"ok": False, "reason": "invoice_not_found"}), 404
 
-    invoice_line_id = find_invoice_line_id_for_item(line_id, invoice_id)
-    if invoice_line_id is None:
-        log_event(
-            logger,
-            "matching.api.line.failed",
-            line_id=line_id,
-            invoice_id=invoice_id,
-            level="error",
-            reason="line_mapping_missing",
-        )
-        return jsonify({"ok": False, "reason": "line_mapping_missing"}), 404
-
+    # Check for conflicts - if another line is already matched to this file
     try:
         with db_cursor() as cur:
-            cur.execute("SELECT invoice_item_id FROM creditcard_receipt_matches WHERE receipt_id=%s AND invoice_item_id<>%s LIMIT 1", (new_file_id, line_id))
+            cur.execute("SELECT id FROM invoice_lines WHERE matched_file_id=%s AND id<>%s LIMIT 1", (new_file_id, line_id))
             conflict = cur.fetchone()
     except Exception:
         conflict = None
@@ -223,13 +191,13 @@ def update_line_match(line_id: int) -> Any:
     try:
         old_match: Optional[str] = None
         with db_cursor() as cur:
-            cur.execute("SELECT matched_file_id FROM invoice_lines WHERE id=%s", (invoice_line_id,))
+            cur.execute("SELECT matched_file_id FROM invoice_lines WHERE id=%s", (line_id,))
             row = cur.fetchone()
             if row:
                 old_match = row[0]
 
         updated = transition_line_status_and_link(
-            invoice_line_id,
+            line_id,
             new_file_id,
             1.0,
             InvoiceLineMatchStatus.MANUAL,
@@ -252,21 +220,12 @@ def update_line_match(line_id: int) -> Any:
             return jsonify({"ok": False, "reason": "line_state_conflict"}), 409
 
         log_line_history(
-            invoice_line_id,
+            line_id,
             "matched",
             "manual",
             old_file_id=old_match,
             new_file_id=new_file_id,
             reason="manual-match",
-        )
-
-        _persist_credit_card_match(
-            new_file_id,
-            line_id,
-            matched_amount,
-            None,
-            True,
-            match_origin="manual",
         )
         record_invoice_decision("matched")
     except Exception:

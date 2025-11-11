@@ -61,53 +61,57 @@ def _as_date(val: Any) -> Optional[date]:
 
 
 def _count_invoice_lines(invoice_id: str) -> tuple[int, int]:
-    """Count total and matched invoice lines.
-
-    Returns:
-        (total_lines, matched_lines)
-    """
+    """Count total and matched invoice lines using the canonical invoice_lines table."""
     if db_cursor is None:
         return (0, 0)
 
-    # First try creditcard_invoice_items table
-    try:
-        with db_cursor() as cur:
-            # Get main_id from metadata
-            cur.execute(
-                "SELECT metadata_json FROM invoice_documents WHERE id=%s",
-                (invoice_id,),
-            )
-            row = cur.fetchone()
-            if row and row[0]:
-                try:
-                    metadata = json.loads(row[0])
-                    main_id = metadata.get("creditcard_main_id")
-                    if main_id:
-                        cur.execute(
-                            "SELECT COUNT(*), SUM(CASE WHEN matched >= 1 THEN 1 ELSE 0 END) "
-                            "FROM creditcard_invoice_items WHERE main_id=%s",
-                            (main_id,),
-                        )
-                        row = cur.fetchone()
-                        if row:
-                            return (int(row[0] or 0), int(row[1] or 0))
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-    # Fallback to invoice_lines table
+    # Always prefer invoice_lines so UI reflects real-time line status.
     try:
         with db_cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*), "
-                "SUM(CASE WHEN match_status IN ('auto','manual','confirmed') THEN 1 ELSE 0 END) "
-                "FROM invoice_lines WHERE invoice_id=%s",
+                """
+                SELECT COUNT(*),
+                       SUM(CASE WHEN match_status IN ('auto','manual','confirmed') THEN 1 ELSE 0 END)
+                  FROM invoice_lines
+                 WHERE invoice_id=%s
+                """,
                 (invoice_id,),
             )
             row = cur.fetchone()
             if row:
-                return (int(row[0] or 0), int(row[1] or 0))
+                total, matched = int(row[0] or 0), int(row[1] or 0)
+                if total > 0 or matched > 0:
+                    return (total, matched)
+    except Exception:
+        pass
+
+    # Legacy fallback via creditcard_invoice_items if invoice_lines not populated yet.
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT metadata_json FROM invoice_documents WHERE id=%s",
+                (invoice_id,),
+            )
+            metadata_row = cur.fetchone()
+            if metadata_row and metadata_row[0]:
+                try:
+                    metadata = json.loads(metadata_row[0])
+                except Exception:
+                    metadata = {}
+                main_id = metadata.get("creditcard_main_id")
+                if main_id:
+                    cur.execute(
+                        """
+                        SELECT COUNT(*),
+                               SUM(CASE WHEN matched >= 1 THEN 1 ELSE 0 END)
+                          FROM creditcard_invoice_items
+                         WHERE main_id=%s
+                        """,
+                        (main_id,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return (int(row[0] or 0), int(row[1] or 0))
     except Exception:
         pass
 

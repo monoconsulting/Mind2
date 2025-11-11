@@ -203,118 +203,78 @@ def invoice_detail(invoice_id: str) -> Any:
     card_details: dict[str, Any] | None = None
     items: list[dict[str, Any]] = []
     lines: list[dict[str, Any]] = []
-    if db_cursor is not None and creditcard_main_id:
-        try:
-            with db_cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id,
-                           card_type,
-                           card_name,
-                           card_number_masked,
-                           card_holder
-                      FROM creditcard_invoices_main
-                     WHERE id = %s
-                    """,
-                    (creditcard_main_id,),
-                )
-                row = cur.fetchone()
-        except Exception:
-            row = None
-        if row:
-            (
-                main_id,
-                card_type,
-                card_name,
-                card_number_masked,
-                card_holder,
-            ) = row
+
+    # Read card details from invoice_summary metadata if available
+    summary_payload = metadata.get("invoice_summary")
+    if isinstance(summary_payload, dict):
+        if any(k in summary_payload for k in ["card_type", "card_name", "card_holder"]):
             card_details = {
-                "id": int(main_id),
-                "card_type": card_type,
-                "card_name": card_name,
-                "card_number_masked": card_number_masked,
-                "card_holder": card_holder,
+                "card_type": summary_payload.get("card_type"),
+                "card_name": summary_payload.get("card_name"),
+                "card_number_masked": summary_payload.get("card_number_masked"),
+                "card_holder": summary_payload.get("card_holder"),
             }
-            summary_payload = metadata.get("invoice_summary")
-            if not isinstance(summary_payload, dict):
-                summary_payload = {}
-            if card_type:
-                summary_payload.setdefault("card_type", card_type)
-            if card_name:
-                summary_payload.setdefault("card_name", card_name)
-            if card_type and card_name:
-                summary_payload.setdefault("card_label", f"{card_type} - {card_name}")
-            summary_payload.setdefault("card_number_masked", card_number_masked)
-            summary_payload.setdefault("card_holder", card_holder)
-            metadata["invoice_summary"] = summary_payload
+
+    # Read invoice lines from invoice_lines table (NEW approach)
+    if db_cursor is not None:
         try:
             with db_cursor() as cur:
                 cur.execute(
                     """
-                    SELECT ci.id,
-                           ci.line_no,
-                           ci.purchase_date,
-                           ci.merchant_name,
-                           ci.merchant_city,
-                           ci.amount_original,
-                           ci.amount_sek,
-                           ci.gross_amount,
-                           ci.net_amount,
-                           ci.currency_original,
-                           ci.vat_rate,
-                           ci.matched,
-                           crm.receipt_id,
-                           crm.matched_amount,
-                           uf.purchase_datetime,
-                           uf.gross_amount AS receipt_gross_amount,
+                    SELECT il.id,
+                           il.transaction_date,
+                           il.merchant_name,
+                           il.description,
+                           il.amount,
+                           NULL AS currency,
+                           il.extraction_confidence AS confidence,
+                           il.match_status,
+                           il.match_score,
+                           il.matched_file_id,
+                           COALESCE(uf.purchase_datetime, uf.created_at) AS receipt_datetime,
+                           COALESCE(
+                               NULLIF(uf.gross_amount, 0),
+                               NULLIF(uf.gross_amount_sek, 0),
+                               NULLIF(uf.net_amount, 0),
+                               NULLIF(uf.net_amount_sek, 0)
+                           ) AS receipt_gross_amount,
                            uf.credit_card_match,
                            uf.created_at,
                            c.name AS vendor_name
-                      FROM creditcard_invoice_items AS ci
-                 LEFT JOIN creditcard_receipt_matches AS crm ON crm.invoice_item_id = ci.id
-                 LEFT JOIN unified_files AS uf ON uf.id = crm.receipt_id
+                      FROM invoice_lines AS il
+                 LEFT JOIN unified_files AS uf ON uf.id = il.matched_file_id
                  LEFT JOIN companies AS c ON c.id = uf.company_id
-                     WHERE ci.main_id = %s
-                  ORDER BY ci.line_no ASC, ci.id ASC
+                     WHERE il.invoice_id = %s
+                  ORDER BY il.id ASC
                     """,
-                    (creditcard_main_id,),
+                    (invoice_id,),
                 )
-                item_rows = cur.fetchall() or []
+                line_rows = cur.fetchall() or []
         except Exception:
-            item_rows = []
+            logger.exception("Failed to load invoice lines for %s", invoice_id)
+            line_rows = []
+
         for (
-            item_id,
-            line_no,
-            purchase_date,
+            line_id,
+            transaction_date,
             merchant_name,
-            merchant_city,
-            amount_original,
-            amount_sek,
-            gross_amount,
-            net_amount,
-            currency_original,
-            vat_rate,
-            matched_flag,
-            receipt_id,
-            matched_amount,
+            description,
+            amount,
+            currency,
+            confidence,
+            match_status,
+            match_score,
+            matched_file_id,
             receipt_purchase_dt,
             receipt_gross_amount,
             receipt_match_flag,
             receipt_created_at,
             receipt_vendor_name,
-        ) in item_rows:
-            match_value = int(matched_flag or 0)
-            match_status_token = "pending"
-            if match_value == 2:
-                match_status_token = "manual"
-            elif match_value >= 1:
-                match_status_token = "auto"
-
+        ) in line_rows:
             matched_receipt: dict[str, Any] | None = None
-            if receipt_id:
+            if matched_file_id:
                 matched_receipt = {
-                    "file_id": receipt_id,
+                    "file_id": matched_file_id,
                     "purchase_datetime": receipt_purchase_dt.isoformat() if hasattr(receipt_purchase_dt, "isoformat") else receipt_purchase_dt,
                     "gross_amount": float(receipt_gross_amount) if receipt_gross_amount is not None else None,
                     "credit_card_match": bool(receipt_match_flag) if receipt_match_flag is not None else False,
@@ -322,43 +282,47 @@ def invoice_detail(invoice_id: str) -> Any:
                     "matched_at": receipt_created_at.isoformat() if hasattr(receipt_created_at, "isoformat") else receipt_created_at,
                 }
 
-            items.append(
+            # Build lines array
+            lines.append(
                 {
-                    "id": int(item_id),
-                    "line_no": int(line_no) if line_no is not None else None,
-                    "purchase_date": purchase_date.isoformat() if hasattr(purchase_date, "isoformat") else purchase_date,
+                    "id": int(line_id),
+                    "invoice_id": invoice_id,
+                    "transaction_date": transaction_date.isoformat() if hasattr(transaction_date, "isoformat") else transaction_date,
+                    "amount": float(amount) if amount is not None else None,
+                    "currency": currency,
+                    "description": description or merchant_name or "",
                     "merchant_name": merchant_name,
-                    "merchant_city": merchant_city,
-                    "amount_original": float(amount_original) if amount_original is not None else None,
-                    "amount_sek": float(amount_sek) if amount_sek is not None else None,
-                    "gross_amount": float(gross_amount) if gross_amount is not None else None,
-                    "net_amount": float(net_amount) if net_amount is not None else None,
-                    "vat_rate": float(vat_rate) if vat_rate is not None else None,
-                    "currency_original": currency_original,
-                    "matched": match_value,
-                    "matched_receipt_id": receipt_id,
+                    "match_status": match_status or "pending",
+                    "match_score": float(match_score) if match_score is not None else None,
+                    "matched_file_id": matched_file_id,
+                    "matched_receipt": matched_receipt,
+                    "confidence": float(confidence) if confidence is not None else None,
                 }
             )
 
-            display_amount = (
-                as_decimal(amount_sek)
-                or as_decimal(gross_amount)
-                or as_decimal(amount_original)
-                or as_decimal(net_amount)
-            )
+            # Build items array for backward compatibility (deprecated, but kept for now)
+            # Map match_status to legacy matched flag
+            matched_flag = 0
+            if match_status == "manual":
+                matched_flag = 2
+            elif match_status in ("auto", "confirmed"):
+                matched_flag = 1
 
-            lines.append(
+            items.append(
                 {
-                    "id": int(item_id),
-                    "invoice_id": invoice_id,
-                    "transaction_date": purchase_date.isoformat() if hasattr(purchase_date, "isoformat") else purchase_date,
-                    "amount": float(display_amount) if display_amount is not None else None,
-                    "currency": currency_original,
-                    "description": merchant_name or merchant_city or "",
-                    "match_status": match_status_token,
-                    "match_score": 1.0 if matched_receipt else None,
-                    "matched_file_id": receipt_id,
-                    "matched_receipt": matched_receipt,
+                    "id": int(line_id),
+                    "line_no": None,  # Not stored in invoice_lines
+                    "purchase_date": transaction_date.isoformat() if hasattr(transaction_date, "isoformat") else transaction_date,
+                    "merchant_name": merchant_name,
+                    "merchant_city": None,  # Not stored in invoice_lines
+                    "amount_original": float(amount) if amount is not None else None,
+                    "amount_sek": float(amount) if amount is not None else None,
+                    "gross_amount": float(amount) if amount is not None else None,
+                    "net_amount": None,
+                    "vat_rate": None,
+                    "currency_original": currency,
+                    "matched": matched_flag,
+                    "matched_receipt_id": matched_file_id,
                 }
             )
 

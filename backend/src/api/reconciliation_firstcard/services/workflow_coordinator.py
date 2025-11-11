@@ -317,3 +317,241 @@ class WorkflowCoordinator:
             logger.error(f"Failed to get current state for invoice {invoice_id}: {e}")
 
         return None
+
+    def create_workflow_run(
+        self,
+        workflow_key: str,
+        source_channel: str,
+        file_id: str,
+        content_hash: str,
+    ) -> Optional[int]:
+        """Create a new workflow run in the database.
+
+        Args:
+            workflow_key: Workflow identifier (e.g., 'WF3_FIRSTCARD_INVOICE')
+            source_channel: Source of the workflow (e.g., 'kortmatchning_upload')
+            file_id: The file identifier
+            content_hash: SHA256 hash of the file content
+
+        Returns:
+            workflow_run_id if successful, None otherwise
+        """
+        if db_cursor is None:
+            logger.error("Cannot create workflow run - database not available")
+            return None
+
+        try:
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO workflow_runs
+                    (workflow_key, source_channel, file_id, content_hash, current_stage, status, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, 'init', 'running', NOW(), NOW())
+                    """,
+                    (workflow_key, source_channel, file_id, content_hash),
+                )
+                workflow_run_id = cur.lastrowid
+                logger.info(
+                    f"Created workflow run {workflow_run_id} for file {file_id} (workflow={workflow_key})"
+                )
+                return workflow_run_id
+        except Exception as e:
+            logger.error(f"Failed to create workflow run for file {file_id}: {e}")
+            return None
+
+    def begin_import_stage(
+        self,
+        workflow_run_id: Optional[int],
+        stage_key: str,
+        message: Optional[str] = None,
+    ) -> bool:
+        """Begin an import stage in the workflow.
+
+        Args:
+            workflow_run_id: The workflow run identifier
+            stage_key: Stage identifier (e.g., 'src_fc', 'fc_create')
+            message: Optional message to log
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if workflow_run_id is None:
+            return False
+
+        if db_cursor is None:
+            logger.error("Cannot begin import stage - database not available")
+            return False
+
+        # Import stage boundaries that require start/end markers
+        _IMPORT_STAGE_WITH_BOUNDARIES = {
+            "src_portal", "src_ftp", "src_fc", "ingest_store", "ingest_wf1",
+            "fc_create", "fc_ocr", "fc_parse", "fc_ready", "detect_type",
+            "r_ocr", "r_ai3", "r_ai4", "r_persist", "r_queue_match",
+            "ai5", "m_link", "m_unmatched", "finalize_ok", "finalize_fail",
+        }
+
+        try:
+            # Log boundary start marker if applicable
+            if stage_key in _IMPORT_STAGE_WITH_BOUNDARIES:
+                with db_cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO workflow_stage_runs
+                        (workflow_run_id, stage_key, status, started_at, finished_at, message)
+                        VALUES (%s, %s, %s, NOW(), NOW(), %s)
+                        """,
+                        (
+                            workflow_run_id,
+                            f"{stage_key}_start",
+                            "succeeded",
+                            message[:200] if message else None,
+                        ),
+                    )
+
+            # Log stage as running
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO workflow_stage_runs
+                    (workflow_run_id, stage_key, status, started_at, message)
+                    VALUES (%s, %s, %s, NOW(), %s)
+                    """,
+                    (
+                        workflow_run_id,
+                        stage_key,
+                        "running",
+                        message[:200] if message else None,
+                    ),
+                )
+
+            logger.info(f"Began import stage '{stage_key}' for workflow run {workflow_run_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to begin import stage '{stage_key}': {e}")
+            return False
+
+    def complete_import_stage(
+        self,
+        workflow_run_id: Optional[int],
+        stage_key: str,
+        success: bool = True,
+        message: Optional[str] = None,
+    ) -> bool:
+        """Complete an import stage in the workflow.
+
+        Args:
+            workflow_run_id: The workflow run identifier
+            stage_key: Stage identifier (e.g., 'src_fc', 'fc_create')
+            success: Whether the stage completed successfully
+            message: Optional message to log
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if workflow_run_id is None:
+            return False
+
+        if db_cursor is None:
+            logger.error("Cannot complete import stage - database not available")
+            return False
+
+        # Import stage boundaries that require start/end markers
+        _IMPORT_STAGE_WITH_BOUNDARIES = {
+            "src_portal", "src_ftp", "src_fc", "ingest_store", "ingest_wf1",
+            "fc_create", "fc_ocr", "fc_parse", "fc_ready", "detect_type",
+            "r_ocr", "r_ai3", "r_ai4", "r_persist", "r_queue_match",
+            "ai5", "m_link", "m_unmatched", "finalize_ok", "finalize_fail",
+        }
+
+        status = "succeeded" if success else "failed"
+
+        try:
+            # Update stage as completed
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE workflow_stage_runs
+                    SET status=%s, finished_at=NOW(), message=%s
+                    WHERE workflow_run_id=%s AND stage_key=%s
+                    """,
+                    (
+                        status,
+                        message[:200] if message else None,
+                        workflow_run_id,
+                        stage_key,
+                    ),
+                )
+
+            # Log boundary end marker if applicable
+            if stage_key in _IMPORT_STAGE_WITH_BOUNDARIES:
+                with db_cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO workflow_stage_runs
+                        (workflow_run_id, stage_key, status, started_at, finished_at, message)
+                        VALUES (%s, %s, %s, NOW(), NOW(), %s)
+                        """,
+                        (
+                            workflow_run_id,
+                            f"{stage_key}_end",
+                            status,
+                            message[:200] if message else None,
+                        ),
+                    )
+
+            logger.info(
+                f"Completed import stage '{stage_key}' for workflow run {workflow_run_id} (success={success})"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to complete import stage '{stage_key}': {e}")
+            return False
+
+    def dispatch_workflow(self, workflow_run_id: int) -> bool:
+        """Dispatch a Celery workflow task based on the workflow_key.
+
+        Args:
+            workflow_run_id: The workflow run identifier
+
+        Returns:
+            True if dispatched successfully, False otherwise
+        """
+        if db_cursor is None:
+            logger.error("Cannot dispatch workflow - database not available")
+            return False
+
+        try:
+            # Get workflow run details
+            with db_cursor() as cur:
+                cur.execute(
+                    "SELECT workflow_key FROM workflow_runs WHERE id=%s",
+                    (workflow_run_id,),
+                )
+                row = cur.fetchone()
+
+            if not row:
+                logger.error(f"Workflow run {workflow_run_id} not found")
+                return False
+
+            workflow_key = row[0]
+
+            # Import Celery app and task
+            try:
+                from services.tasks.workflow_tasks import dispatch_workflow as wf_dispatch
+                success = wf_dispatch(workflow_run_id)
+                if success:
+                    logger.info(
+                        f"Dispatched workflow {workflow_key} for run {workflow_run_id}"
+                    )
+                else:
+                    logger.error(
+                        f"Failed to dispatch workflow {workflow_key} for run {workflow_run_id}"
+                    )
+                return success
+            except ImportError as e:
+                logger.error(f"Failed to import workflow dispatch function: {e}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to dispatch workflow run {workflow_run_id}: {e}")
+            return False
