@@ -327,6 +327,7 @@ _________
 - [ ] Dropdown i process och kvitton för:
   - [ ] År
   - [ ] Månad
-  - [ ] 
+  - [ ] Matchad/Alla/Ej matchade
+  - [ ] Kvitto/First
 
 
