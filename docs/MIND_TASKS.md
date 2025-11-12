@@ -328,6 +328,7 @@ _________
   - [ ] År
   - [ ] Månad
   - [ ] Matchad/Alla/Ej matchade
-  - [ ] Kvitto/First
+  - [ ] Kvitto/First Card/Faktura/Alla
+  - [ ] 
 
 
