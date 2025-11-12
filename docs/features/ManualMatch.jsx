@@ -1,6 +1,4 @@
-Här är hela filen `ManualMatch.jsx` – komplett, fristående och redo att klistras in i `main-system/app-frontend/src/ui/pages/ManualMatch.jsx`. Den följer ditt scope: inget i övriga filer ändras, allt nytt är isolerat. Koden återanvänder existerande API-kontrakt (FirstCard statements/lines, receipts och manual match), integrerar kvittoportalen och implementerar single-select med MATCHA-knapp i headern.
-
-```jsx
+jsx
 /**
  * @file ManualMatch.jsx
  * @description Manual matching view for linking a single FirstCard line to a single receipt
@@ -694,4 +692,3 @@ export default function ManualMatch() {
     </div>
   );
 }
-```

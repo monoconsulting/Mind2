@@ -1,107 +1,79 @@
 @echo off
-REM ============================================================================
-REM Mind2 Docker Build Script (No Cache)
-REM This script builds backend and frontend Docker images and brings up profiles.
-REM Changes from original:
-REM  - Use "cd /d" to switch drive and directory reliably (prevents wrong C:\ path).
-REM  - Added SETLOCAL and simple PATH checks for docker / docker-compose.
-REM  - Kept original commands; where an alternative exists it is commented, not removed.
-REM ============================================================================
-
 SETLOCAL ENABLEEXTENSIONS
 echo ============================================
-echo Mind2 Docker Build Script (No Cache)
-echo ============================================
-echo.
-echo Frontend structure:
-echo - mobile-capture-frontend/   : Static HTML/JS for mobile receipt capture (served by nginx, no Docker)
-echo - main-system/app-frontend/  : Current admin frontend (v0.2.0) with React - NEEDS DOCKER BUILD
-echo.
+echo Mind2 Docker Build Script - No Cache
 echo ============================================
 echo.
 
-REM --- Ensure we are in the project root on the correct drive ---
-REM ORIGINAL:  cd e:\projects\Mind2
-REM PROBLEM:   Without /d, drive does not switch if started on C:
-REM FIXED:
 cd /d E:\projects\Mind2
 if errorlevel 1 (
-    echo ERROR: Could not change directory to E:\projects\Mind2
+    echo ERROR: Could not change to E:\projects\Mind2
     pause
     exit /b 1
 )
 
-REM --- Quick check that docker CLI is available ---
 where docker >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: "docker" not found in PATH. Start Docker Desktop or fix PATH.
+    echo ERROR: docker not found in PATH
     pause
     exit /b 1
 )
 
-REM If you prefer the new CLI, you can use "docker compose" instead of docker-compose.
-REM We keep docker-compose as in your original file.
-where docker-compose >nul 2>&1
-if errorlevel 1 (
-    echo WARNING: "docker-compose" not found in PATH. If you use the v2 CLI, enable the docker-compose v1 shim or switch to:
-    echo   docker compose --profile main --profile monitoring up -d
-    echo Continuing anyway...
-)
-
-REM --- Build backend image without cache ---
-echo [1/2] Building backend image...
-docker build --no-cache -t mind2-ai-api:dev -f E:\projects\Mind2\backend\Dockerfile .
-if %errorlevel% neq 0 (
-    echo ERROR: Backend build failed!
-    pause
-    exit /b %errorlevel%
-)
-echo Backend build successful!
+REM Build backend
 echo.
-
-REM --- Build main-system app-frontend image without cache ---
-echo [2/2] Building main-system app-frontend image...
-REM ORIGINAL:  cd E:\projects\Mind2\main-system\app-frontend
-REM FIXED: also ensure drive switch with /d (even though already on E:, this is safe)
-cd /d E:\projects\Mind2\main-system\app-frontend
+echo [1/3] Building backend...
+docker build --no-cache -t mind2-ai-api:dev -f backend\Dockerfile .
 if errorlevel 1 (
-    echo ERROR: Could not change directory to E:\projects\Mind2\main-system\app-frontend
-    cd /d E:\projects\Mind2
+    echo ERROR: Backend build failed
     pause
     exit /b 1
 )
-docker build --no-cache -t mind2-admin-frontend:dev .
-if %errorlevel% neq 0 (
-    echo ERROR: Frontend build failed!
-    cd /d E:\projects\Mind2
+echo Backend OK
+
+REM Build production frontend
+echo.
+echo [2/3] Building production frontend...
+docker build --no-cache -t mind2-admin-frontend:dev -f main-system\app-frontend\Dockerfile main-system\app-frontend
+if errorlevel 1 (
+    echo ERROR: Production frontend build failed
     pause
-    exit /b %errorlevel%
+    exit /b 1
 )
-echo Frontend build successful!
-echo.
+echo Production frontend OK
 
-REM --- Start all containers (main + monitoring profiles) ---
-echo ============================================
-echo All Docker images built successfully!
-echo ============================================
+REM Build dev frontend with hot-reload
 echo.
-echo Starting all containers (main + monitoring profiles)...
-cd /d E:\projects\Mind2
+echo [3/3] Building dev frontend (hot-reload)...
+docker build --no-cache -t mind2-admin-frontend:dev-hotreload -f main-system\app-frontend\Dockerfile.dev main-system\app-frontend
+if errorlevel 1 (
+    echo ERROR: Dev frontend build failed
+    pause
+    exit /b 1
+)
+echo Dev frontend OK
 
-REM ORIGINAL:
+REM Start containers
+echo.
+echo Starting containers...
 docker-compose --profile main --profile monitoring up -d
-if %errorlevel% neq 0 (
-    echo ERROR: Failed to start containers with docker-compose.
-    echo If you are on Docker CLI v2, the equivalent is:
-    echo   docker compose --profile main --profile monitoring up -d
+if errorlevel 1 (
+    echo ERROR: Failed to start containers
     pause
-    exit /b %errorlevel%
+    exit /b 1
 )
 
 echo.
-docker-compose --profile main --profile monitoring ps
-
+echo ============================================
+echo SUCCESS - All services running
+echo ============================================
 echo.
-echo Done.
+echo Services:
+echo   Production:  http://localhost:8008/
+echo   Development: http://localhost:5169/
+echo   Manual Match: http://localhost:5169/manual-match
+echo   phpMyAdmin:  http://localhost:8087/
+echo.
+docker-compose ps
+echo.
 pause
 ENDLOCAL
