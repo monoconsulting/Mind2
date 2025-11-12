@@ -1,10 +1,11 @@
 import React from 'react'
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
-import { FiHome, FiList, FiCreditCard, FiSliders, FiUpload, FiLogOut, FiBarChart, FiChevronDown, FiChevronRight, FiFileText } from 'react-icons/fi'
+import { FiHome, FiList, FiCreditCard, FiSliders, FiUpload, FiLogOut, FiBarChart, FiChevronDown, FiChevronRight, FiFileText, FiLink } from 'react-icons/fi'
 import Dashboard from '../ui/pages/Dashboard.jsx'
 import Process from '../ui/pages/Process.jsx'
 import Receipts from '../ui/pages/Receipts.jsx'
 import CompanyCard from '../ui/pages/CompanyCard.jsx'
+import ManualMatch from '../ui/pages/ManualMatch.jsx'
 import Settings from '../ui/pages/Settings.jsx'
 import ExportPage from '../ui/pages/Export.jsx'
 import Login from '../ui/pages/Login.jsx'
@@ -73,6 +74,7 @@ function Shell({ children }) {
       '/process': 'Process',
       '/receipts': 'Kvitton',
       '/company-card': 'Kortmatchning',
+      '/manual-match': 'Manuell matchning',
       '/ai': 'AI',
       '/export': 'Export',
       '/settings': 'Användare'
@@ -117,6 +119,12 @@ function Shell({ children }) {
             label="Kortmatchning"
             to="/company-card"
             isActive={location.pathname === '/company-card'}
+          />
+          <NavButton
+            icon={FiLink}
+            label="Manuell matchning"
+            to="/manual-match"
+            isActive={location.pathname === '/manual-match'}
           />
           <NavButton
             icon={FiBarChart}
@@ -184,6 +192,7 @@ export default function App() {
         <Route path="/process" element={<Shell><Process /></Shell>} />
         <Route path="/receipts" element={<Shell><Receipts /></Shell>} />
         <Route path="/company-card" element={<Shell><CompanyCard /></Shell>} />
+        <Route path="/manual-match" element={<Shell><ManualMatch /></Shell>} />
         <Route path="/export" element={<Shell><ExportPage /></Shell>} />
         <Route path="/ai" element={<Shell><AiPage /></Shell>} />
         <Route path="/settings" element={<Shell><Settings /></Shell>} />

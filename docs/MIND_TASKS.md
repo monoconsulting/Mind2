@@ -321,5 +321,12 @@ _________
 
 
 - [ ] Vid klick på post i första kolumnen ska previewmodalen öppnas med inställningar anpassade för FC
-- [ ] 
+- [ ] Slå samman kvitton så det blir ett av flera bilder 
+- [ ] Säkerställ att kvitton som är pdf:er hanteras på rätt sätt
+- [ ] SKapa dropdown för företag i previewmodalen
+- [ ] Dropdown i process och kvitton för:
+  - [ ] År
+  - [ ] Månad
+  - [ ] 
+
 
