@@ -65,3 +65,11 @@ Step-by-step (summary):
    - Interactive components behave as expected
 
 This scaffold already points to `/darkmind.css` (in `public/`). Replace it with the real Darkmind build when available.
+
+## Manuell matchning
+
+- Sidan hittas via menyalternativet **Manuell matchning** (`/manual-match`) direkt under Kortmatchning.
+- Defaultperioden sätts vid inläsning till senast importerade FirstCard-statement (`GET /ai/api/reconciliation/firstcard/statements`). Om inga statements finns väljs innevarande månad.
+- Vänster kolumn laddar FirstCard-rader för vald period via `GET /ai/api/reconciliation/firstcard/invoices/<id>/lines`.
+- Höger kolumn laddar kvitton via `GET /ai/api/receipts?from=YYYY-MM-01&to=YYYY-MM-DD` och öppnar befintlig `ReceiptPreviewModal`.
+- MATCHA-knappen skickar `POST /ai/api/reconciliation/firstcard/match` med `line_id`, `receipt_id` och (när den finns) `invoice_id`.
