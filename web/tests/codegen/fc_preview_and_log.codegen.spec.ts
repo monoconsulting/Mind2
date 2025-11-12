@@ -13,7 +13,7 @@ test('test', async ({ page }) => {
   await page.goto('http://localhost:5169/login');
   await page.getByRole('textbox', { name: 'Användarnamn' }).fill('admin');
   await page.getByRole('textbox', { name: 'Lösenord' }).click();
-  await page.getByRole('textbox', { name: 'Lösenord' }).fill('adminadmin');
+  await page.getByRole('textbox', { name: 'Lösenord' }).fill('Admin!2025');
   await page.getByRole('button', { name: 'Logga in' }).click();
   await page.waitForTimeout(2000);
   await page.getByRole('button', { name: 'Översikt' }).click();
