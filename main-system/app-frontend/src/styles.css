@@ -310,6 +310,18 @@ pre {
   outline-offset: 2px;
 }
 
+/* Input disabled state */
+input:disabled,
+textarea:disabled,
+select:disabled,
+.dm-input:disabled,
+.dm-input-new:disabled {
+  background-color: #f3f4f6;
+  cursor: not-allowed;
+  opacity: 0.7;
+  color: var(--text-secondary);
+}
+
 @media (max-width: 768px) {
   button,
   input[type="button"],

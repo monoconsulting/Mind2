@@ -1,5 +1,5 @@
 import React from 'react';
-import { FiX, FiSave, FiEdit2, FiTrash2, FiCreditCard } from 'react-icons/fi';
+import { FiX, FiSave, FiEdit2, FiTrash2, FiCreditCard, FiChevronDown } from 'react-icons/fi';
 import { api } from '../api';
 
 // Helper functions
@@ -727,7 +727,15 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
   const [draft, setDraft] = React.useState(null);
   const [editing, setEditing] = React.useState(false);
   const [hoverField, setHoverField] = React.useState(null);
+  const [companySuggestions, setCompanySuggestions] = React.useState([]);
+  const [selectedCompanyId, setSelectedCompanyId] = React.useState(null);
+  const [isExistingCompany, setIsExistingCompany] = React.useState(false);
   const imgRef = React.useRef(null);
+  const companySelectRef = React.useRef(null);
+  const companyInputRef = React.useRef(null);
+  const [companyDropdownOpen, setCompanyDropdownOpen] = React.useState(false);
+  const [companySearchLoading, setCompanySearchLoading] = React.useState(false);
+  const [companyHighlightIndex, setCompanyHighlightIndex] = React.useState(-1);
 
   const safeReceipt = receipt ?? {};
   const safeReceiptId = safeReceipt.id ?? '';
@@ -742,6 +750,12 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
       setError(null);
       setLoading(false);
       setSaving(false);
+      setCompanySuggestions([]);
+      setSelectedCompanyId(null);
+      setIsExistingCompany(false);
+      setCompanyDropdownOpen(false);
+      setCompanySearchLoading(false);
+      setCompanyHighlightIndex(-1);
       publishOverlayDebug(null);
     }
   }, [open]);
@@ -779,6 +793,11 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
         setPayload(mergedPayload);
         setDraft(prepareDraft(mergedPayload));
         setLoading(false);
+        setSelectedCompanyId(null);
+        setIsExistingCompany(false);
+        setCompanyDropdownOpen(false);
+        setCompanyHighlightIndex(-1);
+        setCompanySuggestions([]);
         publishOverlayDebug(mergedPayload);
       } catch (err) {
         if (!cancelled) {
@@ -794,6 +813,58 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
       cancelled = true;
     };
   }, [open, safeReceiptId]);
+
+  // Debounce helper function
+  const debounceTimeout = React.useRef(null);
+  const fetchCompanySuggestions = React.useCallback((searchTerm, options = {}) => {
+    const { allowEmpty = false } = options;
+
+    if (debounceTimeout.current) {
+      clearTimeout(debounceTimeout.current);
+    }
+
+    const trimmed = (searchTerm || '').trim();
+    if (!allowEmpty && trimmed.length === 0) {
+      setCompanySuggestions([]);
+      setCompanySearchLoading(false);
+      setCompanyHighlightIndex(-1);
+      return;
+    }
+
+    setCompanySearchLoading(true);
+
+    debounceTimeout.current = setTimeout(async () => {
+      try {
+        const params = new URLSearchParams();
+        if (trimmed.length > 0) {
+          params.set('search', trimmed);
+          params.set('limit', '20');
+        } else {
+          params.set('limit', '10');
+        }
+        const res = await api.fetch(`/ai/api/companies?${params.toString()}`);
+        if (res.ok) {
+          const data = await res.json();
+          setCompanySuggestions(Array.isArray(data) ? data : []);
+        } else {
+          setCompanySuggestions([]);
+        }
+      } catch (err) {
+        console.error('Failed to fetch company suggestions', err);
+        setCompanySuggestions([]);
+      } finally {
+        setCompanySearchLoading(false);
+      }
+    }, 300);
+  }, []);
+
+  React.useEffect(() => {
+    return () => {
+      if (debounceTimeout.current) {
+        clearTimeout(debounceTimeout.current);
+      }
+    };
+  }, []);
 
   const boxes = payload?.boxes || [];
 
@@ -821,6 +892,58 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
   const receiptDraft = draft?.receipt || {};
   const companyData = payload?.company || {};
   const companyDraft = draft?.company || {};
+
+  const companyNameValue = companyDraft.name ?? '';
+  const trimmedCompanyName = companyNameValue.trim();
+  const normalisedSuggestions = Array.isArray(companySuggestions) ? companySuggestions : [];
+  const showCreateOption =
+    !isExistingCompany &&
+    trimmedCompanyName.length >= 1 &&
+    !normalisedSuggestions.some(
+      (suggestion) => (suggestion?.name || '').toLowerCase() === trimmedCompanyName.toLowerCase()
+    );
+  const dropdownOptions = [
+    ...normalisedSuggestions.map((suggestion) => ({
+      type: 'company',
+      data: suggestion,
+    })),
+    ...(showCreateOption ? [{ type: 'create', data: { name: trimmedCompanyName } }] : []),
+  ];
+  const dropdownOptionsLength = dropdownOptions.length;
+
+  React.useEffect(() => {
+    if (!dropdownOptionsLength) {
+      setCompanyHighlightIndex(-1);
+      return;
+    }
+    setCompanyHighlightIndex((prev) => {
+      if (prev >= 0 && prev < dropdownOptionsLength) {
+        return prev;
+      }
+      return 0;
+    });
+  }, [dropdownOptionsLength]);
+
+  React.useEffect(() => {
+    if (!companyDropdownOpen) {
+      return;
+    }
+    if (typeof document === 'undefined') {
+      return;
+    }
+    const handleClickOutside = (event) => {
+      if (!companySelectRef.current) {
+        return;
+      }
+      if (companySelectRef.current.contains(event.target)) {
+        return;
+      }
+      setCompanyDropdownOpen(false);
+      setCompanyHighlightIndex(-1);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [companyDropdownOpen]);
 
   const itemsSource = editing && draft ? draft.items : payload?.items || [];
   const proposalsSource = editing && draft ? draft.proposals : payload?.proposals || [];
@@ -880,9 +1003,202 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
     });
   };
 
+  const handleCompanyInputFocus = (event) => {
+    if (isExistingCompany) {
+      return;
+    }
+    if (event?.target?.select) {
+      event.target.select();
+    }
+    setCompanyDropdownOpen(true);
+    fetchCompanySuggestions(companyNameValue, { allowEmpty: true });
+  };
+
+  const handleCompanyInputChange = (event) => {
+    if (isExistingCompany) {
+      return;
+    }
+    const nextValue = event.target.value;
+    updateCompanyDraft('name', nextValue);
+    setSelectedCompanyId(null);
+    setIsExistingCompany(false);
+    setCompanyDropdownOpen(true);
+    setCompanyHighlightIndex(-1);
+    if (nextValue.trim().length === 0) {
+      fetchCompanySuggestions('', { allowEmpty: true });
+    } else {
+      fetchCompanySuggestions(nextValue);
+    }
+  };
+
+  const handleCompanyDropdownToggle = () => {
+    if (isExistingCompany) {
+      return;
+    }
+    setCompanyDropdownOpen((prev) => {
+      const nextState = !prev;
+      if (nextState) {
+        fetchCompanySuggestions(companyNameValue, { allowEmpty: true });
+        if (companyInputRef.current) {
+          companyInputRef.current.focus();
+          companyInputRef.current.select();
+        }
+      }
+      if (!nextState) {
+        setCompanyHighlightIndex(-1);
+      }
+      return nextState;
+    });
+  };
+
+  const handleSelectExistingCompany = async (company) => {
+    setCompanyDropdownOpen(false);
+    setCompanyHighlightIndex(-1);
+    setCompanySuggestions([]);
+    setCompanySearchLoading(false);
+    try {
+      const res = await api.fetch(`/ai/api/companies/${company.id}`);
+      if (res.ok) {
+        const fullCompanyData = await res.json();
+        setDraft((prev) => {
+          if (!prev) {
+            return prev;
+          }
+          return {
+            ...prev,
+            company: {
+              name: fullCompanyData.name || '',
+              orgnr: fullCompanyData.orgnr || '',
+              address: fullCompanyData.address || '',
+              address2: fullCompanyData.address2 || '',
+              zip: fullCompanyData.zip || '',
+              city: fullCompanyData.city || '',
+              country: fullCompanyData.country || '',
+              phone: fullCompanyData.phone || '',
+              www: fullCompanyData.www || '',
+              email: fullCompanyData.email || '',
+            },
+          };
+        });
+        setSelectedCompanyId(company.id);
+        setIsExistingCompany(true);
+      }
+    } catch (err) {
+      console.error('Failed to fetch company details', err);
+    }
+  };
+
+  const handleCreateNewCompany = (name) => {
+    updateCompanyDraft('name', name);
+    setSelectedCompanyId(null);
+    setIsExistingCompany(false);
+    setCompanyDropdownOpen(false);
+    setCompanySuggestions([]);
+    setCompanyHighlightIndex(-1);
+    setCompanySearchLoading(false);
+  };
+
+  const handleCompanyKeyDown = (event) => {
+    if (isExistingCompany) {
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      if (!companyDropdownOpen) {
+        setCompanyDropdownOpen(true);
+        if (companyNameValue) {
+          fetchCompanySuggestions(companyNameValue);
+        }
+        return;
+      }
+      if (!dropdownOptionsLength) {
+        return;
+      }
+      setCompanyHighlightIndex((prev) => {
+        const next = prev + 1;
+        if (next >= dropdownOptionsLength) {
+          return 0;
+        }
+        return next;
+      });
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (!companyDropdownOpen || !dropdownOptionsLength) {
+        return;
+      }
+      setCompanyHighlightIndex((prev) => {
+        const next = prev - 1;
+        if (next < 0) {
+          return dropdownOptionsLength - 1;
+        }
+        return next;
+      });
+      return;
+    }
+    if (event.key === 'Enter') {
+      if (!companyDropdownOpen) {
+        if (dropdownOptionsLength) {
+          setCompanyDropdownOpen(true);
+        } else if (trimmedCompanyName) {
+          handleCreateNewCompany(trimmedCompanyName);
+        }
+        event.preventDefault();
+        return;
+      }
+      const option = dropdownOptions[companyHighlightIndex];
+      if (option) {
+        event.preventDefault();
+        if (option.type === 'company') {
+          handleSelectExistingCompany(option.data);
+        } else {
+          handleCreateNewCompany(option.data.name);
+        }
+      }
+      return;
+    }
+    if (event.key === 'Escape') {
+      if (companyDropdownOpen) {
+        event.preventDefault();
+        setCompanyDropdownOpen(false);
+        setCompanyHighlightIndex(-1);
+      }
+    }
+  };
+
+  const handleUnlockCompanyFields = () => {
+    setIsExistingCompany(false);
+    setSelectedCompanyId(null);
+    setCompanyDropdownOpen(false);
+    setCompanySuggestions([]);
+    setCompanyHighlightIndex(-1);
+    setCompanySearchLoading(false);
+    if (companyInputRef.current) {
+      companyInputRef.current.focus();
+      companyInputRef.current.select();
+    }
+    fetchCompanySuggestions(companyDraft.name ?? '', { allowEmpty: true });
+  };
+
   const handleToggleEdit = () => {
     if (editing) {
+      // Exiting edit mode - reset to original payload when canceling
       setDraft(prepareDraft(payload));
+      setSelectedCompanyId(null);
+      setCompanySuggestions([]);
+      setCompanyDropdownOpen(false);
+      setCompanyHighlightIndex(-1);
+      setCompanySearchLoading(false);
+      setIsExistingCompany(false);
+    } else {
+      // Entering edit mode - always allow editing all fields initially
+      setIsExistingCompany(false);
+      setSelectedCompanyId(null);
+      setCompanyDropdownOpen(false);
+      setCompanyHighlightIndex(-1);
+      setCompanySuggestions([]);
+      setCompanySearchLoading(false);
     }
     setEditing((prev) => !prev);
   };
@@ -897,15 +1213,25 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
     setSaving(true);
     setError(null);
     try {
+      // Include company_id if existing company was selected from autocomplete
+      const savePayload = {
+        ...draft,
+        ...(isExistingCompany && selectedCompanyId !== null ? { company_id: selectedCompanyId } : {}),
+      };
+
       const res = await api.fetch(`/ai/api/receipts/${safeReceiptId}/modal`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(draft),
+        body: JSON.stringify(savePayload),
       });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json) {
+        const message = (json && (json.message || json.error)) || `HTTP ${res.status}`;
+        throw new Error(message);
       }
-      const json = await res.json();
+      if (!json.receipt_updated && !json.company_updated && !json.items_updated && !json.proposals_updated) {
+        throw new Error('Ändringarna kunde inte sparas. Försök igen.');
+      }
       let refreshedPayload = json.data || {};
 
       // KRITISKT: Applicera encoding-fix på uppdaterad data
@@ -925,6 +1251,12 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
       setDraft(prepareDraft(nextPayload));
       setEditing(false);
       setHoverField(null);
+      setSelectedCompanyId(null);
+      setIsExistingCompany(false);
+      setCompanyDropdownOpen(false);
+      setCompanyHighlightIndex(-1);
+      setCompanySuggestions([]);
+      setCompanySearchLoading(false);
       if (decorated.receipt && typeof onReceiptUpdate === 'function') {
         onReceiptUpdate(decorated.receipt);
       }
@@ -949,8 +1281,10 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
       const res = await api.fetch(`/ai/api/receipts/${safeReceiptId}`, {
         method: 'DELETE'
       });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.deleted) {
+        const message = (json && (json.message || json.error)) || `HTTP ${res.status}`;
+        throw new Error(message);
       }
       if (typeof onReceiptUpdate === 'function') {
         onReceiptUpdate({ id: safeReceiptId, deleted: true });
@@ -1031,18 +1365,112 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                           onMouseEnter={() => setHoverField(highlightKey)}
                           onMouseLeave={() => setHoverField(null)}
                         >
-                          <label className="field-label">{field.label}</label>
+                          <label className="field-label" htmlFor={`field-${field.source}-${field.key}`}>
+                            {field.label}
+                          </label>
                           {editing ? (
-                            <input
-                              className="dm-input"
-                              value={draftData[field.key] ?? ''}
-                              onChange={(event) =>
-                                field.source === 'company'
-                                  ? updateCompanyDraft(field.key, event.target.value)
-                                  : updateReceiptDraft(field.key, event.target.value)
-                              }
-                              disabled={saving}
-                            />
+                            field.key === 'name' && field.source === 'company' ? (
+                              <div className={`company-select-wrapper${isExistingCompany ? ' company-select-wrapper--locked' : ''}`} ref={companySelectRef}>
+                                <div className={`company-select ${companyDropdownOpen ? 'open' : ''}`}>
+                                  <input
+                                    id={`field-${field.source}-${field.key}`}
+                                    className="dm-input company-select-input"
+                                    type="text"
+                                    ref={companyInputRef}
+                                    value={companyDraft.name ?? ''}
+                                    onFocus={handleCompanyInputFocus}
+                                    onChange={handleCompanyInputChange}
+                                    onKeyDown={handleCompanyKeyDown}
+                                    placeholder="Sök eller skapa företag..."
+                                    disabled={saving || isExistingCompany}
+                                    aria-expanded={companyDropdownOpen}
+                                    aria-haspopup="listbox"
+                                    autoComplete="off"
+                                  />
+                                  {!isExistingCompany && (
+                                    <button
+                                      type="button"
+                                      className="company-select-toggle"
+                                      onClick={handleCompanyDropdownToggle}
+                                      aria-label={companyDropdownOpen ? 'Stäng företagslistan' : 'Visa företagslistan'}
+                                      disabled={saving}
+                                    >
+                                      <FiChevronDown />
+                                    </button>
+                                  )}
+                                </div>
+                                {isExistingCompany ? (
+                                  <button type="button" className="company-select-clear" onClick={handleUnlockCompanyFields} disabled={saving}>
+                                    Byt företag
+                                  </button>
+                                ) : (
+                                  companyDropdownOpen && (
+                                    <div className="company-dropdown" role="listbox">
+                                      {companySearchLoading && (
+                                        <div className="company-dropdown-status">Söker företag...</div>
+                                      )}
+                                      {!companySearchLoading && dropdownOptionsLength === 0 && trimmedCompanyName.length < 2 && (
+                                        <div className="company-dropdown-status">Skriv minst två tecken för att söka</div>
+                                      )}
+                                      {!companySearchLoading && dropdownOptionsLength === 0 && trimmedCompanyName.length >= 2 && (
+                                        <div className="company-dropdown-status">Inga företag matchar sökningen</div>
+                                      )}
+                                      {!companySearchLoading && dropdownOptionsLength > 0 && (
+                                        <ul className="company-dropdown-list">
+                                          {dropdownOptions.map((option, index) => {
+                                            const isActive = index === companyHighlightIndex;
+                                            if (option.type === 'company') {
+                                              const metaParts = [option.data.orgnr, option.data.city].filter(Boolean);
+                                              return (
+                                                <li
+                                                  key={option.data.id}
+                                                  className={`company-dropdown-item ${isActive ? 'active' : ''}`}
+                                                  onMouseDown={(event) => {
+                                                    event.preventDefault();
+                                                    handleSelectExistingCompany(option.data);
+                                                  }}
+                                                  onMouseEnter={() => setCompanyHighlightIndex(index)}
+                                                >
+                                                  <span className="company-dropdown-name">{option.data.name}</span>
+                                                  {metaParts.length > 0 && (
+                                                    <span className="company-dropdown-meta">{metaParts.join(' • ')}</span>
+                                                  )}
+                                                </li>
+                                              );
+                                            }
+                                            return (
+                                              <li
+                                                key="new-company-option"
+                                                className={`company-dropdown-item create-option ${isActive ? 'active' : ''}`}
+                                                onMouseDown={(event) => {
+                                                  event.preventDefault();
+                                                  handleCreateNewCompany(option.data.name);
+                                                }}
+                                                onMouseEnter={() => setCompanyHighlightIndex(index)}
+                                              >
+                                                Skapa nytt företag: <span className="company-dropdown-name">"{option.data.name}"</span>
+                                              </li>
+                                            );
+                                          })}
+                                        </ul>
+                                      )}
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                            ) : (
+                              <input
+                                id={`field-${field.source}-${field.key}`}
+                                className="dm-input"
+                                value={draftData[field.key] ?? ''}
+                                onChange={(event) =>
+                                  field.source === 'company'
+                                    ? updateCompanyDraft(field.key, event.target.value)
+                                    : updateReceiptDraft(field.key, event.target.value)
+                                }
+                                disabled={saving || (field.source === 'company' && isExistingCompany)}
+                              />
+                            )
                           ) : (
                             <div className="field-value">{readonlyValue || '-'}</div>
                           )}
@@ -1070,9 +1498,12 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                           onMouseEnter={() => setHoverField(highlightKey)}
                           onMouseLeave={() => setHoverField(null)}
                         >
-                          <label className="field-label">{field.label}</label>
+                          <label className="field-label" htmlFor={`field-${field.source}-${field.key}`}>
+                            {field.label}
+                          </label>
                           {editing ? (
                             <input
+                              id={`field-${field.source}-${field.key}`}
                               className="dm-input"
                               value={receiptDraft[field.key] ?? ''}
                               onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
@@ -1107,9 +1538,12 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                           onMouseEnter={() => setHoverField(highlightKey)}
                           onMouseLeave={() => setHoverField(null)}
                         >
-                          <label className="field-label">{field.label}</label>
+                          <label className="field-label" htmlFor={`field-${field.source}-${field.key}`}>
+                            {field.label}
+                          </label>
                           {editing ? (
                             <input
+                              id={`field-${field.source}-${field.key}`}
                               className="dm-input"
                               value={receiptDraft[field.key] ?? ''}
                               onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
@@ -1142,9 +1576,12 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                         onMouseEnter={() => setHoverField(otherHighlightKey)}
                         onMouseLeave={() => setHoverField(null)}
                       >
-                        <label className="field-label">Övrig data</label>
+                        <label className="field-label" htmlFor="field-receipt-other_data">
+                          Övrig data
+                        </label>
                         {editing ? (
                           <textarea
+                            id="field-receipt-other_data"
                             className="dm-input"
                             value={receiptDraft.other_data ?? ''}
                             onChange={(event) => updateReceiptDraft('other_data', event.target.value)}

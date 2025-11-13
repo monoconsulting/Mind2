@@ -17,14 +17,19 @@ except Exception:
 
 try:
     # Optional DB dependency; endpoints should still respond if DB missing
-    from services.db.connection import db_cursor
+    from services.db.connection import db_cursor, DBLockTimeout
 except Exception:
     db_cursor = None  # type: ignore
+    DBLockTimeout = None  # type: ignore
 
 
 logger = logging.getLogger(__name__)
 
 receipts_bp = Blueprint("receipts", __name__)
+
+
+def _is_lock_timeout(exc: Exception) -> bool:
+    return DBLockTimeout is not None and isinstance(exc, DBLockTimeout)
 
 
 def _storage_dir() -> Path:
@@ -312,7 +317,9 @@ def _save_accounting_entries(rid: str, entries: list[dict[str, Any]]) -> bool:
                     (rid, account, debit, credit, vat_val, (notes or None)),
                 )
         return True
-    except Exception:
+    except Exception as exc:
+        if _is_lock_timeout(exc):
+            raise
         return False
 
 
@@ -707,7 +714,9 @@ def _commit_receipt_update(rid: str, editable: dict[str, Any]) -> bool:
             sql = "UPDATE unified_files SET " + set_clause + ", updated_at=NOW() WHERE id=%s"
             cur.execute(sql, tuple(values))
             return cur.rowcount > 0
-    except Exception:
+    except Exception as exc:
+        if _is_lock_timeout(exc):
+            raise
         return False
 
 
@@ -771,7 +780,9 @@ def _commit_company_update(rid: str, company_id: Optional[int], payload: dict[st
                 (new_company_id, rid),
             )
             return True, new_company_id
-    except Exception:  # pragma: no cover - defensive log
+    except Exception as exc:  # pragma: no cover - defensive log
+        if _is_lock_timeout(exc):
+            raise
         logger.error("Failed to persist company update for %s", rid, exc_info=True)
         return False, company_id
 
@@ -810,7 +821,9 @@ def _replace_file_tags(rid: str, tags: list[str]) -> bool:
             for tag in tags:
                 cur.execute(sql, (rid, tag))
         return True
-    except Exception:  # pragma: no cover - defensive log
+    except Exception as exc:  # pragma: no cover - defensive log
+        if _is_lock_timeout(exc):
+            raise
         logger.error("Failed to replace tags for %s", rid, exc_info=True)
         return False
 
@@ -846,7 +859,9 @@ def _replace_receipt_items(rid: str, items: list[dict[str, Any]]) -> bool:
                     ),
                 )
         return True
-    except Exception:
+    except Exception as exc:
+        if _is_lock_timeout(exc):
+            raise
         return False
 
 
@@ -1129,110 +1144,145 @@ def put_receipt_modal(rid: str) -> Any:
     if db_cursor is None:
         return jsonify({"error": "db_unavailable"}), 503
 
-    payload = request.get_json(silent=True) or {}
+    try:
+        payload = request.get_json(silent=True) or {}
 
-    current_details = _fetch_receipt_details(rid)
-    current_company_id = None
-    existing_tags: list[str] = []
-    existing_company_snapshot: dict[str, Any] = {}
-    if isinstance(current_details, dict):
-        current_company_id = current_details.get("company_id")
-        existing_tags = list(current_details.get("tags") or [])
-        if current_company_id not in (None, 0):
-            existing_company_snapshot = _fetch_company_by_id(current_company_id)
+        current_details = _fetch_receipt_details(rid)
+        current_company_id = None
+        existing_tags: list[str] = []
+        existing_company_snapshot: dict[str, Any] = {}
+        if isinstance(current_details, dict):
+            current_company_id = current_details.get("company_id")
+            existing_tags = list(current_details.get("tags") or [])
+            if current_company_id not in (None, 0):
+                existing_company_snapshot = _fetch_company_by_id(current_company_id)
 
-    receipt_payload = payload.get("receipt") or {}
-    company_payload = payload.get("company") or {}
-    items_payload = payload.get("items")
-    proposals_payload = (
-        payload.get("proposals")
-        if "proposals" in payload
-        else payload.get("accounting") or payload.get("accounting_proposals")
-    )
+        receipt_payload = payload.get("receipt") or {}
+        company_payload = payload.get("company") or {}
+        items_payload = payload.get("items")
+        proposals_payload = (
+            payload.get("proposals")
+            if "proposals" in payload
+            else payload.get("accounting") or payload.get("accounting_proposals")
+        )
 
-    editable = _normalise_receipt_update(receipt_payload)
-    receipt_updated = _commit_receipt_update(rid, editable)
+        # Check if frontend explicitly provided a company_id (for selecting existing company)
+        provided_company_id = payload.get("company_id")
 
-    tags_updated = False
-    if isinstance(receipt_payload, dict) and "tags" in receipt_payload:
-        tags = _normalise_tags(receipt_payload.get("tags"))
-        if tags != existing_tags:
-            tags_updated = _replace_file_tags(rid, tags)
+        editable = _normalise_receipt_update(receipt_payload)
+        receipt_updated = _commit_receipt_update(rid, editable)
 
-    def _normalise_existing_company_value(value: Any) -> Any:
-        if isinstance(value, str):
-            stripped = value.strip()
-            return stripped if stripped else None
-        return value
+        tags_updated = False
+        if isinstance(receipt_payload, dict) and "tags" in receipt_payload:
+            tags = _normalise_tags(receipt_payload.get("tags"))
+            if tags != existing_tags:
+                tags_updated = _replace_file_tags(rid, tags)
 
-    company_updated = False
-    if isinstance(company_payload, dict):
-        company_updates = _normalise_company_update(company_payload)
-        if company_updates:
-            if current_company_id in (None, 0):
-                has_changes = any(value is not None for value in company_updates.values())
-            else:
-                has_changes = any(
-                    company_updates[key]
-                    != _normalise_existing_company_value(existing_company_snapshot.get(key))
-                    for key in company_updates.keys()
-                )
-            if has_changes:
-                company_updated, current_company_id = _commit_company_update(
-                    rid,
-                    int(current_company_id) if current_company_id not in (None, 0) else None,
-                    company_updates,
-                )
+        def _normalise_existing_company_value(value: Any) -> Any:
+            if isinstance(value, str):
+                stripped = value.strip()
+                return stripped if stripped else None
+            return value
 
-    items_updated = False
-    if items_payload is not None:
-        normalised_items = _normalise_receipt_items(items_payload)
-        db_items_updated = _replace_receipt_items(rid, normalised_items)
-        store_items_updated = _store_line_items(rid, normalised_items)
-        items_updated = db_items_updated or store_items_updated
+        company_updated = False
+        if provided_company_id is not None and provided_company_id != current_company_id:
+            # Frontend selected an existing company from autocomplete
+            # Just link the receipt to that company without modifying company data
+            if db_cursor is not None:
+                try:
+                    with db_cursor() as cur:
+                        cur.execute(
+                            "UPDATE unified_files SET company_id=%s, updated_at=NOW() WHERE id=%s",
+                            (provided_company_id, rid),
+                        )
+                        company_updated = cur.rowcount > 0
+                        current_company_id = provided_company_id
+                except Exception as exc:
+                    if _is_lock_timeout(exc):
+                        raise
+                    logger.error("Failed to link receipt to company %s", provided_company_id, exc_info=True)
+        elif isinstance(company_payload, dict):
+            # Frontend provided company data (new or updated company)
+            company_updates = _normalise_company_update(company_payload)
+            if company_updates:
+                if current_company_id in (None, 0):
+                    has_changes = any(value is not None for value in company_updates.values())
+                else:
+                    has_changes = any(
+                        company_updates[key]
+                        != _normalise_existing_company_value(existing_company_snapshot.get(key))
+                        for key in company_updates.keys()
+                    )
+                if has_changes:
+                    company_updated, current_company_id = _commit_company_update(
+                        rid,
+                        int(current_company_id) if current_company_id not in (None, 0) else None,
+                        company_updates,
+                    )
 
-    proposals_updated = False
-    if proposals_payload is not None:
-        normalised_proposals = _normalise_accounting_entries(proposals_payload)
-        proposals_updated = _save_accounting_entries(rid, normalised_proposals)
+        items_updated = False
+        if items_payload is not None:
+            normalised_items = _normalise_receipt_items(items_payload)
+            db_items_updated = _replace_receipt_items(rid, normalised_items)
+            store_items_updated = _store_line_items(rid, normalised_items)
+            items_updated = db_items_updated or store_items_updated
 
-    refreshed_receipt = _fetch_receipt_details(rid)
-    refreshed_items, refreshed_items_source = _get_receipt_items_with_source(rid, refreshed_receipt.get("currency"))
-    refreshed_proposals = _fetch_saved_accounting_entries(rid)
-    refreshed_company = _fetch_company_by_id(refreshed_receipt.get("company_id"))
-    refreshed_boxes = _load_boxes(rid)
-    refreshed = {
-        "receipt": refreshed_receipt,
-        "company": refreshed_company,
-        "items": refreshed_items,
-        "proposals": refreshed_proposals,
-        "boxes": refreshed_boxes,
-        "meta": {
-            "items_source": refreshed_items_source,
-            "items_count": len(refreshed_items),
-            "proposals_count": len(refreshed_proposals),
-            "boxes_count": len(refreshed_boxes),
-        },
-    }
-    if refreshed_items_source != "database":
-        refreshed["line_items"] = refreshed_items
+        proposals_updated = False
+        if proposals_payload is not None:
+            normalised_proposals = _normalise_accounting_entries(proposals_payload)
+            proposals_updated = _save_accounting_entries(rid, normalised_proposals)
 
-    receipt_updated = bool(receipt_updated or company_updated or tags_updated)
+        refreshed_receipt = _fetch_receipt_details(rid)
+        refreshed_items, refreshed_items_source = _get_receipt_items_with_source(rid, refreshed_receipt.get("currency"))
+        refreshed_proposals = _fetch_saved_accounting_entries(rid)
+        refreshed_company = _fetch_company_by_id(refreshed_receipt.get("company_id"))
+        refreshed_boxes = _load_boxes(rid)
+        refreshed = {
+            "receipt": refreshed_receipt,
+            "company": refreshed_company,
+            "items": refreshed_items,
+            "proposals": refreshed_proposals,
+            "boxes": refreshed_boxes,
+            "meta": {
+                "items_source": refreshed_items_source,
+                "items_count": len(refreshed_items),
+                "proposals_count": len(refreshed_proposals),
+                "boxes_count": len(refreshed_boxes),
+            },
+        }
+        if refreshed_items_source != "database":
+            refreshed["line_items"] = refreshed_items
 
-    return (
-        jsonify(
-            {
-                "id": rid,
-                "receipt_updated": receipt_updated,
-                "items_updated": items_updated,
-                "proposals_updated": proposals_updated,
-                "company_updated": company_updated,
-                "tags_updated": tags_updated,
-                "data": refreshed,
-            }
-        ),
-        200,
-    )
+        receipt_updated = bool(receipt_updated or company_updated or tags_updated)
+
+        return (
+            jsonify(
+                {
+                    "id": rid,
+                    "receipt_updated": receipt_updated,
+                    "items_updated": items_updated,
+                    "proposals_updated": proposals_updated,
+                    "company_updated": company_updated,
+                    "tags_updated": tags_updated,
+                    "data": refreshed,
+                }
+            ),
+            200,
+        )
+    except Exception as exc:
+        if _is_lock_timeout(exc):
+            logger.warning("Receipt %s locked during save: %s", rid, exc)
+            return (
+                jsonify(
+                    {
+                        "error": "receipt_locked",
+                        "message": "Kvittot uppdateras av en annan process. Försök igen om en liten stund.",
+                    }
+                ),
+                423,
+            )
+        logger.error("Failed to update receipt %s", rid, exc_info=True)
+        return jsonify({"error": "receipt_update_failed"}), 500
 
 
 @receipts_bp.get("/receipts/monthly-summary")
@@ -1569,19 +1619,26 @@ def approve_receipt(rid: str) -> Any:
 @receipts_bp.route("/receipts/<rid>", methods=["DELETE"])
 def soft_delete_receipt(rid: str) -> Any:
     """Soft delete a receipt by setting deleted_at timestamp."""
-    ok = False
-    if db_cursor is not None:
-        try:
-            with db_cursor() as cur:
-                cur.execute(
-                    "UPDATE unified_files SET deleted_at=NOW(), updated_at=NOW() WHERE id=%s AND deleted_at IS NULL",
-                    (rid,),
-                )
-                ok = cur.rowcount > 0
-        except Exception:
-            logger.error(f"Error soft deleting receipt {rid}", exc_info=True)
-            ok = False
-    return jsonify({"id": rid, "deleted": ok}), 200
+    if db_cursor is None:
+        return jsonify({"error": "db_unavailable"}), 503
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "UPDATE unified_files SET deleted_at=NOW(), updated_at=NOW() WHERE id=%s AND deleted_at IS NULL",
+                (rid,),
+            )
+            if cur.rowcount == 0:
+                return jsonify({"id": rid, "deleted": False, "error": "not_found"}), 404
+    except Exception as exc:
+        if _is_lock_timeout(exc):
+            logger.warning("Receipt %s locked during delete: %s", rid, exc)
+            return (
+                jsonify({"id": rid, "deleted": False, "error": "receipt_locked"}),
+                423,
+            )
+        logger.error(f"Error soft deleting receipt {rid}", exc_info=True)
+        return jsonify({"id": rid, "deleted": False, "error": "delete_failed"}), 500
+    return jsonify({"id": rid, "deleted": True}), 200
 
 
 @receipts_bp.get("/receipts/<rid>/ai-history")

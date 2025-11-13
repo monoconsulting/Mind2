@@ -38,13 +38,13 @@ export default defineConfig({
     headless: false,
 
     // Ultrabred skärm – undvik scroll
-    viewport: { width: 3440, height: 1440 },
+    viewport: { width: 2560, height: 1440 },
 
     // Video: lagras där du vill ha dem
     video: 'on',
     recordVideo: {
       dir: 'web/test-results/media/video',
-      size: { width: 3440, height: 1440 },
+      size: { width: 2560, height: 1440 },
     },
 
     // Trace sparas per test i outputDir (ovan) – aktiverat för alla körningar
@@ -63,9 +63,11 @@ export default defineConfig({
     {
       name: 'chromium-ultrawide',
       use: {
-        viewport: { width: 3440, height: 1440 },
+        viewport: { width: 2000, height: 1000 },
         launchOptions: {
-          args: ['--window-position=0,0', '--window-size=3440,1440'],
+          args: ['--window-position=0,0', '--window-size=2000,1000'],
+        isMobile: false,
+        hasTouch: false,
         },
       },
     },
