@@ -912,6 +912,123 @@ input::placeholder {
   color: var(--text-primary);
 }
 
+.company-select-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.company-select {
+  position: relative;
+}
+
+.company-select-input {
+  padding-right: 2.5rem;
+}
+
+.company-select-toggle {
+  position: absolute;
+  top: 50%;
+  right: 0.35rem;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  min-width: 32px;
+  border-radius: 0.4rem;
+  cursor: pointer;
+}
+
+.company-select-toggle:hover {
+  color: var(--text-primary);
+}
+
+.company-select-toggle svg {
+  transition: transform 0.2s ease;
+}
+
+.company-select.open .company-select-toggle svg {
+  transform: rotate(180deg);
+}
+
+.company-dropdown {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  right: 0;
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 0.65rem;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.45);
+  z-index: 20;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.company-dropdown-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.company-dropdown-item {
+  padding: 0.55rem 0.75rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  transition: background 0.15s ease;
+}
+
+.company-dropdown-item.create-option {
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.company-dropdown-item.active,
+.company-dropdown-item:hover {
+  background: rgba(59, 130, 246, 0.18);
+}
+
+.company-dropdown-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.company-dropdown-meta {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.company-dropdown-status {
+  padding: 0.6rem 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.company-select-clear {
+  align-self: flex-start;
+  background: transparent;
+  color: var(--primary-color);
+  padding: 0;
+  min-height: auto;
+  min-width: auto;
+  font-size: 0.85rem;
+  text-decoration: underline;
+}
+
+.company-select-clear:hover {
+  color: var(--primary-dark);
+}
+
+.company-select-wrapper--locked .company-select-input {
+  cursor: not-allowed;
+}
+
 .receipt-modal-field .field-label {
   font-size: 0.75rem;
   text-transform: uppercase;

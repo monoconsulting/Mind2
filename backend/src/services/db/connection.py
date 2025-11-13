@@ -7,6 +7,16 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 import mysql.connector
+from mysql.connector import errors as mysql_errors
+
+DEFAULT_LOCK_WAIT_TIMEOUT = int(os.getenv("DB_LOCK_WAIT_TIMEOUT", "5"))
+LOCK_ERROR_CODES = {1205, 1213}
+
+
+class DBLockTimeout(RuntimeError):
+    """Raised when a database statement times out waiting for a lock."""
+
+    pass
 
 
 def _env(name: str, default: str | None = None) -> str:
@@ -45,17 +55,28 @@ def get_connection():
 
 
 @contextmanager
-def db_cursor() -> Iterator[Any]:
+def db_cursor(*, dictionary: bool = False, lock_timeout: int | None = None) -> Iterator[Any]:
     """Yield a cursor from a managed connection, closing both afterwards."""
 
     connection = get_connection()
     cursor = None
     try:
-        cursor = connection.cursor()
+        cursor = connection.cursor(dictionary=dictionary)
+        effective_timeout = lock_timeout if lock_timeout is not None else DEFAULT_LOCK_WAIT_TIMEOUT
+        if effective_timeout is not None:
+            try:
+                cursor.execute("SET SESSION innodb_lock_wait_timeout = %s", (int(effective_timeout),))
+            except Exception:
+                # Best-effort; continue even if server doesn't support this command
+                pass
         yield cursor
         connection.commit()
-    except Exception:
+    except Exception as exc:
         connection.rollback()
+        if mysql_errors and isinstance(exc, mysql_errors.DatabaseError):
+            errno = getattr(exc, "errno", None)
+            if errno in LOCK_ERROR_CODES:
+                raise DBLockTimeout(str(exc)) from exc
         raise
     finally:
         try:
