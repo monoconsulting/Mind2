@@ -7,9 +7,11 @@
    - `@claude.md`
    - `README.md`
    - `AGENTS.md`
+   The latest worklogs in the folder `@docs/worklogs/`
 
    These documents contain the essential background and project context you must understand before proceeding.
-
+   
+   
    ------
    ### Welcome to Sweden!
    

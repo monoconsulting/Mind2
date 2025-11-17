@@ -118,6 +118,11 @@ export default function ManualMatch() {
   const [matching, setMatching] = useState(false)
   const [banner, setBanner] = useState(null)
 
+  const [fcSortColumn, setFcSortColumn] = useState('purchase_date')
+  const [fcSortDirection, setFcSortDirection] = useState('asc')
+  const [receiptSortColumn, setReceiptSortColumn] = useState('purchase_datetime')
+  const [receiptSortDirection, setReceiptSortDirection] = useState('asc')
+
   const [isReceiptModalOpen, setReceiptModalOpen] = useState(false)
   const [previewReceipt, setPreviewReceipt] = useState(null)
 
@@ -139,6 +144,61 @@ export default function ManualMatch() {
     })
     return ids
   }, [fcItems])
+
+  // Sort handlers
+  const handleFcSort = useCallback((column) => {
+    if (fcSortColumn === column) {
+      setFcSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setFcSortColumn(column)
+      setFcSortDirection('asc')
+    }
+  }, [fcSortColumn])
+
+  const handleReceiptSort = useCallback((column) => {
+    if (receiptSortColumn === column) {
+      setReceiptSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setReceiptSortColumn(column)
+      setReceiptSortDirection('asc')
+    }
+  }, [receiptSortColumn])
+
+  // Sorted FC items (client-side sorting)
+  const sortedFcItems = useMemo(() => {
+    if (!fcSortColumn) return fcItems
+
+    const sorted = [...fcItems].sort((a, b) => {
+      let aVal, bVal
+
+      switch (fcSortColumn) {
+        case 'purchase_date':
+          aVal = normalizeDateOnly(a.purchase_date) || ''
+          bVal = normalizeDateOnly(b.purchase_date) || ''
+          break
+        case 'merchant_name':
+          aVal = (a.merchant_name || '').toLowerCase()
+          bVal = (b.merchant_name || '').toLowerCase()
+          break
+        case 'amount':
+          aVal = Number(a.amount_original || a.gross_amount || 0)
+          bVal = Number(b.amount_original || b.gross_amount || 0)
+          break
+        case 'status':
+          aVal = a.matched !== 0 ? 1 : 0
+          bVal = b.matched !== 0 ? 1 : 0
+          break
+        default:
+          return 0
+      }
+
+      if (aVal < bVal) return fcSortDirection === 'asc' ? -1 : 1
+      if (aVal > bVal) return fcSortDirection === 'asc' ? 1 : -1
+      return 0
+    })
+
+    return sorted
+  }, [fcItems, fcSortColumn, fcSortDirection])
 
   // Fetch statements
   const fetchStatements = useCallback(async () => {
@@ -257,6 +317,8 @@ export default function ManualMatch() {
           page: String(page),
           page_size: String(pageSize),
         })
+        if (receiptSortColumn) params.set('sort_by', receiptSortColumn)
+        if (receiptSortDirection) params.set('sort_order', receiptSortDirection)
         const res = await api.fetch(`/ai/api/receipts?${params.toString()}`)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json()
@@ -299,7 +361,7 @@ export default function ManualMatch() {
     } finally {
       setLoadingRight(false)
     }
-  }, [year, month])
+  }, [year, month, receiptSortColumn, receiptSortDirection])
 
   // Handle match
   const handleMatch = useCallback(async () => {
@@ -361,16 +423,63 @@ export default function ManualMatch() {
 
   const handleReceiptUpdate = useCallback((updated) => {
     if (!updated || !updated.id) return
-    setReceipts((prev) => {
-      if (updated.deleted) {
-        return prev.filter((item) => item.id !== updated.id)
+
+    if (updated.deleted) {
+      // Find current index before removing
+      const currentIndex = receipts.findIndex(item => item.id === updated.id)
+
+      // Remove from receipts list
+      setReceipts((prev) => prev.filter((item) => item.id !== updated.id))
+
+      // Clear selection if this receipt was selected for matching
+      if (selectedReceiptId === updated.id) {
+        setSelectedReceiptId(null)
       }
-      return prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item))
-    })
-    if (updated.deleted && selectedReceiptId === updated.id) {
-      setSelectedReceiptId(null)
+
+      // Handle navigation after deletion
+      if (updated.shouldNavigateNext && currentIndex >= 0) {
+        // Get the new list after deletion (simulated)
+        const newList = receipts.filter(item => item.id !== updated.id)
+
+        // The next receipt will now be at the same index as the deleted one
+        if (currentIndex < newList.length) {
+          const nextReceipt = newList[currentIndex]
+          setPreviewReceipt(nextReceipt)
+        } else {
+          // No more receipts, close modal
+          closeReceiptModal()
+        }
+      } else {
+        // No navigation needed, just close modal
+        closeReceiptModal()
+      }
+    } else {
+      setReceipts((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
     }
-  }, [selectedReceiptId])
+  }, [selectedReceiptId, receipts, closeReceiptModal])
+
+  // Modal navigation
+  const currentReceiptIndex = useMemo(() => {
+    if (!previewReceipt) return -1
+    return receipts.findIndex(item => item.id === previewReceipt.id)
+  }, [receipts, previewReceipt])
+
+  const handleNavigateNext = useCallback(() => {
+    if (currentReceiptIndex >= 0 && currentReceiptIndex < receipts.length - 1) {
+      const nextReceipt = receipts[currentReceiptIndex + 1]
+      setPreviewReceipt(nextReceipt)
+    }
+  }, [currentReceiptIndex, receipts])
+
+  const handleNavigatePrevious = useCallback(() => {
+    if (currentReceiptIndex > 0) {
+      const prevReceipt = receipts[currentReceiptIndex - 1]
+      setPreviewReceipt(prevReceipt)
+    }
+  }, [currentReceiptIndex, receipts])
+
+  const hasNext = currentReceiptIndex >= 0 && currentReceiptIndex < receipts.length - 1
+  const hasPrevious = currentReceiptIndex > 0
 
   // Effects
   useEffect(() => {
@@ -501,21 +610,49 @@ export default function ManualMatch() {
                 <thead className="bg-gray-800 text-left text-gray-300 uppercase text-xs tracking-wide">
                   <tr>
                     <th className="px-4 py-3 w-12">Välj</th>
-                    <th className="px-4 py-3">Datum</th>
-                    <th className="px-4 py-3">Företag</th>
-                    <th className="px-4 py-3">Belopp</th>
-                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleFcSort('purchase_date')}>
+                      <div className="flex items-center gap-1">
+                        Datum
+                        {fcSortColumn === 'purchase_date' && (
+                          <span>{fcSortDirection === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                      </div>
+                    </th>
+                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleFcSort('merchant_name')}>
+                      <div className="flex items-center gap-1">
+                        Företag
+                        {fcSortColumn === 'merchant_name' && (
+                          <span>{fcSortDirection === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                      </div>
+                    </th>
+                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleFcSort('amount')}>
+                      <div className="flex items-center gap-1">
+                        Belopp
+                        {fcSortColumn === 'amount' && (
+                          <span>{fcSortDirection === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                      </div>
+                    </th>
+                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleFcSort('status')}>
+                      <div className="flex items-center gap-1">
+                        Status
+                        {fcSortColumn === 'status' && (
+                          <span>{fcSortDirection === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                      </div>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {fcItems.length === 0 && !loadingLeft ? (
+                  {sortedFcItems.length === 0 && !loadingLeft ? (
                     <tr className="border-t border-gray-700">
                       <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
                         Inga transaktioner för vald period.
                       </td>
                     </tr>
                   ) : (
-                    fcItems.map((item) => {
+                    sortedFcItems.map((item) => {
                       const isMatched = item.matched !== 0
                       const checked = selectedItemId === item.id
                       const canSelect = !isMatched
@@ -573,9 +710,30 @@ export default function ManualMatch() {
                 <thead className="bg-gray-800 text-left text-gray-300 uppercase text-xs tracking-wide">
                   <tr>
                     <th className="px-4 py-3 w-12">Välj</th>
-                    <th className="px-4 py-3">Datum</th>
-                    <th className="px-4 py-3">Företag</th>
-                    <th className="px-4 py-3">Belopp</th>
+                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleReceiptSort('purchase_datetime')}>
+                      <div className="flex items-center gap-1">
+                        Datum
+                        {receiptSortColumn === 'purchase_datetime' && (
+                          <span>{receiptSortDirection === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                      </div>
+                    </th>
+                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleReceiptSort('company')}>
+                      <div className="flex items-center gap-1">
+                        Företag
+                        {receiptSortColumn === 'company' && (
+                          <span>{receiptSortDirection === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                      </div>
+                    </th>
+                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleReceiptSort('gross_amount')}>
+                      <div className="flex items-center gap-1">
+                        Belopp
+                        {receiptSortColumn === 'gross_amount' && (
+                          <span>{receiptSortDirection === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                      </div>
+                    </th>
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3 text-center">Åtgärd</th>
                   </tr>
@@ -644,6 +802,10 @@ export default function ManualMatch() {
         previewImage={null}
         onClose={closeReceiptModal}
         onReceiptUpdate={handleReceiptUpdate}
+        onNavigateNext={handleNavigateNext}
+        onNavigatePrevious={handleNavigatePrevious}
+        hasNext={hasNext}
+        hasPrevious={hasPrevious}
       />
     </div>
   )
