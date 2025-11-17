@@ -889,6 +889,34 @@ def list_receipts() -> Any:
     q_file_type = request.args.get("file_type")
     include_credit = request.args.get("include_credit", "").lower() in {"1", "true", "yes"}
 
+    # Sorting parameters
+    sort_by = request.args.get("sort_by", "created_at")
+    sort_order = request.args.get("sort_order", "desc").lower()
+
+    # Validate sort_order
+    if sort_order not in {"asc", "desc"}:
+        sort_order = "desc"
+
+    # Map frontend column names to database columns
+    sort_column_map = {
+        "purchase_datetime": "u.purchase_datetime",
+        "company": "c.name",
+        "net_amount": "u.net_amount_sek",
+        "gross_amount": "u.gross_amount_sek",
+        "status": "u.ai_status",
+        "ai_status": "u.ai_status",
+        "file_type": "u.file_type",
+        "uploaded_at": "u.created_at",
+        "created_at": "u.created_at",
+        "expense_type": "u.expense_type",
+        "credit_card_last_4": "u.credit_card_last_4_digits",
+        "credit_card_type": "u.credit_card_type",
+        "payment_type": "u.payment_type",
+    }
+
+    # Get the actual database column (default to created_at if invalid)
+    db_sort_column = sort_column_map.get(sort_by, "u.created_at")
+
     # Simple pagination
     try:
         page = max(int(request.args.get("page", 1)), 1)
@@ -977,7 +1005,7 @@ def list_receipts() -> Any:
                     f"{where_sql} "
                     "GROUP BY u.id, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, c.name, u.workflow_type, "
                     "u.expense_type, u.credit_card_last_4_digits, u.credit_card_type, u.payment_type "
-                    "ORDER BY u.created_at DESC LIMIT %s OFFSET %s"
+                    f"ORDER BY {db_sort_column} {sort_order.upper()}, u.created_at DESC LIMIT %s OFFSET %s"
                 )
                 cur.execute(query, tuple(params + [page_size, offset]))
                 results = cur.fetchall()
@@ -1639,6 +1667,156 @@ def soft_delete_receipt(rid: str) -> Any:
         logger.error(f"Error soft deleting receipt {rid}", exc_info=True)
         return jsonify({"id": rid, "deleted": False, "error": "delete_failed"}), 500
     return jsonify({"id": rid, "deleted": True}), 200
+
+
+def _parse_other_data(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def _resolve_restart_workflow(
+    *,
+    file_type: Optional[str],
+    workflow_type: Optional[str],
+    other_data: dict[str, Any],
+) -> str:
+    workflow_value = (workflow_type or "").lower()
+    if workflow_value == "creditcard_invoice":
+        return "WF3_FIRSTCARD_INVOICE"
+
+    detected_kind = (other_data.get("detected_kind") or "").lower()
+    file_type_value = (file_type or "").lower()
+
+    if detected_kind in {"pdf", "document"} or file_type_value == "pdf":
+        return "WF2_PDF_SPLIT"
+
+    return "WF1_RECEIPT"
+
+
+def _update_ai_status(file_id: str, status: str) -> None:
+    try:
+        from services.db.files import set_ai_status  # type: ignore
+    except Exception:
+        set_ai_status = None  # type: ignore
+
+    if set_ai_status is not None:
+        try:
+            set_ai_status(file_id, status)
+            return
+        except Exception:
+            logger.warning("Failed to set ai_status via helper for %s", file_id, exc_info=True)
+
+    if db_cursor is None:
+        return
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "UPDATE unified_files SET ai_status=%s, updated_at=NOW() WHERE id=%s",
+                (status, file_id),
+            )
+    except Exception:
+        logger.warning("Fallback ai_status update failed for %s", file_id, exc_info=True)
+
+
+@receipts_bp.post("/receipts/<rid>/restart-ai")
+def restart_ai_workflow(rid: str) -> Any:
+    """Restart AI workflow for a receipt by creating a new workflow run."""
+    if db_cursor is None:
+        return jsonify({"error": "db_unavailable"}), 503
+
+    try:
+        # Import here to avoid circular imports
+        from services.workflow_runs import create_workflow_run
+        from services.tasks import dispatch_workflow, log_import_event
+
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, workflow_type, file_type, content_hash, other_data
+                FROM unified_files
+                WHERE id = %s AND deleted_at IS NULL
+                """,
+                (rid,),
+            )
+            row = cur.fetchone()
+
+        if not row:
+            return jsonify({"error": "receipt_not_found"}), 404
+
+        file_id, workflow_type, file_type, content_hash, other_data_raw = row
+        other_data = _parse_other_data(other_data_raw)
+        workflow_key = _resolve_restart_workflow(
+            file_type=file_type,
+            workflow_type=workflow_type,
+            other_data=other_data,
+        )
+        effective_hash = content_hash or other_data.get("content_hash") or file_id
+
+        workflow_run_id = create_workflow_run(
+            workflow_key=workflow_key,
+            source_channel="manual_restart",
+            file_id=file_id,
+            content_hash=effective_hash,
+        )
+
+        if not workflow_run_id:
+            logger.error("Failed to create workflow run for receipt %s", rid)
+            return jsonify({"error": "workflow_creation_failed"}), 500
+
+        log_import_event(
+            workflow_run_id,
+            "restart_dispatch",
+            status="running",
+            message="Startar om konvertering via förhandsgranskning",
+        )
+
+        _update_ai_status(file_id, "queued")
+
+        success = dispatch_workflow(workflow_run_id)
+
+        if not success:
+            _update_ai_status(file_id, "failed")
+            log_import_event(
+                workflow_run_id,
+                "restart_dispatch",
+                status="failed",
+                message="Dispatch misslyckades",
+            )
+            logger.error("Failed to dispatch workflow %s for receipt %s", workflow_run_id, rid)
+            return jsonify(
+                {
+                    "error": "workflow_dispatch_failed",
+                    "workflow_run_id": workflow_run_id,
+                    "workflow_key": workflow_key,
+                }
+            ), 500
+
+        logger.info(
+            "Successfully restarted AI workflow for receipt %s, workflow_run_id: %s",
+            rid,
+            workflow_run_id,
+        )
+        return jsonify(
+            {
+                "success": True,
+                "receipt_id": file_id,
+                "workflow_run_id": workflow_run_id,
+                "workflow_key": workflow_key,
+            }
+        ), 200
+
+    except Exception as exc:
+        logger.error("Error restarting AI workflow for receipt %s", rid, exc_info=True)
+        _update_ai_status(rid, "failed")
+        return jsonify({"error": "restart_failed", "message": str(exc)}), 500
 
 
 @receipts_bp.get("/receipts/<rid>/ai-history")

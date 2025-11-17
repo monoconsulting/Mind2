@@ -661,8 +661,37 @@ export default function ReceiptsList() {
     if (!updated || !updated.id) {
       return
     }
-    setItems((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
-    setSelectedReceipt((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev))
+
+    if (updated.deleted) {
+      // Handle navigation after deletion using state updater
+      if (updated.shouldNavigateNext) {
+        setItems((prevItems) => {
+          const currentIndex = prevItems.findIndex(item => item.id === updated.id)
+          const newList = prevItems.filter(item => item.id !== updated.id)
+
+          // The next receipt will now be at the same index as the deleted one
+          if (currentIndex >= 0 && currentIndex < newList.length) {
+            const nextReceipt = newList[currentIndex]
+            setSelectedReceipt(nextReceipt)
+            setPreviewImage(null)
+          } else {
+            // No more receipts, close modal
+            setSelectedReceipt(null)
+            setIsPreviewOpen(false)
+          }
+
+          return newList
+        })
+      } else {
+        // Remove from items list and close modal
+        setItems((prev) => prev.filter((item) => item.id !== updated.id))
+        setSelectedReceipt(null)
+        setIsPreviewOpen(false)
+      }
+    } else {
+      setItems((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
+      setSelectedReceipt((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev))
+    }
   }, [])
 
   const loadReceipts = React.useCallback(async (silent = false) => {
@@ -679,6 +708,8 @@ export default function ReceiptsList() {
     if (filters.from) params.set('from', filters.from)
     if (filters.to) params.set('to', filters.to)
     if (filters.tag) params.set('tags', filters.tag)
+    if (sortColumn) params.set('sort_by', sortColumn)
+    if (sortDirection) params.set('sort_order', sortDirection)
 
     try {
       const res = await api.fetch(`/ai/api/receipts?${params.toString()}`)
@@ -737,7 +768,7 @@ export default function ReceiptsList() {
         setLoading(false)
       }
     }
-  }, [page, pageSize, searchTerm, filters])
+  }, [page, pageSize, searchTerm, filters, sortColumn, sortDirection])
 
   React.useEffect(() => {
     loadReceipts()
@@ -763,69 +794,14 @@ export default function ReceiptsList() {
     }
   }, [sortColumn])
 
-  const sortedItems = React.useMemo(() => {
-    if (!sortColumn) return items
-
-    const sorted = [...items].sort((a, b) => {
-      let aVal, bVal
-
-      switch (sortColumn) {
-        case 'company':
-          aVal = (a.company || a.merchant_name || '').toLowerCase()
-          bVal = (b.company || b.merchant_name || '').toLowerCase()
-          break
-        case 'purchase_datetime':
-          aVal = a.purchase_datetime || ''
-          bVal = b.purchase_datetime || ''
-          break
-        case 'net_amount':
-          aVal = Number(a.net_amount) || 0
-          bVal = Number(b.net_amount) || 0
-          break
-        case 'gross_amount':
-          aVal = Number(a.gross_amount) || 0
-          bVal = Number(b.gross_amount) || 0
-          break
-        case 'firstcard_matched':
-          aVal = a.firstcard_matched_line_id ? 1 : 0
-          bVal = b.firstcard_matched_line_id ? 1 : 0
-          break
-        case 'expense_type':
-          aVal = (a.expense_type || '').toLowerCase()
-          bVal = (b.expense_type || '').toLowerCase()
-          break
-        case 'credit_card_last_4':
-          aVal = a.credit_card_last_4 || ''
-          bVal = b.credit_card_last_4 || ''
-          break
-        case 'credit_card_type':
-          aVal = (a.credit_card_type || '').toLowerCase()
-          bVal = (b.credit_card_type || '').toLowerCase()
-          break
-        case 'payment_type':
-          aVal = (a.payment_type || '').toLowerCase()
-          bVal = (b.payment_type || '').toLowerCase()
-          break
-        default:
-          return 0
-      }
-
-      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1
-      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1
-      return 0
-    })
-
-    return sorted
-  }, [items, sortColumn, sortDirection])
-
   const displayedItems = React.useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
     if (!term) {
-      return sortedItems
+      return items
     }
     const numericValue = Number(term.replace(',', '.'))
     const hasNumeric = !Number.isNaN(numericValue)
-    return sortedItems.filter((item) => {
+    return items.filter((item) => {
       const merchantMatch = item.merchant?.toLowerCase().includes(term)
       const fileMatch = item.original_filename?.toLowerCase().includes(term)
       const idMatch = String(item.id || '').toLowerCase().includes(term)
@@ -834,13 +810,38 @@ export default function ReceiptsList() {
         : false
       return merchantMatch || fileMatch || idMatch || amountMatch
     })
-  }, [sortedItems, searchTerm])
+  }, [items, searchTerm])
 
   const totalPages = React.useMemo(() => {
     const perPage = meta.page_size || pageSize || 1
     const total = meta.total || displayedItems.length || 1
     return Math.max(1, Math.ceil(total / perPage))
   }, [meta, displayedItems.length, pageSize])
+
+  // Modal navigation
+  const currentReceiptIndex = React.useMemo(() => {
+    if (!selectedReceipt) return -1
+    return displayedItems.findIndex(item => item.id === selectedReceipt.id)
+  }, [displayedItems, selectedReceipt])
+
+  const handleNavigateNext = React.useCallback(() => {
+    if (currentReceiptIndex >= 0 && currentReceiptIndex < displayedItems.length - 1) {
+      const nextReceipt = displayedItems[currentReceiptIndex + 1]
+      setSelectedReceipt(nextReceipt)
+      setPreviewImage(null)
+    }
+  }, [currentReceiptIndex, displayedItems])
+
+  const handleNavigatePrevious = React.useCallback(() => {
+    if (currentReceiptIndex > 0) {
+      const prevReceipt = displayedItems[currentReceiptIndex - 1]
+      setSelectedReceipt(prevReceipt)
+      setPreviewImage(null)
+    }
+  }, [currentReceiptIndex, displayedItems])
+
+  const hasNext = currentReceiptIndex >= 0 && currentReceiptIndex < displayedItems.length - 1
+  const hasPrevious = currentReceiptIndex > 0
 
   const handleSearch = (term) => {
     setSearchTerm(term)
@@ -1380,6 +1381,10 @@ export default function ReceiptsList() {
         previewImage={previewImage}
         onClose={closePreview}
         onReceiptUpdate={updateReceiptInList}
+        onNavigateNext={handleNavigateNext}
+        onNavigatePrevious={handleNavigatePrevious}
+        hasNext={hasNext}
+        hasPrevious={hasPrevious}
       />
       <MapModal open={isMapOpen} receipt={selectedReceipt} onClose={closeMap} />
       <ItemsModal open={isItemsOpen} receipt={selectedReceipt} onClose={closeItems} />
