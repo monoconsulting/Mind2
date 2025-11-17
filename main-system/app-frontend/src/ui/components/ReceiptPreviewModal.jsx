@@ -1,5 +1,5 @@
 import React from 'react';
-import { FiX, FiSave, FiEdit2, FiTrash2, FiCreditCard, FiChevronDown } from 'react-icons/fi';
+import { FiX, FiSave, FiEdit2, FiTrash2, FiCreditCard, FiChevronDown, FiChevronLeft, FiChevronRight, FiRefreshCw } from 'react-icons/fi';
 import { api } from '../api';
 
 // Helper functions
@@ -719,9 +719,20 @@ const formatCurrency = (value) => {
 };
 
 // Main component
-export default function ReceiptPreviewModal({ open, receipt, previewImage, onClose, onReceiptUpdate }) {
+export default function ReceiptPreviewModal({
+  open,
+  receipt,
+  previewImage,
+  onClose,
+  onReceiptUpdate,
+  onNavigateNext,
+  onNavigatePrevious,
+  hasNext = false,
+  hasPrevious = false
+}) {
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
+  const [restarting, setRestarting] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [payload, setPayload] = React.useState(null);
   const [draft, setDraft] = React.useState(null);
@@ -730,6 +741,8 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
   const [companySuggestions, setCompanySuggestions] = React.useState([]);
   const [selectedCompanyId, setSelectedCompanyId] = React.useState(null);
   const [isExistingCompany, setIsExistingCompany] = React.useState(false);
+  const [imageViewerOpen, setImageViewerOpen] = React.useState(false);
+  const [imageZoom, setImageZoom] = React.useState(1);
   const imgRef = React.useRef(null);
   const companySelectRef = React.useRef(null);
   const companyInputRef = React.useRef(null);
@@ -750,15 +763,35 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
       setError(null);
       setLoading(false);
       setSaving(false);
+      setRestarting(false);
       setCompanySuggestions([]);
       setSelectedCompanyId(null);
       setIsExistingCompany(false);
       setCompanyDropdownOpen(false);
       setCompanySearchLoading(false);
       setCompanyHighlightIndex(-1);
+      setImageViewerOpen(false);
+      setImageZoom(1);
       publishOverlayDebug(null);
     }
   }, [open]);
+
+  React.useEffect(() => {
+    if (!imageViewerOpen) {
+      return undefined;
+    }
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setImageViewerOpen(false);
+      } else if ((event.ctrlKey || event.metaKey) && event.key === '0') {
+        event.preventDefault();
+        setImageZoom(1);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [imageViewerOpen]);
 
   React.useEffect(() => {
     if (!open || !safeReceiptId) {
@@ -1273,6 +1306,34 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
     }
   };
 
+  const handleNavigatePrevious = () => {
+    if (hasPrevious && onNavigatePrevious && !saving && !editing) {
+      onNavigatePrevious();
+    }
+  };
+
+  const handleNavigateNext = () => {
+    if (hasNext && onNavigateNext && !saving && !editing) {
+      onNavigateNext();
+    }
+  };
+
+  // Keyboard navigation
+  React.useEffect(() => {
+    if (!open || editing || saving) {
+      return;
+    }
+    const handleKeyDown = (event) => {
+      if (event.key === 'ArrowLeft') {
+        handleNavigatePrevious();
+      } else if (event.key === 'ArrowRight') {
+        handleNavigateNext();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, editing, saving, hasPrevious, hasNext]);
+
   const handleDelete = async () => {
     if (!safeReceiptId) {
       return;
@@ -1286,14 +1347,79 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
         const message = (json && (json.message || json.error)) || `HTTP ${res.status}`;
         throw new Error(message);
       }
+      // Notify parent to handle navigation after deletion
       if (typeof onReceiptUpdate === 'function') {
-        onReceiptUpdate({ id: safeReceiptId, deleted: true });
+        onReceiptUpdate({ id: safeReceiptId, deleted: true, shouldNavigateNext: hasNext });
       }
-      onClose();
+
+      // If no next receipt available, close modal
+      if (!hasNext) {
+        onClose();
+      }
+      // Parent will handle navigation to next receipt if shouldNavigateNext is true
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
+
+  const handleRestartAI = async () => {
+    if (!safeReceiptId) {
+      return;
+    }
+    setRestarting(true);
+    setError(null);
+    try {
+      const res = await api.fetch(`/ai/api/receipts/${safeReceiptId}/restart-ai`, {
+        method: 'POST'
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        const message = (json && (json.message || json.error)) || `HTTP ${res.status}`;
+        throw new Error(message);
+      }
+      // Show success message by temporarily setting a success state
+      // For now, just clear any existing error
+      setError(null);
+      // Optionally notify parent that workflow was restarted
+      if (typeof onReceiptUpdate === 'function') {
+        onReceiptUpdate({ id: safeReceiptId, workflow_restarted: true });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRestarting(false);
+    }
+  };
+
+  const handleOpenImageViewer = () => {
+    setImageZoom(1);
+    setImageViewerOpen(true);
+  };
+
+  const handleCloseImageViewer = () => {
+    setImageViewerOpen(false);
+  };
+
+  const handleImageViewerWheel = (event) => {
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
+    event.preventDefault();
+    const direction = event.deltaY > 0 ? -1 : 1;
+    const step = 0.1 * direction;
+    setImageZoom((prev) => {
+      const next = prev + step;
+      if (next < 0.2) {
+        return 0.2;
+      }
+      if (next > 5) {
+        return 5;
+      }
+      return Number(next.toFixed(2));
+    });
+  };
+
+  const handleResetImageZoom = () => setImageZoom(1);
 
   const baseImageSrc = safeReceiptId
     ? previewImage || `/ai/api/receipts/${safeReceiptId}/image?size=preview&rotate=portrait`
@@ -1304,10 +1430,36 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
   }
 
   return (
-    <div className="modal-backdrop receipt-preview-modal" role="dialog" aria-label={`Förhandsgranskning kvitto ${receipt.id}`} onClick={handleBackdrop}>
-      <div className="modal modal-xxl" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <div>
+    <>
+      <div className="modal-backdrop receipt-preview-modal" role="dialog" aria-label={`Förhandsgranskning kvitto ${receipt.id}`} onClick={handleBackdrop}>
+        {/* Navigation arrows */}
+        {hasPrevious && !editing && (
+          <button
+            type="button"
+            className="modal-nav-arrow modal-nav-arrow-left"
+            onClick={handleNavigatePrevious}
+            disabled={saving}
+            aria-label="Föregående kvitto"
+            title="Föregående kvitto (←)"
+          >
+            <FiChevronLeft />
+          </button>
+        )}
+        {hasNext && !editing && (
+          <button
+            type="button"
+            className="modal-nav-arrow modal-nav-arrow-right"
+            onClick={handleNavigateNext}
+            disabled={saving}
+            aria-label="Nästa kvitto"
+            title="Nästa kvitto (→)"
+          >
+            <FiChevronRight />
+          </button>
+        )}
+        <div className="modal modal-xxl" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-header">
+            <div>
             <h3>Förhandsgranska kvitto</h3>
             <p className="card-subtitle">
               {receiptData.merchant || safeReceipt.merchant || 'Kvitto'} • {formatDate(receiptData.purchase_datetime)}
@@ -1612,6 +1764,16 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
 
               {/* Center Column - Image */}
               <div className="receipt-modal-center">
+                <div className="receipt-modal-image-toolbar">
+                  <button
+                    type="button"
+                    className="btn btn-text"
+                    onClick={handleOpenImageViewer}
+                    disabled={!baseImageSrc}
+                  >
+                    Visa stor bild
+                  </button>
+                </div>
                 <div className="receipt-modal-image-wrapper">
                   {baseImageSrc ? (
                     <div className="receipt-modal-image-stage">
@@ -1911,6 +2073,10 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
                   <FiEdit2 />
                   Redigera
                 </button>
+                <button type="button" className="btn btn-warning" onClick={handleRestartAI} disabled={restarting || saving || loading || !payload} title="Starta om konvertering (kör OCR och AI från början)">
+                  <FiRefreshCw />
+                  {restarting ? 'Startar om konvertering...' : 'Starta om konvertering'}
+                </button>
                 <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={saving || loading} title="Radera kvitto">
                   <FiTrash2 />
                   Radera
@@ -1922,8 +2088,35 @@ export default function ReceiptPreviewModal({ open, receipt, previewImage, onClo
             </button>
           </div>
         </div>
+        </div>
       </div>
-    </div>
+      {imageViewerOpen && baseImageSrc && (
+        <div className="receipt-image-viewer-backdrop" role="dialog" aria-label="Förstorad kvittobild" onClick={handleCloseImageViewer}>
+          <div className="receipt-image-viewer-dialog" onClick={(event) => event.stopPropagation()}>
+            <div className="receipt-image-viewer-toolbar">
+              <div className="receipt-image-viewer-zoom">Zoom: {Math.round(imageZoom * 100)}%</div>
+              <div className="receipt-image-viewer-toolbar-buttons">
+                <button type="button" className="btn btn-text" onClick={handleResetImageZoom}>
+                  Återställ zoom
+                </button>
+                <button type="button" className="btn btn-secondary" onClick={handleCloseImageViewer}>
+                  Stäng
+                </button>
+              </div>
+            </div>
+            <div className="receipt-image-viewer-canvas" onWheel={handleImageViewerWheel}>
+              <img
+                src={baseImageSrc}
+                alt={`Förstorad vy kvitto ${safeReceiptId || ''}`}
+                style={{ transform: `scale(${imageZoom})`, transformOrigin: 'center top' }}
+                draggable={false}
+              />
+            </div>
+            <p className="receipt-image-viewer-hint">Tips: Håll ned Ctrl (eller ⌘) och använd mushjulet för att zooma.</p>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
