@@ -33,7 +33,7 @@ services:
       - FTP_PASSIVE=${FTP_PASSIVE}
       - FTP_ALLOWED_EXT=${FTP_ALLOWED_EXT}
       - FTP_DELETE_AFTER=${FTP_DELETE_AFTER}
-      - DB_AUTO_MIGRATE=0
+      - DB_AUTO_MIGRATE=${DB_AUTO_MIGRATE}
     depends_on:
       mysql:
         condition: service_healthy
@@ -176,8 +176,8 @@ services:
 
   mind-web-main-frontend:
     build:
-      context: ./main-system/app-frontend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: main-system/app-frontend/Dockerfile
       args:
         - VITE_REFRESH_INTERVAL_SECONDS=${VITE_REFRESH_INTERVAL_SECONDS}
     image: mind2-admin-frontend:dev
@@ -187,14 +187,16 @@ services:
 
   mind-web-main-frontend-dev:
     build:
-      context: ./main-system/app-frontend
-      dockerfile: Dockerfile.dev
+      context: .
+      dockerfile: main-system/app-frontend/Dockerfile.dev
     image: mind2-admin-frontend:dev-hotreload
     volumes:
       # Mount source code for hot-reload
       - ./main-system/app-frontend/src:/app/src:ro
       - ./main-system/app-frontend/index.html:/app/index.html:ro
       - ./main-system/app-frontend/vite.config.js:/app/vite.config.js:ro
+      # Mount shared status definitions for hot-reload
+      - ./shared:/shared:ro
       # Use named volume for node_modules to avoid platform conflicts
       - mind-frontend-node-modules:/app/node_modules
     environment:
