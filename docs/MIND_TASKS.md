@@ -4,6 +4,34 @@
 
 
 
+
+
+
+
+------------
+
+# Uppdatering ReceiptPreviewModal.jsx - bolagsval
+
+Börja med att läsa [start.prompt.md](.prompts/start.prompt.md) . Läs därefter senaste worklogs i docs/worklogs. 
+Som bakgrundsinformation kan du också läsa [MIND_PREVIEW_PORTAL_v1.0.md](docs/SYSTEM_DOCS/MIND_PREVIEW_PORTAL_v1.0.md). 
+Vi har arbetat med att försöka lösa problematiken med kvittomodalen - [ReceiptPreviewModal.jsx](main-system/app-frontend/src/ui/components/ReceiptPreviewModal.jsx) - en modal som anropas från både menyval process, kvitton och Manuell Matchning. 
+För att det ska fungera bra måste fältet "Företag" i rutan "GRUNDDATA (FÖRETAGSINFORMATION)" göras om till en Dropdownlista. 
+
+Man trycker först "Redigera" och därefter: 
+Scenario 1: Här ska man kunna skriva in namnet på ett företag - och de som matchar ska successivt visas upp under. Oftast är namnet felaktigt inscannat och man behöver då bara välja ett alternativ i dropdown. 
+
+Då man valt ett företag ska automatiskt fälten fyllas med företags information och det ska mappas mot rätt company_id i databasen. 
+
+Scenario 2: Om man skriver in ett företag som inte finns i listan - ska man kunna välja att skapa bolaget. Då skriver man in namnet i dropdownlistan och den övriga informationen man har. När man sedan trycker på spara så uppdateras company-tabellen med det nya bolaget, och det nya bolagsid:t sätts in i unified_files.
+
+Värt att notera är att det fanns problem med att leta upp company_id i koden - men detta skickas över, och om du läser i [ReceiptPreviewModal.jsx](main-system/app-frontend/src/ui/components/ReceiptPreviewModal.jsx) så kan du se hur du på bästa sätt hämtar detta.
+
+Gå noga igenom koden, jag vet att den tidigare agenten kom långt men lyckades aldrig slutföra detta. Skapa därefter en plan och presentera för mig på hur du vill genomföra detta. Du behöver inte skapa tester utan säg till mig så testar jag när det finns funktionatlitet jag kan testa i GUI.  Lycka till!
+
+____
+
+
+
 ## Refactoring fas 1 och 2 - korrigeringar
 
 Context:
@@ -298,7 +326,7 @@ _________
 
 #### Header i fält "Kontoutdrag"
 
-- [ ] Lägg till en knapp "Matcha omatchade poster" - denna ska köra igenom alla poster för samtliga fakturor som ej är matchade
+- [x] Lägg till en knapp "Matcha omatchade poster" - denna ska köra igenom alla poster för samtliga fakturor som ej är matchade
 
 #### Tabell
 
@@ -321,9 +349,12 @@ _________
 
 
 - [ ] Vid klick på post i första kolumnen ska previewmodalen öppnas med inställningar anpassade för FC
+
+Checkboxes längst till vänster på process/receipts/
+
 - [ ] Slå samman kvitton så det blir ett av flera bilder 
 - [ ] Säkerställ att kvitton som är pdf:er hanteras på rätt sätt
-- [ ] SKapa dropdown för företag i previewmodalen
+- [x] SKapa dropdown för företag i previewmodalen
 - [ ] Dropdown i process och kvitton för:
   - [ ] År
   - [ ] Månad
@@ -332,3 +363,104 @@ _________
   - [ ] 
 
 
+-----------
+
+
+
+Filtrering:
+
+- [ ] Välj konverteringsstatus
+- [ ] Välj dokumenttyp
+- [ ] Välj företag (dropdown med sökfunktion)
+- [ ] Välj period för inköpsdatum (start-stopp)
+- [ ] Matchad/ej matchad
+
+
+
+Nya kolumner
+
+Process:
+
+Lägg till last 4
+
+Lägg till (Betalningstyp) expense_type 
+
+i process och receipts
+
+
+
+-----------
+
+Vi har nu gjort lite förändringar i process-sidan. Vi behöver korrigera en hel del här så det stämmer.
+
+1. Dropdown statusar
+   1. Ska följa kolumn Status. Det är en helt egen uppställning med statusar i dropdown. Se till att båda dessa följer @MIND_STATUS_DEFINITIONS.md. 
+   2. Filtrering på FTP ger noll resultat. Här ska det sorteras på kolumnen "Uploads" statusar. Samma här - följ @MIND_STATUS_DEFINITIONS.md. och se till att både kolumnvärden och dropdown-värden matchar varandra
+   3. Om jag söker på 2024 får jag noll resultat. Det finns kvitton för 2024.
+   4. Söker jag på 2025 och väljer en månad så är resultatet tomt även där. 
+
+Analysera befintlig kodbas och gå igenom vad som behöver göras. SKapa därefter en plan och en task-list och presentera. Säkerställ att du läser all relevant dokumentation först. 
+
+
+
+
+
+
+
+Något stämmer inte alls med tolkningen av personal eller corporate. 
+
+De sista fyra sifforna på kortnumret visar helt tydligt hur det ska tolkas.
+
+Så här ser AI2 ut som ska klassificera detta: 
+
+# AI2 - EXPENSE CLASSIFICATION
+
+AI2: You are an AI model analyzing receipt details (payment method, card data, contextual text).
+Determine whether the receipt is an *employee expense* or a *company card expense*.
+
+## Rules:
+### Identify personal: 
+** Is it swish -> always personal
+** Is it cash -> always personal
+** Is it a VISA - card -> ALWAYS personal
+** Is it one of the following last 4 -> personal
+- 3632
+
+- 2673
+
+- 0927
+
+- 2607
+
+- 9995
+  ** Is it MasterCard and the following last 4 -> personal
+
+- MASTERCARD + 9995
+
+- MASTERCARD + 9995
+
+  
+
+**Only these MASTERCARD NUMBERS ABOVE ARE ACCEPTED AS PERSONAL**
+
+____
+
+### Identify corporate:
+
+**The following last 4 are ALWAYS corporate**
+
+- 6779
+- 6779-0
+- 4668
+
+
+
+**NO OTHER "Last 4" then the ones specified are accepted for corporate!!**
+
+**VISA cards are NEVER corporate !!**
+
+
+
+-------
+
+Reply in json with either "personal" or "corporate" only, without any extra text.

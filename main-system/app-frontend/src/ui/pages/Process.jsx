@@ -24,6 +24,7 @@ import {
 } from 'react-icons/fi'
 import { api } from '../api'
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal'
+import statusDefinitions from '../../../../../shared/status_definitions.json'
 
 const INITIAL_LOG_STATE = {
   open: false,
@@ -34,24 +35,18 @@ const INITIAL_LOG_STATE = {
 }
 // Force Vite reload
 
-const statusOptions = [
-  { value: '', label: 'Alla statusar' },
-  { value: 'processing', label: 'Bearbetas' },
-  { value: 'queued', label: 'I kö' },
-  { value: 'failed', label: 'Fel' },
-  { value: 'passed', label: 'Godkänd' },
-  { value: 'completed', label: 'Klar' },
-  { value: 'manual_review', label: 'Manuell kontroll' },
-  { value: 'needs_review', label: 'Behöver kontroll' }
-]
-
 const initialFilters = {
   status: '',
   from: '',
   to: '',
   orgnr: '',
   tag: '',
-  fileType: ''
+  fileType: '',
+  expenseType: '',
+  paymentType: '',
+  uploadStage: '',
+  uploadYear: '',
+  uploadMonth: ''
 }
 
 const statusClassMap = {
@@ -73,6 +68,72 @@ const statusClassMap = {
   ai4_completed: 'status-queued',
   proc_completed: 'status-passed'
 }
+
+const CATEGORY_ORDER = ['upload', 'workflow', 'matching', 'resume', 'outcome']
+const STAGE_DEFINITIONS = statusDefinitions?.stageKeys || {}
+const CATEGORY_LABELS = statusDefinitions?.categories || {}
+const LEGACY_STATUS_DEFINITIONS = statusDefinitions?.legacyStatuses || {}
+const STATUS_LABEL_MAP = statusDefinitions?.statusLabels || {}
+
+const stageOptions = (() => {
+  const entries = Object.entries(STAGE_DEFINITIONS)
+  const unusedKeys = new Set(entries.map(([key]) => key))
+  /** @type {Array<{ value: string, label: string }>} */
+  const ordered = []
+
+  CATEGORY_ORDER.forEach((category) => {
+    const categoryEntries = entries.filter(([, meta]) => (meta?.category || 'workflow') === category)
+    if (!categoryEntries.length) {
+      return
+    }
+    categoryEntries
+      .sort((a, b) => (a[1]?.label || a[0]).localeCompare(b[1]?.label || b[0], 'sv'))
+      .forEach(([key, meta]) => {
+        unusedKeys.delete(key)
+        ordered.push({
+          value: `stage:${key}`,
+          label: `${CATEGORY_LABELS?.[category]?.label || 'Workflow'} · ${meta?.label || key}`
+        })
+      })
+  })
+
+  if (unusedKeys.size > 0) {
+    Array.from(unusedKeys)
+      .sort((a, b) => a.localeCompare(b, 'sv'))
+      .forEach((key) => {
+        const meta = STAGE_DEFINITIONS[key]
+        ordered.push({
+          value: `stage:${key}`,
+          label: `${CATEGORY_LABELS?.[meta?.category]?.label || 'Workflow'} · ${meta?.label || key}`
+        })
+      })
+  }
+  return ordered
+})()
+
+const legacyStatusOptions = Object.entries(LEGACY_STATUS_DEFINITIONS)
+  .map(([key, meta]) => ({
+    value: `legacy:${key}`,
+    label: `Legacy · ${meta?.label || key}`
+  }))
+  .sort((a, b) => a.label.localeCompare(b.label, 'sv'))
+
+const statusOptions = [
+  { value: '', label: 'Alla statusar' },
+  ...stageOptions,
+  ...legacyStatusOptions
+]
+
+const uploadStageOptions = [
+  { value: '', label: 'Alla källor' },
+  ...Object.entries(STAGE_DEFINITIONS)
+    .filter(([, meta]) => (meta?.category || '') === 'upload')
+    .sort((a, b) => (a[1]?.label || a[0]).localeCompare(b[1]?.label || b[0], 'sv'))
+    .map(([key, meta]) => ({
+      value: key,
+      label: meta?.label || key
+    }))
+]
 
 const initialPreviewState = {
   receipt: null,
@@ -120,82 +181,50 @@ function formatDurationMs(ms) {
   return `${sec}s`
 }
 
-function translateStatus(status) {
+function formatStageLabel(stageKey) {
+  if (!stageKey) {
+    return ''
+  }
+  return STAGE_DEFINITIONS?.[stageKey]?.label || stageKey
+}
+
+function formatStageStatusLabel(stageStatus) {
+  if (!stageStatus) {
+    return ''
+  }
+  const normalized = stageStatus.toLowerCase()
+  return STATUS_LABEL_MAP?.[normalized] || stageStatus
+}
+
+function translateStatus(status, stageKey = null, stageStatus = null) {
+  if (stageKey || stageStatus) {
+    const label = formatStageLabel(stageKey)
+    const statusLabel = formatStageStatusLabel(stageStatus)
+    if (label && statusLabel) {
+      return `${label} - ${statusLabel}`
+    }
+    return label || statusLabel || ''
+  }
+
   if (!status) {
     return ''
   }
 
-  // Check if this is a workflow stage status (format: "stage_key status")
   const statusStr = String(status)
   const parts = statusStr.split(' ')
   if (parts.length >= 2) {
-    const stageKey = parts[0]
-    const stageStatus = parts[1]
-
-    // Map stage status
-    const statusMap = {
-      running: 'pågående',
-      succeeded: 'klar',
-      failed: 'misslyckades',
-      queued: 'i kö',
-      skipped: 'hoppades över'
-    }
-
-    // Map stage keys to Swedish
-    const stageMap = {
-      src_portal: 'Portal',
-      src_portal_start: 'Portal start',
-      src_portal_end: 'Portal klar',
-      src_ftp: 'FTP',
-      src_ftp_start: 'FTP start',
-      src_ftp_end: 'FTP klar',
-      src_fc: 'FC-uppladdning',
-      src_fc_start: 'FC start',
-      src_fc_end: 'FC klar',
-      ingest_store: 'Lagrar fil',
-      ingest_store_start: 'Lagrar fil start',
-      ingest_store_end: 'Lagrar fil klar',
-      ingest_wf1: 'Startar kvittoflöde',
-      fc_create: 'Skapar FC-faktura',
-      fc_ocr: 'FC OCR',
-      fc_parse: 'FC-parsing',
-      fc_ready: 'FC redo för matchning',
-      detect_type: 'Dokumentklassning',
-      r_ocr: 'OCR',
-      r_ai3: 'Dataextraktion',
-      r_ai4: 'Normalisering',
-      r_persist: 'Sparar data',
-      r_queue_match: 'Köar matchning',
-      ai5: 'Kortmatchning',
-      m_link: 'Länka kvitto',
-      m_unmatched: 'Omatchad',
-      finalize_ok: 'Slutför',
-      finalize_fail: 'Slutför (fel)',
-      manual_review: 'Manuell granskning',
-      resume_dispatch: 'Återupptar',
-      restart_dispatch: 'Omstartar',
-      KLAR: 'KLAR'
-    }
-
-    const translatedStage = stageMap[stageKey] || stageKey
-    const translatedStatus = statusMap[stageStatus.toLowerCase()] || stageStatus
-
-    return `${translatedStage} - ${translatedStatus}`
+    const keyCandidate = parts[0]
+    const stageCandidate = parts[1]
+    return translateStatus(null, keyCandidate, stageCandidate)
   }
 
-  // Fallback to legacy status mapping
-  const normalized = String(status).toLowerCase()
-  const map = {
-    // Legacy statuses
-    processing: 'Bearbetas',
-    queued: 'I kö',
-    failed: 'Fel',
-    passed: 'Godkänd',
-    completed: 'Klar',
-    manual_review: 'Manuell kontroll',
-    needs_review: 'Behöver kontroll',
+  const normalized = statusStr.toLowerCase()
+  const legacyLabel = LEGACY_STATUS_DEFINITIONS?.[normalized]?.label
+  if (legacyLabel) {
+    return legacyLabel
+  }
 
-    // AI Pipeline stages
+  const fallbackMap = {
     ftp_fetched: 'FTP - Fil hämtad',
     ocr_done: 'OCR - Text extraherad',
     ai1_completed: 'AI1 - Dokumentklassificering klar',
@@ -204,31 +233,38 @@ function translateStatus(status) {
     ai4_completed: 'AI4 - Bokföringsförslag klart',
     proc_completed: 'Bearbetning klar'
   }
-  return map[normalized] || status
+  return fallbackMap[normalized] || status
 }
 
-function StatusBadge({ status }) {
-  const statusStr = String(status || '')
-  const translated = translateStatus(status)
+function StatusBadge({ status, stageKey = null, stageStatus = null }) {
+  const statusStr = typeof status === 'string' ? status : ''
+  const translated = translateStatus(statusStr, stageKey, stageStatus)
 
-  // Extract status type from workflow stage status (e.g., "src_portal running" -> "running")
   let badgeClass = 'status-pending'
-  const parts = statusStr.split(' ')
-  if (parts.length >= 2) {
-    const stageStatus = parts[1].toLowerCase()
-    if (stageStatus === 'succeeded') {
+  if (stageStatus) {
+    const normalizedStageStatus = stageStatus.toLowerCase()
+    if (normalizedStageStatus === 'succeeded') {
       badgeClass = 'status-passed'
-    } else if (stageStatus === 'running') {
+    } else if (normalizedStageStatus === 'running') {
       badgeClass = 'status-processing'
-    } else if (stageStatus === 'failed') {
+    } else if (normalizedStageStatus === 'failed') {
       badgeClass = 'status-failed'
-    } else if (stageStatus === 'queued') {
+    } else if (normalizedStageStatus === 'queued') {
       badgeClass = 'status-queued'
     }
-  } else {
-    // Legacy status mapping
-    const normalized = statusStr.toLowerCase()
-    badgeClass = statusClassMap[normalized] || 'status-pending'
+  } else if (statusStr.includes(' ')) {
+    const [, stageState] = statusStr.split(' ')
+    if (stageState) {
+      return (
+        <StatusBadge
+          status={statusStr}
+          stageKey={stageKey || statusStr.split(' ')[0]}
+          stageStatus={stageState}
+        />
+      )
+    }
+  } else if (statusStr) {
+    badgeClass = statusClassMap[statusStr.toLowerCase()] || 'status-pending'
   }
 
   return <span className={`status-badge ${badgeClass}`}>{translated || 'Okänd'}</span>
@@ -428,6 +464,21 @@ function FilterPanel({ open, filters, onApply, onReset, onClose, disabled }) {
               <option value="receipt">Kvitton</option>
               <option value="invoice">Fakturor</option>
               <option value="other">Övriga</option>
+            </select>
+          </label>
+          <label className="filter-field">
+            <span>Upload</span>
+            <select
+              value={draft.uploadStage}
+              onChange={(event) => update('uploadStage', event.target.value)}
+              className="dm-input"
+              disabled={disabled}
+            >
+              {uploadStageOptions.map((option) => (
+                <option key={option.value || option.label} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
             </select>
           </label>
         </div>
@@ -1203,6 +1254,7 @@ export default function Receipts() {
   const [sortColumn, setSortColumn] = React.useState('uploaded_at')
   const [sortDirection, setSortDirection] = React.useState('desc')
   const [logState, setLogState] = React.useState(INITIAL_LOG_STATE)
+  const [logActionState, setLogActionState] = React.useState({ clearing: false, error: '', success: '' })
 
   const fetchReceiptLog = React.useCallback(async (receiptId) => {
     if (!receiptId) {
@@ -1242,7 +1294,33 @@ export default function Receipts() {
 
   const closeLogViewer = React.useCallback(() => {
     setLogState(INITIAL_LOG_STATE)
+    setLogActionState({ clearing: false, error: '', success: '' })
   }, [])
+
+  const handleClearReceiptLog = React.useCallback(async (receiptId) => {
+    if (!receiptId || logActionState.clearing) {
+      return
+    }
+    if (!window.confirm('Vill du rensa alla loggar för detta kvitto? Detta går inte att ångra.')) {
+      return
+    }
+    setLogActionState({ clearing: true, error: '', success: '' })
+    try {
+      const res = await api.fetch(`/ai/api/receipts/${receiptId}/log`, { method: 'DELETE' })
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
+      await res.json().catch(() => ({}))
+      setLogActionState({ clearing: false, error: '', success: 'Loggen rensades.' })
+      await fetchReceiptLog(receiptId)
+    } catch (error) {
+      setLogActionState({
+        clearing: false,
+        error: error instanceof Error ? error.message : String(error),
+        success: ''
+      })
+    }
+  }, [fetchReceiptLog, logActionState.clearing])
 
   const resetReceiptForResume = React.useCallback((fileId) => {
     resumePending.current.add(fileId)
@@ -1277,14 +1355,44 @@ export default function Receipts() {
     params.set('page', String(page))
     params.set('page_size', String(pageSize))
     if (searchTerm) {
-      params.set('merchant', searchTerm)
+      params.set('search', searchTerm)
     }
-    if (filters.status) params.set('status', filters.status)
+    if (filters.status) {
+      if (filters.status.startsWith('stage:')) {
+        params.set('workflow_stage', filters.status.replace('stage:', ''))
+      } else if (filters.status.startsWith('legacy:')) {
+        params.set('status', filters.status.replace('legacy:', ''))
+      } else {
+        params.set('status', filters.status)
+      }
+    }
     if (filters.orgnr) params.set('orgnr', filters.orgnr)
     if (filters.from) params.set('from', filters.from)
     if (filters.to) params.set('to', filters.to)
     if (filters.tag) params.set('tags', filters.tag)
     if (filters.fileType) params.set('file_type', filters.fileType)
+
+    // Nya filter
+    if (filters.expenseType) params.set('expense_type', filters.expenseType)
+    if (filters.paymentType) params.set('payment_type', filters.paymentType)
+    if (filters.uploadStage) {
+      params.set('upload_stage', filters.uploadStage)
+    }
+
+    // År/Månad filter (konvertera till from/to datum för created_at)
+    if (filters.uploadYear && filters.uploadMonth) {
+      const year = parseInt(filters.uploadYear)
+      const month = parseInt(filters.uploadMonth)
+      const fromDate = new Date(year, month - 1, 1).toISOString().split('T')[0]
+      const lastDay = new Date(year, month, 0).getDate()
+      const toDate = new Date(year, month - 1, lastDay).toISOString().split('T')[0]
+      params.set('upload_from', fromDate)
+      params.set('upload_to', toDate)
+    } else if (filters.uploadYear) {
+      params.set('upload_from', `${filters.uploadYear}-01-01`)
+      params.set('upload_to', `${filters.uploadYear}-12-31`)
+    }
+
     if (sortColumn) params.set('sort_by', sortColumn)
     if (sortDirection) params.set('sort_order', sortDirection)
     // Visa endast kvitton i Process-vyn: exkludera FirstCard/fakturaposter från API-svaret
@@ -1393,23 +1501,7 @@ export default function Receipts() {
     }
   }, [sortColumn])
 
-  const displayedItems = React.useMemo(() => {
-    const term = searchTerm.trim().toLowerCase()
-    if (!term) {
-      return items
-    }
-    const numericValue = Number(term.replace(',', '.'))
-    const hasNumeric = !Number.isNaN(numericValue)
-    return items.filter((item) => {
-      const merchantMatch = item.merchant?.toLowerCase().includes(term)
-      const fileMatch = item.original_filename?.toLowerCase().includes(term)
-      const idMatch = String(item.id || '').toLowerCase().includes(term)
-      const amountMatch = hasNumeric
-        ? Number(item.net_amount || 0) === numericValue || Number(item.gross_amount || 0) === numericValue
-        : false
-      return merchantMatch || fileMatch || idMatch || amountMatch
-    })
-  }, [items, searchTerm])
+  const displayedItems = items
 
   const totals = React.useMemo(() => {
     const gross = displayedItems.reduce((sum, receipt) => sum + (receipt.gross_amount || 0), 0)
@@ -1752,12 +1844,44 @@ export default function Receipts() {
                 Kvitto: {receiptIdForModal || 'okänt'}
               </p>
             </div>
-            <button type="button" className="icon-button" onClick={closeLogViewer} aria-label="Stäng logg">
-              <FiX />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="btn btn-danger btn-sm"
+                onClick={() => handleClearReceiptLog(receiptIdForModal)}
+                disabled={!receiptIdForModal || logState.loading || logActionState.clearing}
+              >
+                {logActionState.clearing ? (
+                  <>
+                    <div className="loading-spinner w-4 h-4 mr-2" />
+                    Rensar...
+                  </>
+                ) : (
+                  <>
+                    <FiTrash2 className="mr-1" />
+                    Rensa logg
+                  </>
+                )}
+              </button>
+              <button type="button" className="icon-button" onClick={closeLogViewer} aria-label="Stäng logg">
+                <FiX />
+              </button>
+            </div>
           </div>
 
           <div className="modal-body space-y-6 max-h-[70vh] overflow-y-auto">
+            {logActionState.error && (
+              <div className="alert alert-error">
+                <FiAlertCircle className="mr-2" />
+                <span>{`Kunde inte rensa logg: ${logActionState.error}`}</span>
+              </div>
+            )}
+            {logActionState.success && (
+              <div className="alert alert-success">
+                <FiCheckCircle className="mr-2" />
+                <span>{logActionState.success}</span>
+              </div>
+            )}
             {logState.loading ? (
               <div className="flex items-center justify-center gap-3 py-10 text-gray-200">
                 <div className="loading-spinner" />
@@ -2033,6 +2157,146 @@ export default function Receipts() {
         onPageSizeChange={handlePageSizeChange}
       />
 
+      <div className="card">
+        <div className="card-header">
+          <h3 className="card-title">Filter</h3>
+        </div>
+        <div className="p-4 space-y-4">
+          {/* Första raden */}
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            <label className="filter-field">
+              <span>Status</span>
+              <select
+                value={filters.status}
+                onChange={(e) => setFilters(prev => ({ ...prev, status: e.target.value }))}
+                className="dm-input"
+                disabled={loading}
+              >
+                {statusOptions.map((opt) => (
+                  <option key={opt.value || opt.label} value={opt.value} disabled={opt.disabled}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="filter-field">
+              <span>Upload</span>
+              <select
+                value={filters.uploadStage}
+                onChange={(e) => setFilters(prev => ({ ...prev, uploadStage: e.target.value }))}
+                className="dm-input"
+                disabled={loading}
+              >
+                {uploadStageOptions.map((opt) => (
+                  <option key={opt.value || opt.label} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="filter-field">
+              <span>Dokumenttyp</span>
+              <select
+                value={filters.fileType}
+                onChange={(e) => setFilters(prev => ({ ...prev, fileType: e.target.value }))}
+                className="dm-input"
+                disabled={loading}
+              >
+                <option value="">Alla</option>
+                <option value="receipt">Kvitton</option>
+                <option value="invoice">Fakturor</option>
+                <option value="other">Övriga</option>
+              </select>
+            </label>
+
+            <label className="filter-field">
+              <span>Utgiftstyp</span>
+              <select
+                value={filters.expenseType}
+                onChange={(e) => setFilters(prev => ({ ...prev, expenseType: e.target.value }))}
+                className="dm-input"
+                disabled={loading}
+              >
+                <option value="">Alla typer</option>
+                <option value="personal">Personal</option>
+                <option value="corporate">Corporate</option>
+              </select>
+            </label>
+
+            <label className="filter-field">
+              <span>Betalningstyp</span>
+              <select
+                value={filters.paymentType}
+                onChange={(e) => setFilters(prev => ({ ...prev, paymentType: e.target.value }))}
+                className="dm-input"
+                disabled={loading}
+              >
+                <option value="">Alla</option>
+                <option value="card">Kort</option>
+                <option value="swish">Swish</option>
+                <option value="cash">Kontant</option>
+              </select>
+            </label>
+          </div>
+
+          {/* Andra raden */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <label className="filter-field">
+              <span>År</span>
+              <select
+                value={filters.uploadYear}
+                onChange={(e) => setFilters(prev => ({ ...prev, uploadYear: e.target.value }))}
+                className="dm-input"
+                disabled={loading}
+              >
+                <option value="">Alla år</option>
+                {Array.from({length: 5}, (_, i) => new Date().getFullYear() - i).map(year => (
+                  <option key={year} value={year}>{year}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="filter-field">
+              <span>Månad</span>
+              <select
+                value={filters.uploadMonth}
+                onChange={(e) => setFilters(prev => ({ ...prev, uploadMonth: e.target.value }))}
+                className="dm-input"
+                disabled={loading}
+              >
+                <option value="">Alla månader</option>
+                <option value="01">Januari</option>
+                <option value="02">Februari</option>
+                <option value="03">Mars</option>
+                <option value="04">April</option>
+                <option value="05">Maj</option>
+                <option value="06">Juni</option>
+                <option value="07">Juli</option>
+                <option value="08">Augusti</option>
+                <option value="09">September</option>
+                <option value="10">Oktober</option>
+                <option value="11">November</option>
+                <option value="12">December</option>
+              </select>
+            </label>
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex gap-2 justify-end">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setFilters(initialFilters)}
+              disabled={loading}
+            >
+              Rensa filter
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div className="card overflow-hidden">
         <div className="card-header">
           <div>
@@ -2053,6 +2317,16 @@ export default function Receipts() {
                   Företag {sortColumn === 'company' && (sortDirection === 'asc' ? '▲' : '▼')}
                 </th>
                 <th>Upload</th>
+                <th className="cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('expense_type')}>
+                  Utgiftstyp {sortColumn === 'expense_type' && (sortDirection === 'asc' ? '▲' : '▼')}
+                </th>
+                <th className="cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('payment_type')}>
+                  Betalningstyp {sortColumn === 'payment_type' && (sortDirection === 'asc' ? '▲' : '▼')}
+                </th>
+                <th className="cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('uploaded_at')}>
+                  Uppladdningsdatum {sortColumn === 'uploaded_at' && (sortDirection === 'asc' ? '▲' : '▼')}
+                </th>
+                <th>Sista 4</th>
                 <th className="text-right cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('net_amount')}>
                   Exkl. moms {sortColumn === 'net_amount' && (sortDirection === 'asc' ? '▲' : '▼')}
                 </th>
@@ -2075,7 +2349,7 @@ export default function Receipts() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={13} className="table-loading">
+                  <td colSpan={17} className="table-loading">
                     <div className="loading-inline">
                       <div className="loading-spinner" />
                       <span>Laddar kvitton...</span>
@@ -2084,7 +2358,7 @@ export default function Receipts() {
                 </tr>
               ) : displayedItems.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="table-empty">
+                  <td colSpan={17} className="table-empty">
                     <div className="space-y-2">
                       <div>Inga kvitton hittades</div>
                       <div className="text-sm text-gray-400">Justera filter eller hämta nya filer från FTP</div>
@@ -2121,14 +2395,44 @@ export default function Receipts() {
                       ) : null}
                     </td>
                     <td>
+                      {receipt.upload_stage ? (
+                        <StatusBadge
+                          status={`${receipt.upload_stage.stage_key || ''} ${receipt.upload_stage.status || ''}`.trim()}
+                          stageKey={receipt.upload_stage.stage_key}
+                          stageStatus={receipt.upload_stage.status}
+                        />
+                      ) : (
+                        <div className="text-sm text-gray-400">-</div>
+                      )}
+                    </td>
+                    <td>
                       <div className="font-medium text-sm">
-                        {receipt.source_channel === 'ftp' ? 'FTP' : 'Manuellt'}
+                        {receipt.expense_type || '-'}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="font-medium text-sm">
+                        {receipt.payment_type || '-'}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="font-medium text-sm">
+                        {formatDate(receipt.file_creation_timestamp || receipt.created_at, true)}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="font-medium text-sm">
+                        {receipt.credit_card_last_4 || '-'}
                       </div>
                     </td>
                     <td className="text-right">{formatCurrency(receipt.net_amount)}</td>
                     <td className="text-right text-lg font-semibold">{formatCurrency(receipt.gross_amount)}</td>
                     <td className="text-center">
-                      <StatusBadge status={receipt.workflow_stage_status || receipt.status || receipt.ai_status} />
+                      <StatusBadge
+                        status={receipt.workflow_stage_status || receipt.status || receipt.ai_status}
+                        stageKey={receipt.workflow_stage_key}
+                        stageStatus={receipt.workflow_stage_state}
+                      />
                     </td>
                     <td>
                       <div className="font-medium text-sm">

@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import path from 'path';
 
 // Proxy target: use env var for Docker, default to localhost for local dev
 // - Local dev (mind_frontend_dev.bat): http://localhost:8008 (nginx proxy)
@@ -13,17 +14,27 @@ const apiProxy = {
   },
 };
 
+const workspaceRoot = path.resolve(__dirname, '..', '..');
+
 export default defineConfig({
   server: {
     host: '0.0.0.0', // Accept connections from outside (required for Docker)
     port: 5169,
     strictPort: true,
+    fs: {
+      strict: false,
+      allow: [workspaceRoot],
+    },
     proxy: apiProxy,
   },
   preview: {
     host: '0.0.0.0',
     port: 4173,
     strictPort: true,
+    fs: {
+      strict: false,
+      allow: [workspaceRoot],
+    },
     proxy: apiProxy,
   },
 });

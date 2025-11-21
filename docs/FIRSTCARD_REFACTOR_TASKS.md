@@ -15,7 +15,7 @@ Dessa problem förhindrar systemet från att fungera korrekt.
 Dessa problem skapar instabilitet och inkonsistens.
 
 ### 🟡 P2 - VIKTIGT (Kan göras efter deploy)
-Dessa förbättringar ökar robusthet men är inte blockerande.
+Dessa förbättringar ökar robusthet men är inte blocker ande.
 
 ### 🟢 P3 - FÖRBÄTTRING (Teknisk skuld)
 Dessa optimeringar kan göras löpande.
