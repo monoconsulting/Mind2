@@ -6,6 +6,7 @@ from flask import Flask, jsonify, request
 from datetime import datetime, timezone
 import json
 import socket
+from config import config
 from observability.logging import configure_json_logging
 from observability.metrics import metrics_endpoint, track_request
 from api.middleware import auth_required, apply_cors, handle_cors_preflight
@@ -55,7 +56,7 @@ app.register_blueprint(ai_processing_bp)
 
 # Best-effort DB auto migrations on startup (optional)
 def _maybe_apply_migrations():
-    if os.getenv("DB_AUTO_MIGRATE", "1").lower() not in {"1", "true", "yes"}:
+    if not config.DB_AUTO_MIGRATE:
         return
     try:
         from services.db.migrations import apply_migrations  # type: ignore
@@ -152,7 +153,7 @@ def _tcp_port_open(host: str, port: int, timeout: float = 0.3) -> bool:
 @app.get("/system/status")
 @track_request
 def system_status():
-    version = os.getenv("APP_VERSION", "dev")
+    version = config.APP_VERSION
     now = datetime.now(timezone.utc)
     db_ok = False
     receipts = None
@@ -165,8 +166,8 @@ def system_status():
                 db_ok = True
         except Exception:
             db_ok = False
-    redis_host = os.getenv("REDIS_HOST", "redis")
-    redis_port = int(os.getenv("REDIS_PORT", "6379"))
+    redis_host = config.REDIS_HOST
+    redis_port = config.REDIS_PORT
     redis_ok = _tcp_port_open(redis_host, redis_port)
     celery_ok = process_ocr is not None
     return (
@@ -241,7 +242,7 @@ def system_stats():
 
 
 def _config_path() -> str:
-    return os.getenv("SYSTEM_CONFIG_FILE", "/data/storage/system_config.json")
+    return config.SYSTEM_CONFIG_FILE
 
 
 _CONFIG_WHITELIST = {

@@ -3,13 +3,16 @@ FROM node:18-alpine AS builder
 WORKDIR /app
 
 # Copy application manifest and lock file
-COPY package.json package-lock.json* ./
+COPY main-system/app-frontend/package.json main-system/app-frontend/package-lock.json* ./
 
 # Install dependencies
 RUN npm install
 
 # Copy the rest of the frontend source code
-COPY . .
+COPY main-system/app-frontend .
+
+# Copy the shared status definitions to root (needed by Process.jsx import path)
+COPY shared /shared
 
 # Accept build argument and set as environment variable for Vite
 ARG VITE_REFRESH_INTERVAL_SECONDS=10
@@ -22,7 +25,7 @@ RUN npm run build
 FROM nginx:1.25-alpine
 
 # Copy the custom Nginx configuration
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY main-system/app-frontend/nginx.conf /etc/nginx/conf.d/default.conf
 
 # Copy the built static files from the builder stage
 COPY --from=builder /app/dist /usr/share/nginx/html

@@ -17,6 +17,9 @@
 		},
 		"chatgpt.openOnStartup": true,
 		"chatgpt.commentCodeLensEnabled": true,
-		"python.terminal.useEnvFile": true
+		"python.terminal.useEnvFile": true,
+		"todo-tree.tree.showBadges": false,
+		"todo-tree.tree.disableCompactFolders": true,
+		"todo-tree.tree.showCountsInTree": true
 	}
 }
