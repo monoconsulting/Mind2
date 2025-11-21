@@ -33,7 +33,7 @@ echo Backend OK
 REM Build production frontend
 echo.
 echo [2/3] Building production frontend...
-docker build --no-cache -t mind2-admin-frontend:dev -f main-system\app-frontend\Dockerfile main-system\app-frontend
+docker build --no-cache -t mind2-admin-frontend:dev -f main-system\app-frontend\Dockerfile .
 if errorlevel 1 (
     echo ERROR: Production frontend build failed
     pause
@@ -44,7 +44,7 @@ echo Production frontend OK
 REM Build dev frontend with hot-reload
 echo.
 echo [3/3] Building dev frontend (hot-reload)...
-docker build --no-cache -t mind2-admin-frontend:dev-hotreload -f main-system\app-frontend\Dockerfile.dev main-system\app-frontend
+docker build --no-cache -t mind2-admin-frontend:dev-hotreload -f main-system\app-frontend\Dockerfile.dev .
 if errorlevel 1 (
     echo ERROR: Dev frontend build failed
     pause

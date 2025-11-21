@@ -11,30 +11,40 @@ ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
 # Install Python and system dependencies for PaddleOCR
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-dev \
-    python3-pip \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender1 \
-    libgomp1 \
-    libglu1-mesa \
-    libxi6 \
-    libxrandr2 \
-    libxss1 \
-    libxcursor1 \
-    libxcomposite1 \
-    libasound2 \
-    libxdamage1 \
-    libxtst6 \
-    libatspi2.0-0 \
-    libgtk-3-0 \
-    libdrm2 \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    apt-get update -o Acquire::AllowInsecureRepositories=true; \
+    apt-get install -y \
+      -o Acquire::AllowInsecureRepositories=true \
+      --no-install-recommends \
+      --allow-unauthenticated \
+      ca-certificates; \
+    sed -i 's|http://|https://|g' /etc/apt/sources.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      python3 \
+      python3-dev \
+      python3-pip \
+      libgl1-mesa-glx \
+      libglib2.0-0 \
+      libsm6 \
+      libxext6 \
+      libxrender1 \
+      libgomp1 \
+      libglu1-mesa \
+      libxi6 \
+      libxrandr2 \
+      libxss1 \
+      libxcursor1 \
+      libxcomposite1 \
+      libasound2 \
+      libxdamage1 \
+      libxtst6 \
+      libatspi2.0-0 \
+      libgtk-3-0 \
+      libdrm2 \
+      ffmpeg \
+    ; \
+    rm -rf /var/lib/apt/lists/*
 
 # Create symlinks for python - use default Python 3.10
 RUN ln -s /usr/bin/python3 /usr/bin/python

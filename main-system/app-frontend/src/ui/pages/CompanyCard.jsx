@@ -431,6 +431,7 @@ export default function CompanyCard() {
   const [previewImage, setPreviewImage] = React.useState(null)
   const [uploadModalOpen, setUploadModalOpen] = React.useState(false)
   const [logState, setLogState] = React.useState(INITIAL_LOG_STATE)
+  const [logActionState, setLogActionState] = React.useState({ clearing: false, error: '', success: '' })
 
   const [sortColumn, setSortColumn] = React.useState('updated_at')
   const [sortDirection, setSortDirection] = React.useState('desc')
@@ -609,7 +610,33 @@ export default function CompanyCard() {
 
   const closeLogViewer = React.useCallback(() => {
     setLogState(INITIAL_LOG_STATE)
+    setLogActionState({ clearing: false, error: '', success: '' })
   }, [])
+
+  const handleClearInvoiceLog = React.useCallback(async (invoiceId) => {
+    if (!invoiceId || logActionState.clearing) {
+      return
+    }
+    if (!window.confirm('Vill du rensa alla loggar för detta kontoutdrag? Detta går inte att ångra.')) {
+      return
+    }
+    setLogActionState({ clearing: true, error: '', success: '' })
+    try {
+      const res = await api.fetch(`/ai/api/reconciliation/firstcard/invoices/${invoiceId}/log`, { method: 'DELETE' })
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
+      await res.json().catch(() => ({}))
+      setLogActionState({ clearing: false, error: '', success: 'Loggen rensades.' })
+      await fetchInvoiceLog(invoiceId)
+    } catch (error) {
+      setLogActionState({
+        clearing: false,
+        error: error instanceof Error ? error.message : String(error),
+        success: ''
+      })
+    }
+  }, [fetchInvoiceLog, logActionState.clearing])
 
   const onMatchDocument = React.useCallback(async (statementId) => {
     if (!statementId) return
@@ -1436,12 +1463,44 @@ export default function CompanyCard() {
                 Kontoutdrag: {invoiceIdForModal || 'okänd'}
               </p>
             </div>
-            <button type="button" className="icon-button" onClick={closeLogViewer} aria-label="Stäng logg">
-              <FiX />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="btn btn-danger btn-sm"
+                onClick={() => handleClearInvoiceLog(invoiceIdForModal)}
+                disabled={!invoiceIdForModal || logState.loading || logActionState.clearing}
+              >
+                {logActionState.clearing ? (
+                  <>
+                    <div className="loading-spinner w-4 h-4 mr-2" />
+                    Rensar...
+                  </>
+                ) : (
+                  <>
+                    <FiTrash2 className="mr-1" />
+                    Rensa logg
+                  </>
+                )}
+              </button>
+              <button type="button" className="icon-button" onClick={closeLogViewer} aria-label="Stäng logg">
+                <FiX />
+              </button>
+            </div>
           </div>
 
           <div className="modal-body space-y-6 max-h-[70vh] overflow-y-auto">
+            {logActionState.error && (
+              <div className="alert alert-error">
+                <FiAlertCircle className="mr-2" />
+                <span>{`Kunde inte rensa logg: ${logActionState.error}`}</span>
+              </div>
+            )}
+            {logActionState.success && (
+              <div className="alert alert-success">
+                <FiCheckCircle className="mr-2" />
+                <span>{logActionState.success}</span>
+              </div>
+            )}
             {logState.loading ? (
               <div className="flex items-center justify-center gap-3 py-10 text-gray-200">
                 <div className="loading-spinner" />
