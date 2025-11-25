@@ -33,21 +33,7 @@ const INITIAL_LOG_STATE = {
   data: null,
   receiptId: null,
 }
-// Force Vite reload
 
-const initialFilters = {
-  status: '',
-  from: '',
-  to: '',
-  orgnr: '',
-  tag: '',
-  fileType: '',
-  expenseType: '',
-  paymentType: '',
-  uploadStage: '',
-  uploadYear: '',
-  uploadMonth: ''
-}
 
 const statusClassMap = {
   // Legacy statuses
@@ -120,24 +106,67 @@ const legacyStatusOptions = Object.entries(LEGACY_STATUS_DEFINITIONS)
 
 const statusOptions = [
   { value: '', label: 'Alla statusar' },
-  ...stageOptions,
-  ...legacyStatusOptions
+  // Meta filters
+  { value: 'status:completed', label: 'Slutförda (KLAR)' },
+  { value: 'status:!completed', label: 'Ej slutförda' },
+  { value: 'match_status:unmatched', label: 'Ej matchade' },
+  { value: 'status:manual_review', label: 'Manuell hantering' },
+
+  // Workflow Stages from MIND_STATUS_DEFINITIONS.md
+  { value: 'stage:src_portal', label: 'Portal' },
+  { value: 'stage:src_ftp', label: 'FTP' },
+  { value: 'stage:src_fc', label: 'FC-uppladdning' },
+  { value: 'stage:ingest_store', label: 'Lagrar fil' },
+  { value: 'stage:ingest_wf1', label: 'Startar kvittoflöde' },
+
+  { value: 'stage:detect_type', label: 'Dokumentklassning' },
+  { value: 'stage:r_ocr', label: 'OCR' },
+  { value: 'stage:r_ai3', label: 'Dataextraktion' },
+  { value: 'stage:r_ai4', label: 'Normalisering' },
+  { value: 'stage:r_persist', label: 'Sparar data' },
+  { value: 'stage:r_queue_match', label: 'Köar matchning' },
+
+  { value: 'stage:fc_create', label: 'Skapar FC-faktura' },
+  { value: 'stage:fc_ocr', label: 'FC OCR' },
+  { value: 'stage:fc_parse', label: 'FC-parsing' },
+  { value: 'stage:fc_ready', label: 'FC redo för matchning' },
+
+  { value: 'stage:ai5', label: 'Kortmatchning' },
+  { value: 'stage:m_link', label: 'Länka kvitto' },
+  { value: 'stage:m_unmatched', label: 'Omatchad' },
+
+  { value: 'stage:resume_dispatch', label: 'Återupptar' },
+  { value: 'stage:restart_dispatch', label: 'Omstartar' },
+
+  { value: 'stage:finalize_ok', label: 'Slutför' },
+  { value: 'stage:finalize_fail', label: 'Slutför (fel)' },
+  { value: 'stage:manual_review', label: 'Manuell granskning' },
+  { value: 'stage:KLAR', label: 'KLAR' }
 ]
 
 const uploadStageOptions = [
   { value: '', label: 'Alla källor' },
-  ...Object.entries(STAGE_DEFINITIONS)
-    .filter(([, meta]) => (meta?.category || '') === 'upload')
-    .sort((a, b) => (a[1]?.label || a[0]).localeCompare(b[1]?.label || b[0], 'sv'))
-    .map(([key, meta]) => ({
-      value: key,
-      label: meta?.label || key
-    }))
+  { value: 'src_portal', label: 'Manuellt' },
+  { value: 'src_ftp', label: 'FTP' }
 ]
 
 const initialPreviewState = {
   receipt: null,
   previewImage: null
+}
+
+const initialFilters = {
+  status: '',
+  orgnr: '',
+  tag: '',
+  from: '',
+  to: '',
+  fileType: '',
+  uploadStage: '',
+  expenseType: '',
+  paymentType: '',
+  uploadYear: '',
+  uploadMonth: ''
 }
 
 function formatCurrency(value) {
@@ -200,10 +229,58 @@ function translateStatus(status, stageKey = null, stageStatus = null) {
   if (stageKey || stageStatus) {
     const label = formatStageLabel(stageKey)
     const statusLabel = formatStageStatusLabel(stageStatus)
-    if (label && statusLabel) {
-      return `${label} - ${statusLabel}`
+
+    const stageMap = {
+      'src_portal': 'Portal',
+      'src_portal_start': 'Portal start',
+      'src_portal_end': 'Portal klar',
+      'src_ftp': 'FTP',
+      'src_ftp_start': 'FTP start',
+      'src_ftp_end': 'FTP klar',
+      'src_fc': 'FC-uppladdning',
+      'src_fc_start': 'FC start',
+      'src_fc_end': 'FC klar',
+      'ingest_store': 'Lagrar fil',
+      'ingest_store_start': 'Lagrar fil start',
+      'ingest_store_end': 'Lagrar fil klar',
+      'ingest_wf1': 'Startar kvittoflöde',
+      'fc_create': 'Skapar FC-faktura',
+      'fc_ocr': 'FC OCR',
+      'fc_parse': 'FC-parsing',
+      'fc_ready': 'FC redo för matchning',
+      'detect_type': 'Dokumentklassning',
+      'r_ocr': 'OCR',
+      'r_ai3': 'Dataextraktion',
+      'r_ai4': 'Normalisering',
+      'r_persist': 'Sparar data',
+      'r_queue_match': 'Köar matchning',
+      'ai5': 'Kortmatchning',
+      'm_link': 'Länka kvitto',
+      'm_unmatched': 'Omatchad',
+      'resume_dispatch': 'Återupptar',
+      'restart_dispatch': 'Omstartar',
+      'finalize_ok': 'Slutför',
+      'finalize_fail': 'Slutför (fel)',
+      'manual_review': 'Manuell granskning',
+      'KLAR': 'KLAR'
     }
-    return label || statusLabel || ''
+
+    const customLabel = stageMap[stageKey] || label
+
+    const statusMap = {
+      'running': 'pågående',
+      'succeeded': 'klar',
+      'failed': 'misslyckades',
+      'queued': 'i kö',
+      'skipped': 'hoppades över'
+    }
+
+    const statusLabelTranslated = stageStatus ? (statusMap[stageStatus.toLowerCase()] || statusLabel) : ''
+
+    if (customLabel && statusLabelTranslated) {
+      return `${customLabel} - ${statusLabelTranslated}`
+    }
+    return customLabel || statusLabelTranslated || ''
   }
 
   if (!status) {
@@ -349,7 +426,7 @@ function SearchAndFilters({ searchTerm, onSearch, onReset, loading, pageSize, on
             onChange={onPageSizeChange}
             disabled={loading}
           >
-            {[10, 25, 50, 100].map((size) => (
+            {[10, 25, 50, 100, 250, 500, 1000].map((size) => (
               <option key={size} value={size}>{size}</option>
             ))}
           </select>
@@ -508,12 +585,12 @@ function usePreviewImage({ previewUrl, receiptId, cachedSrc }) {
     // Om vi redan har en cachad bild, använd den och ladda inte om
     if (cachedSrc && hasLoaded.current) {
       setState({ src: cachedSrc, loading: false, error: null });
-      return () => {};
+      return () => { };
     }
 
     // Om vi redan har laddat denna bild tidigare, skippa
     if (hasLoaded.current && state.src) {
-      return () => {};
+      return () => { };
     }
 
     let cancelled = false;
@@ -527,7 +604,7 @@ function usePreviewImage({ previewUrl, receiptId, cachedSrc }) {
 
     if (!sources.length) {
       setState({ src: null, loading: false, error: null });
-      return () => {};
+      return () => { };
     }
 
     setState((prev) => ({ ...prev, loading: true }));
@@ -586,7 +663,7 @@ function ReceiptPreview({ receipt, onPreview, onCache, cachedImageMap }) {
     if (typeof onCache === 'function' && src && src !== cachedSrc) {
       onCache(receipt.id, src);
     }
-    return () => {};
+    return () => { };
   }, [receipt.id, src, onCache, cachedSrc]);
 
   const label = error ? 'Kunde inte ladda' : 'Ingen bild';
@@ -910,7 +987,7 @@ function MapModal({ open, receipt, onClose }) {
                 width="100%"
                 height="100%"
                 style={{ border: 0, borderRadius: '8px' }}
-                src={`https://www.openstreetmap.org/export/embed.html?bbox=${lon-0.01},${lat-0.01},${lon+0.01},${lat+0.01}&layer=mapnik&marker=${lat},${lon}`}
+                src={`https://www.openstreetmap.org/export/embed.html?bbox=${lon - 0.01},${lat - 0.01},${lon + 0.01},${lat + 0.01}&layer=mapnik&marker=${lat},${lon}`}
                 title={`Karta för kvitto ${receipt.id}`}
               />
               {/* Coordinate overlay */}
@@ -1251,7 +1328,7 @@ export default function Receipts() {
   const previewCache = React.useRef(new Map())
   const [refreshTick, setRefreshTick] = React.useState(0)
   const resumePending = React.useRef(new Set())
-  const [sortColumn, setSortColumn] = React.useState('uploaded_at')
+  const [sortColumn, setSortColumn] = React.useState('purchase_datetime')
   const [sortDirection, setSortDirection] = React.useState('desc')
   const [logState, setLogState] = React.useState(INITIAL_LOG_STATE)
   const [logActionState, setLogActionState] = React.useState({ clearing: false, error: '', success: '' })
@@ -1354,6 +1431,9 @@ export default function Receipts() {
     const params = new URLSearchParams()
     params.set('page', String(page))
     params.set('page_size', String(pageSize))
+    // Add limit/offset as fallback for backend pagination
+    params.set('limit', String(pageSize))
+    params.set('offset', String((page - 1) * pageSize))
     if (searchTerm) {
       params.set('search', searchTerm)
     }
@@ -1362,6 +1442,14 @@ export default function Receipts() {
         params.set('workflow_stage', filters.status.replace('stage:', ''))
       } else if (filters.status.startsWith('legacy:')) {
         params.set('status', filters.status.replace('legacy:', ''))
+      } else if (filters.status === 'status:completed') {
+        params.set('status', 'passed')
+      } else if (filters.status === 'status:!completed') {
+        params.set('status', '!passed')
+      } else if (filters.status === 'match_status:unmatched') {
+        params.set('ai_status', 'unmatched')
+      } else if (filters.status === 'status:manual_review') {
+        params.set('status', 'manual_review')
       } else {
         params.set('status', filters.status)
       }
@@ -1379,18 +1467,25 @@ export default function Receipts() {
       params.set('upload_stage', filters.uploadStage)
     }
 
-    // År/Månad filter (konvertera till from/to datum för created_at)
-    if (filters.uploadYear && filters.uploadMonth) {
+    // År/Månad filter (konvertera till from/to datum för purchase_date/created_at)
+    // Används istället för upload_from/upload_to för att filtrera på fakturadatum
+    if (filters.uploadYear) {
+      let fromDate, toDate
       const year = parseInt(filters.uploadYear)
-      const month = parseInt(filters.uploadMonth)
-      const fromDate = new Date(year, month - 1, 1).toISOString().split('T')[0]
-      const lastDay = new Date(year, month, 0).getDate()
-      const toDate = new Date(year, month - 1, lastDay).toISOString().split('T')[0]
-      params.set('upload_from', fromDate)
-      params.set('upload_to', toDate)
-    } else if (filters.uploadYear) {
-      params.set('upload_from', `${filters.uploadYear}-01-01`)
-      params.set('upload_to', `${filters.uploadYear}-12-31`)
+
+      if (filters.uploadMonth) {
+        const month = parseInt(filters.uploadMonth)
+        fromDate = new Date(year, month - 1, 1).toISOString().split('T')[0]
+        const lastDay = new Date(year, month, 0).getDate()
+        toDate = new Date(year, month - 1, lastDay).toISOString().split('T')[0]
+      } else {
+        fromDate = `${year}-01-01`
+        toDate = `${year}-12-31`
+      }
+
+      // Om användaren inte manuellt valt datum, använd år/månad-filtret
+      if (!filters.from) params.set('from', fromDate)
+      if (!filters.to) params.set('to', toDate)
     }
 
     if (sortColumn) params.set('sort_by', sortColumn)
@@ -2252,7 +2347,7 @@ export default function Receipts() {
                 disabled={loading}
               >
                 <option value="">Alla år</option>
-                {Array.from({length: 5}, (_, i) => new Date().getFullYear() - i).map(year => (
+                {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - i).map(year => (
                   <option key={year} value={year}>{year}</option>
                 ))}
               </select>
@@ -2333,6 +2428,7 @@ export default function Receipts() {
                 <th className="text-right cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('gross_amount')}>
                   Inkl. moms {sortColumn === 'gross_amount' && (sortDirection === 'asc' ? '▲' : '▼')}
                 </th>
+                <th className="text-center">Matchad</th>
                 <th className="text-center cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('status')}>
                   Status {sortColumn === 'status' && (sortDirection === 'asc' ? '▲' : '▼')}
                 </th>
@@ -2349,7 +2445,7 @@ export default function Receipts() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={17} className="table-loading">
+                  <td colSpan={18} className="table-loading">
                     <div className="loading-inline">
                       <div className="loading-spinner" />
                       <span>Laddar kvitton...</span>
@@ -2358,7 +2454,7 @@ export default function Receipts() {
                 </tr>
               ) : displayedItems.length === 0 ? (
                 <tr>
-                  <td colSpan={17} className="table-empty">
+                  <td colSpan={18} className="table-empty">
                     <div className="space-y-2">
                       <div>Inga kvitton hittades</div>
                       <div className="text-sm text-gray-400">Justera filter eller hämta nya filer från FTP</div>
@@ -2395,15 +2491,37 @@ export default function Receipts() {
                       ) : null}
                     </td>
                     <td>
-                      {receipt.upload_stage ? (
-                        <StatusBadge
-                          status={`${receipt.upload_stage.stage_key || ''} ${receipt.upload_stage.status || ''}`.trim()}
-                          stageKey={receipt.upload_stage.stage_key}
-                          stageStatus={receipt.upload_stage.status}
-                        />
-                      ) : (
-                        <div className="text-sm text-gray-400">-</div>
-                      )}
+                      {(() => {
+                        // First priority: Check upload_stage (workflow based)
+                        if (receipt.upload_stage) {
+                          const key = (receipt.upload_stage.stage_key || '').toLowerCase()
+                          if (key.startsWith('src_portal')) {
+                            return <span className="text-sm">Manuellt</span>
+                          }
+                          if (key.startsWith('src_ftp')) {
+                            return <span className="text-sm">FTP</span>
+                          }
+                          return (
+                            <StatusBadge
+                              status={`${receipt.upload_stage.stage_key || ''} ${receipt.upload_stage.status || ''}`.trim()}
+                              stageKey={receipt.upload_stage.stage_key}
+                              stageStatus={receipt.upload_stage.status}
+                            />
+                          )
+                        }
+
+                        // Second priority: Check ingest_source_channel (file metadata based)
+                        const source = (receipt.ingest_source_channel || '').toLowerCase()
+                        if (source.includes('ftp')) {
+                          return <span className="text-sm">FTP</span>
+                        }
+                        if (source.includes('portal') || source.includes('manual')) {
+                          return <span className="text-sm">Manuellt</span>
+                        }
+
+                        // Fallback
+                        return <div className="text-sm text-gray-400">-</div>
+                      })()}
                     </td>
                     <td>
                       <div className="font-medium text-sm">
@@ -2428,6 +2546,18 @@ export default function Receipts() {
                     <td className="text-right">{formatCurrency(receipt.net_amount)}</td>
                     <td className="text-right text-lg font-semibold">{formatCurrency(receipt.gross_amount)}</td>
                     <td className="text-center">
+                      {(() => {
+                        const status = (receipt.ai_status || '').toLowerCase()
+                        const stage = (receipt.workflow_stage_key || '').toLowerCase()
+                        const matched =
+                          status.includes('match') ||
+                          ['m_link', 'm_found'].includes(stage) ||
+                          stage.startsWith('m_link') ||
+                          stage === 'ai5'
+                        return matched ? 'Ja' : 'Nej'
+                      })()}
+                    </td>
+                    <td className="text-center">
                       <StatusBadge
                         status={receipt.workflow_stage_status || receipt.status || receipt.ai_status}
                         stageKey={receipt.workflow_stage_key}
@@ -2437,10 +2567,10 @@ export default function Receipts() {
                     <td>
                       <div className="font-medium text-sm">
                         {!receipt.file_type || receipt.file_type === 'unknown' || receipt.file_type === '' ? 'Okänd' :
-                         receipt.file_type === 'receipt' ? 'Kvitto' :
-                         receipt.file_type === 'invoice' ? 'Faktura' :
-                         receipt.file_type === 'other' ? 'Övrigt' :
-                         'Okänd'}
+                          receipt.file_type === 'receipt' ? 'Kvitto' :
+                            receipt.file_type === 'invoice' ? 'Faktura' :
+                              receipt.file_type === 'other' ? 'Övrigt' :
+                                'Okänd'}
                       </div>
                     </td>
                     <td className="text-center">

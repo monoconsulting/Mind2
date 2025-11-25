@@ -412,38 +412,38 @@ function normaliseItems(payload) {
     const unitNet =
       toNullableNumber(
         item.item_price_ex_vat ??
-          item.unit_price_ex_vat ??
-          item.price_ex_vat ??
-          item.unit_amount_ex_vat ??
-          item.net_price ??
-          item.unit_net
+        item.unit_price_ex_vat ??
+        item.price_ex_vat ??
+        item.unit_amount_ex_vat ??
+        item.net_price ??
+        item.unit_net
       ) ?? null;
     const unitGross =
       toNullableNumber(
         item.item_price_inc_vat ??
-          item.unit_price_inc_vat ??
-          item.price_inc_vat ??
-          item.unit_amount_inc_vat ??
-          item.gross_price ??
-          item.unit_gross
+        item.unit_price_inc_vat ??
+        item.price_inc_vat ??
+        item.unit_amount_inc_vat ??
+        item.gross_price ??
+        item.unit_gross
       ) ?? null;
     const totalNet =
       toNullableNumber(
         item.item_total_price_ex_vat ??
-          item.total_price_ex_vat ??
-          item.total_net ??
-          item.net_amount ??
-          item.amount_ex_vat ??
-          item.total_ex_vat
+        item.total_price_ex_vat ??
+        item.total_net ??
+        item.net_amount ??
+        item.amount_ex_vat ??
+        item.total_ex_vat
       ) ?? (unitNet != null ? unitNet * quantity : null);
     const totalGross =
       toNullableNumber(
         item.item_total_price_inc_vat ??
-          item.total_price_inc_vat ??
-          item.total_gross ??
-          item.gross_amount ??
-          item.total_amount ??
-          item.total_inc_vat
+        item.total_price_inc_vat ??
+        item.total_gross ??
+        item.gross_amount ??
+        item.total_amount ??
+        item.total_inc_vat
       ) ?? (unitGross != null ? unitGross * quantity : null);
     const vatAmount =
       toNullableNumber(item.vat ?? item.item_vat ?? item.vat_amount ?? item.item_vat_total ?? item.total_vat) ??
@@ -560,7 +560,7 @@ function decorateModalPayload(payload) {
   const basePayload = { ...payload, receipt };
   const company = normaliseCompany(basePayload);
   const items = normaliseItems(basePayload);
-const proposals = normaliseProposals(basePayload, items);
+  const proposals = normaliseProposals(basePayload, items);
   return { ...basePayload, company, items, proposals };
 }
 
@@ -590,6 +590,19 @@ const PAYMENT_FIELDS = [
   { key: 'credit_card_payment_variant', label: 'Betalningsvariant', source: 'receipt' },
   { key: 'credit_card_token', label: 'Korttyp token', source: 'receipt' },
   { key: 'credit_card_entering_mode', label: 'Inmatningsläge', source: 'receipt', extras: ['receipt.card_entry_mode'] },
+];
+
+const EXPENSE_TYPE_OPTIONS = [
+  { value: '', label: 'Valj...' },
+  { value: 'personal', label: 'personal' },
+  { value: 'corporate', label: 'corporate' },
+];
+
+const PAYMENT_TYPE_OPTIONS = [
+  { value: '', label: 'Valj...' },
+  { value: 'card', label: 'card' },
+  { value: 'swish', label: 'swish' },
+  { value: 'cash', label: 'cash' },
 ];
 
 const AMOUNT_FIELDS = [
@@ -749,10 +762,12 @@ export default function ReceiptPreviewModal({
   const [companyDropdownOpen, setCompanyDropdownOpen] = React.useState(false);
   const [companySearchLoading, setCompanySearchLoading] = React.useState(false);
   const [companyHighlightIndex, setCompanyHighlightIndex] = React.useState(-1);
+  const [currentPageIndex, setCurrentPageIndex] = React.useState(0);
 
   const safeReceipt = receipt ?? {};
   const safeReceiptId = safeReceipt.id ?? '';
   const shouldRender = Boolean(open && receipt);
+
 
   React.useEffect(() => {
     if (!open) {
@@ -772,6 +787,7 @@ export default function ReceiptPreviewModal({
       setCompanyHighlightIndex(-1);
       setImageViewerOpen(false);
       setImageZoom(1);
+      setCurrentPageIndex(0);
       publishOverlayDebug(null);
     }
   }, [open]);
@@ -1037,22 +1053,24 @@ export default function ReceiptPreviewModal({
   };
 
   const handleCompanyInputFocus = (event) => {
-    if (isExistingCompany) {
-      return;
-    }
     if (event?.target?.select) {
       event.target.select();
+    }
+    if (isExistingCompany) {
+      // Allow editing fields for an existing company without reopening dropdown
+      return;
     }
     setCompanyDropdownOpen(true);
     fetchCompanySuggestions(companyNameValue, { allowEmpty: true });
   };
 
   const handleCompanyInputChange = (event) => {
-    if (isExistingCompany) {
-      return;
-    }
     const nextValue = event.target.value;
     updateCompanyDraft('name', nextValue);
+    if (isExistingCompany) {
+      // Editing current company fields; keep selection and avoid suggestion search
+      return;
+    }
     setSelectedCompanyId(null);
     setIsExistingCompany(false);
     setCompanyDropdownOpen(true);
@@ -1225,9 +1243,7 @@ export default function ReceiptPreviewModal({
       setCompanySearchLoading(false);
       setIsExistingCompany(false);
     } else {
-      // Entering edit mode - always allow editing all fields initially
-      setIsExistingCompany(false);
-      setSelectedCompanyId(null);
+      // Entering edit mode - keep any selected company but start with a clean dropdown state
       setCompanyDropdownOpen(false);
       setCompanyHighlightIndex(-1);
       setCompanySuggestions([]);
@@ -1421,9 +1437,23 @@ export default function ReceiptPreviewModal({
 
   const handleResetImageZoom = () => setImageZoom(1);
 
+  const pages = payload?.pages || [];
+  const hasMultiplePages = pages.length > 1;
+  const currentPageFilename = hasMultiplePages && pages[currentPageIndex] ? pages[currentPageIndex] : null;
+
   const baseImageSrc = safeReceiptId
-    ? previewImage || `/ai/api/receipts/${safeReceiptId}/image?size=preview&rotate=portrait`
+    ? previewImage && !currentPageFilename
+      ? previewImage
+      : `/ai/api/receipts/${safeReceiptId}/image?size=preview&rotate=portrait${currentPageFilename ? `&filename=${currentPageFilename}` : ''}`
     : null;
+
+  const handlePrevPage = () => {
+    setCurrentPageIndex((prev) => Math.max(0, prev - 1));
+  };
+
+  const handleNextPage = () => {
+    setCurrentPageIndex((prev) => Math.min(pages.length - 1, prev + 1));
+  };
 
   if (!shouldRender) {
     return null;
@@ -1460,388 +1490,429 @@ export default function ReceiptPreviewModal({
         <div className="modal modal-xxl" onClick={(event) => event.stopPropagation()}>
           <div className="modal-header">
             <div>
-            <h3>Förhandsgranska kvitto</h3>
-            <p className="card-subtitle">
-              {receiptData.merchant || safeReceipt.merchant || 'Kvitto'} • {formatDate(receiptData.purchase_datetime)}
-            </p>
-            {(safeReceipt.credit_card_match || receiptData.credit_card_match) && (
-              <span className="status-badge status-passed mt-2 inline-flex items-center gap-2 text-xs">
-                <FiCreditCard className="text-sm" />
-                Kortmatchat
-              </span>
-            )}
+              <h3>Förhandsgranska kvitto</h3>
+              <p className="card-subtitle">
+                {receiptData.merchant || safeReceipt.merchant || 'Kvitto'} • {formatDate(receiptData.purchase_datetime)}
+              </p>
+              {(safeReceipt.credit_card_match || receiptData.credit_card_match) && (
+                <span className="status-badge status-passed mt-2 inline-flex items-center gap-2 text-xs">
+                  <FiCreditCard className="text-sm" />
+                  Kortmatchat
+                </span>
+              )}
+            </div>
+            <button type="button" className="icon-button" onClick={onClose} aria-label="Stäng förhandsgranskning" disabled={saving}>
+              <FiX />
+            </button>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Stäng förhandsgranskning" disabled={saving}>
-            <FiX />
-          </button>
-        </div>
-        <div className="modal-body receipt-modal-body">
-          {loading ? (
-            <div className="receipt-modal-loading">
-              <div className="loading-inline">
-                <div className="loading-spinner" />
-                <span>Laddar kvitto...</span>
+          <div className="modal-body receipt-modal-body">
+            {loading ? (
+              <div className="receipt-modal-loading">
+                <div className="loading-inline">
+                  <div className="loading-spinner" />
+                  <span>Laddar kvitto...</span>
+                </div>
               </div>
-            </div>
-          ) : error ? (
-            <div className="alert alert-error">
-              <span>{error}</span>
-            </div>
-          ) : !payload ? (
-            <div className="receipt-modal-loading">Ingen data tillgänglig</div>
-          ) : (
-            <div className="receipt-modal-content">
-              {/* Left Column - Company & Receipt Data */}
-              <div className="receipt-modal-column receipt-modal-left">
-                {/* RP5: Grunddata (Box 1) - Company Information */}
-                <div className="receipt-modal-section">
-                  <h4>Grunddata (Företagsinformation)</h4>
-                  <div className="receipt-modal-grid">
-                    {COMPANY_FIELDS.map((field) => {
-                      const sourceData = field.source === 'company' ? companyData : receiptData;
-                      const draftData = field.source === 'company' ? companyDraft : receiptDraft;
-                      const candidates = buildHoverCandidates(field.key, {
-                        source: field.source,
-                        extras: field.extras
-                      });
-                      const hoverKey = resolveBoxField(boxes, candidates);
-                      const highlightKey = hoverKey || candidates[0] || field.key;
-                      const readonlyValue =
-                        sourceData[field.key] ??
-                        (field.source === 'company' ? receiptData[field.key] : companyData[field.key]) ??
-                        '';
-                      return (
-                        <div
-                          key={field.key}
-                          className={`receipt-modal-field ${matchHighlight(highlightKey)}`}
-                          onMouseEnter={() => setHoverField(highlightKey)}
-                          onMouseLeave={() => setHoverField(null)}
-                        >
-                          <label className="field-label" htmlFor={`field-${field.source}-${field.key}`}>
-                            {field.label}
-                          </label>
-                          {editing ? (
-                            field.key === 'name' && field.source === 'company' ? (
-                              <div className={`company-select-wrapper${isExistingCompany ? ' company-select-wrapper--locked' : ''}`} ref={companySelectRef}>
-                                <div className={`company-select ${companyDropdownOpen ? 'open' : ''}`}>
-                                  <input
-                                    id={`field-${field.source}-${field.key}`}
-                                    className="dm-input company-select-input"
-                                    type="text"
-                                    ref={companyInputRef}
-                                    value={companyDraft.name ?? ''}
-                                    onFocus={handleCompanyInputFocus}
-                                    onChange={handleCompanyInputChange}
-                                    onKeyDown={handleCompanyKeyDown}
-                                    placeholder="Sök eller skapa företag..."
-                                    disabled={saving || isExistingCompany}
-                                    aria-expanded={companyDropdownOpen}
-                                    aria-haspopup="listbox"
-                                    autoComplete="off"
-                                  />
-                                  {!isExistingCompany && (
-                                    <button
-                                      type="button"
-                                      className="company-select-toggle"
-                                      onClick={handleCompanyDropdownToggle}
-                                      aria-label={companyDropdownOpen ? 'Stäng företagslistan' : 'Visa företagslistan'}
+            ) : error ? (
+              <div className="alert alert-error">
+                <span>{error}</span>
+              </div>
+            ) : !payload ? (
+              <div className="receipt-modal-loading">Ingen data tillgänglig</div>
+            ) : (
+              <div className="receipt-modal-content">
+                {/* Left Column - Company & Receipt Data */}
+                <div className="receipt-modal-column receipt-modal-left">
+                  {/* RP5: Grunddata (Box 1) - Company Information */}
+                  <div className="receipt-modal-section">
+                    <h4>Grunddata (Företagsinformation)</h4>
+                    <div className="receipt-modal-grid">
+                      {COMPANY_FIELDS.map((field) => {
+                        const sourceData = field.source === 'company' ? companyData : receiptData;
+                        const draftData = field.source === 'company' ? companyDraft : receiptDraft;
+                        const candidates = buildHoverCandidates(field.key, {
+                          source: field.source,
+                          extras: field.extras
+                        });
+                        const hoverKey = resolveBoxField(boxes, candidates);
+                        const highlightKey = hoverKey || candidates[0] || field.key;
+                        const readonlyValue =
+                          sourceData[field.key] ??
+                          (field.source === 'company' ? receiptData[field.key] : companyData[field.key]) ??
+                          '';
+                        return (
+                          <div
+                            key={field.key}
+                            className={`receipt-modal-field ${matchHighlight(highlightKey)}`}
+                            onMouseEnter={() => setHoverField(highlightKey)}
+                            onMouseLeave={() => setHoverField(null)}
+                          >
+                            <label className="field-label" htmlFor={`field-${field.source}-${field.key}`}>
+                              {field.label}
+                            </label>
+                            {editing ? (
+                              field.key === 'name' && field.source === 'company' ? (
+                                <div className={`company-select-wrapper${isExistingCompany ? ' company-select-wrapper--locked' : ''}`} ref={companySelectRef}>
+                                  <div className={`company-select ${companyDropdownOpen ? 'open' : ''}`}>
+                                    <input
+                                      id={`field-${field.source}-${field.key}`}
+                                      className="dm-input company-select-input"
+                                      type="text"
+                                      ref={companyInputRef}
+                                      value={companyDraft.name ?? ''}
+                                      onFocus={handleCompanyInputFocus}
+                                      onChange={handleCompanyInputChange}
+                                      onKeyDown={handleCompanyKeyDown}
+                                      placeholder="Sök eller skapa företag..."
                                       disabled={saving}
-                                    >
-                                      <FiChevronDown />
+                                      aria-expanded={companyDropdownOpen}
+                                      aria-haspopup="listbox"
+                                      autoComplete="off"
+                                    />
+                                    {!isExistingCompany && (
+                                      <button
+                                        type="button"
+                                        className="company-select-toggle"
+                                        onClick={handleCompanyDropdownToggle}
+                                        aria-label={companyDropdownOpen ? 'Stäng företagslistan' : 'Visa företagslistan'}
+                                        disabled={saving}
+                                      >
+                                        <FiChevronDown />
+                                      </button>
+                                    )}
+                                  </div>
+                                  {isExistingCompany ? (
+                                    <button type="button" className="company-select-clear" onClick={handleUnlockCompanyFields} disabled={saving}>
+                                      Byt företag
                                     </button>
-                                  )}
-                                </div>
-                                {isExistingCompany ? (
-                                  <button type="button" className="company-select-clear" onClick={handleUnlockCompanyFields} disabled={saving}>
-                                    Byt företag
-                                  </button>
-                                ) : (
-                                  companyDropdownOpen && (
-                                    <div className="company-dropdown" role="listbox">
-                                      {companySearchLoading && (
-                                        <div className="company-dropdown-status">Söker företag...</div>
-                                      )}
-                                      {!companySearchLoading && dropdownOptionsLength === 0 && trimmedCompanyName.length < 2 && (
-                                        <div className="company-dropdown-status">Skriv minst två tecken för att söka</div>
-                                      )}
-                                      {!companySearchLoading && dropdownOptionsLength === 0 && trimmedCompanyName.length >= 2 && (
-                                        <div className="company-dropdown-status">Inga företag matchar sökningen</div>
-                                      )}
-                                      {!companySearchLoading && dropdownOptionsLength > 0 && (
-                                        <ul className="company-dropdown-list">
-                                          {dropdownOptions.map((option, index) => {
-                                            const isActive = index === companyHighlightIndex;
-                                            if (option.type === 'company') {
-                                              const metaParts = [option.data.orgnr, option.data.city].filter(Boolean);
+                                  ) : (
+                                    companyDropdownOpen && (
+                                      <div className="company-dropdown" role="listbox">
+                                        {companySearchLoading && (
+                                          <div className="company-dropdown-status">Söker företag...</div>
+                                        )}
+                                        {!companySearchLoading && dropdownOptionsLength === 0 && trimmedCompanyName.length < 2 && (
+                                          <div className="company-dropdown-status">Skriv minst två tecken för att söka</div>
+                                        )}
+                                        {!companySearchLoading && dropdownOptionsLength === 0 && trimmedCompanyName.length >= 2 && (
+                                          <div className="company-dropdown-status">Inga företag matchar sökningen</div>
+                                        )}
+                                        {!companySearchLoading && dropdownOptionsLength > 0 && (
+                                          <ul className="company-dropdown-list">
+                                            {dropdownOptions.map((option, index) => {
+                                              const isActive = index === companyHighlightIndex;
+                                              if (option.type === 'company') {
+                                                const metaParts = [option.data.orgnr, option.data.city].filter(Boolean);
+                                                return (
+                                                  <li
+                                                    key={option.data.id}
+                                                    className={`company-dropdown-item ${isActive ? 'active' : ''}`}
+                                                    onMouseDown={(event) => {
+                                                      event.preventDefault();
+                                                      handleSelectExistingCompany(option.data);
+                                                    }}
+                                                    onMouseEnter={() => setCompanyHighlightIndex(index)}
+                                                  >
+                                                    <span className="company-dropdown-name">{option.data.name}</span>
+                                                    {metaParts.length > 0 && (
+                                                      <span className="company-dropdown-meta">{metaParts.join(' • ')}</span>
+                                                    )}
+                                                  </li>
+                                                );
+                                              }
                                               return (
                                                 <li
-                                                  key={option.data.id}
-                                                  className={`company-dropdown-item ${isActive ? 'active' : ''}`}
+                                                  key="new-company-option"
+                                                  className={`company-dropdown-item create-option ${isActive ? 'active' : ''}`}
                                                   onMouseDown={(event) => {
                                                     event.preventDefault();
-                                                    handleSelectExistingCompany(option.data);
+                                                    handleCreateNewCompany(option.data.name);
                                                   }}
                                                   onMouseEnter={() => setCompanyHighlightIndex(index)}
                                                 >
-                                                  <span className="company-dropdown-name">{option.data.name}</span>
-                                                  {metaParts.length > 0 && (
-                                                    <span className="company-dropdown-meta">{metaParts.join(' • ')}</span>
-                                                  )}
+                                                  Skapa nytt företag: <span className="company-dropdown-name">"{option.data.name}"</span>
                                                 </li>
                                               );
-                                            }
-                                            return (
-                                              <li
-                                                key="new-company-option"
-                                                className={`company-dropdown-item create-option ${isActive ? 'active' : ''}`}
-                                                onMouseDown={(event) => {
-                                                  event.preventDefault();
-                                                  handleCreateNewCompany(option.data.name);
-                                                }}
-                                                onMouseEnter={() => setCompanyHighlightIndex(index)}
-                                              >
-                                                Skapa nytt företag: <span className="company-dropdown-name">"{option.data.name}"</span>
-                                              </li>
-                                            );
-                                          })}
-                                        </ul>
-                                      )}
-                                    </div>
-                                  )
-                                )}
-                              </div>
+                                            })}
+                                          </ul>
+                                        )}
+                                      </div>
+                                    )
+                                  )}
+                                </div>
+                              ) : (
+                                <input
+                                  id={`field-${field.source}-${field.key}`}
+                                  className="dm-input"
+                                  value={draftData[field.key] ?? ''}
+                                  onChange={(event) =>
+                                    field.source === 'company'
+                                      ? updateCompanyDraft(field.key, event.target.value)
+                                      : updateReceiptDraft(field.key, event.target.value)
+                                  }
+                                  disabled={saving}
+                                />
+                              )
                             ) : (
-                              <input
-                                id={`field-${field.source}-${field.key}`}
-                                className="dm-input"
-                                value={draftData[field.key] ?? ''}
-                                onChange={(event) =>
-                                  field.source === 'company'
-                                    ? updateCompanyDraft(field.key, event.target.value)
-                                    : updateReceiptDraft(field.key, event.target.value)
-                                }
-                                disabled={saving || (field.source === 'company' && isExistingCompany)}
-                              />
-                            )
-                          ) : (
-                            <div className="field-value">{readonlyValue || '-'}</div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* RP6: Betalningstyp (Box 2) - Payment Information */}
-                <div className="receipt-modal-section">
-                  <h4>Betalningstyp</h4>
-                  <div className="receipt-modal-grid">
-                    {PAYMENT_FIELDS.map((field) => {
-                      const candidates = buildHoverCandidates(field.key, {
-                        source: field.source,
-                        extras: field.extras
-                      });
-                      const hoverKey = resolveBoxField(boxes, candidates);
-                      const highlightKey = hoverKey || candidates[0] || field.key;
-                      return (
-                        <div
-                          key={field.key}
-                          className={`receipt-modal-field ${matchHighlight(highlightKey)}`}
-                          onMouseEnter={() => setHoverField(highlightKey)}
-                          onMouseLeave={() => setHoverField(null)}
-                        >
-                          <label className="field-label" htmlFor={`field-${field.source}-${field.key}`}>
-                            {field.label}
-                          </label>
-                          {editing ? (
-                            <input
-                              id={`field-${field.source}-${field.key}`}
-                              className="dm-input"
-                              value={receiptDraft[field.key] ?? ''}
-                              onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
-                              disabled={saving}
-                            />
-                          ) : field.key === 'purchase_datetime' ? (
-                            <div className="field-value">{formatDate(receiptData.purchase_datetime)}</div>
-                          ) : (
-                            <div className="field-value">{receiptData[field.key] || '-'}</div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* RP7: Belopp (Box 3) - Amounts and VAT */}
-                <div className="receipt-modal-section">
-                  <h4>Belopp</h4>
-                  <div className="receipt-modal-grid">
-                    {AMOUNT_FIELDS.map((field) => {
-                      const candidates = buildHoverCandidates(field.key, {
-                        source: field.source,
-                        extras: field.extras
-                      });
-                      const hoverKey = resolveBoxField(boxes, candidates);
-                      const highlightKey = hoverKey || candidates[0] || field.key;
-                      return (
-                        <div
-                          key={field.key}
-                          className={`receipt-modal-field ${matchHighlight(highlightKey)}`}
-                          onMouseEnter={() => setHoverField(highlightKey)}
-                          onMouseLeave={() => setHoverField(null)}
-                        >
-                          <label className="field-label" htmlFor={`field-${field.source}-${field.key}`}>
-                            {field.label}
-                          </label>
-                          {editing ? (
-                            <input
-                              id={`field-${field.source}-${field.key}`}
-                              className="dm-input"
-                              value={receiptDraft[field.key] ?? ''}
-                              onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
-                              disabled={saving}
-                            />
-                          ) : field.format === 'currency' ? (
-                            <div className="field-value">{formatCurrency(Number(receiptData[field.key] || 0))}</div>
-                          ) : (
-                            <div className="field-value">{receiptData[field.key] || '-'}</div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* RP8: ├ûvrigt (Box 4) - Other Data (Full Width) */}
-                <div className="receipt-modal-section">
-                  <h4>Övrigt</h4>
-                  {(() => {
-                    const otherCandidates = buildHoverCandidates('other_data', {
-                      source: 'receipt',
-                      extras: ['receipt.notes', 'notes']
-                    });
-                    const otherHoverKey = resolveBoxField(boxes, otherCandidates);
-                    const otherHighlightKey = otherHoverKey || otherCandidates[0] || 'other_data';
-                    return (
-                      <div
-                        className={`receipt-modal-field ${matchHighlight(otherHighlightKey)}`}
-                        onMouseEnter={() => setHoverField(otherHighlightKey)}
-                        onMouseLeave={() => setHoverField(null)}
-                      >
-                        <label className="field-label" htmlFor="field-receipt-other_data">
-                          Övrig data
-                        </label>
-                        {editing ? (
-                          <textarea
-                            id="field-receipt-other_data"
-                            className="dm-input"
-                            value={receiptDraft.other_data ?? ''}
-                            onChange={(event) => updateReceiptDraft('other_data', event.target.value)}
-                            disabled={saving}
-                            rows={3}
-                            style={{ width: '100%', resize: 'vertical' }}
-                          />
-                        ) : (
-                          <div className="field-value" style={{ whiteSpace: 'pre-wrap' }}>
-                            {receiptData.other_data || '-'}
+                              <div className="field-value">{readonlyValue || '-'}</div>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
-
-                {/* OCR Text Section */}
-                {editing && (
-                <div className="receipt-modal-section ocr-section">
-                  <h4>OCR-text</h4>
-                  <div className="ocr-content" style={{ whiteSpace: 'pre-wrap', maxHeight: '200px', overflowY: 'auto' }}>
-                    {receiptDraft.ocr_raw || 'Ingen OCR-data tillgänglig'}
-                  </div>
-                </div>
-                )}
-              </div>
-
-              {/* Center Column - Image */}
-              <div className="receipt-modal-center">
-                <div className="receipt-modal-image-toolbar">
-                  <button
-                    type="button"
-                    className="btn btn-text"
-                    onClick={handleOpenImageViewer}
-                    disabled={!baseImageSrc}
-                  >
-                    Visa stor bild
-                  </button>
-                </div>
-                <div className="receipt-modal-image-wrapper">
-                  {baseImageSrc ? (
-                    <div className="receipt-modal-image-stage">
-                      <img
-                        ref={imgRef}
-                        src={baseImageSrc}
-                        alt={`Kvitto ${safeReceiptId || ''}`}
-                        className="receipt-modal-image"
-                      />
-                      {boxes.map((box, index) => {
-                        const overlayKey = box.field || `box-${index}`;
-                        const toCss = (val) => {
-                          if (typeof val !== 'number') {
-                            return '0%';
-                          }
-                          if (val > 1) {
-                            return `${val}px`;
-                          }
-                          const clamped = Math.min(Math.max(val, 0), 1);
-                          return `${clamped * 100}%`;
-                        };
-                        return (
-                          <div
-                            key={`${overlayKey}-${index}`}
-                            className={`receipt-modal-overlay ${matchHighlight(overlayKey)}`}
-                            style={{
-                              position: 'absolute',
-                              top: toCss(box.y ?? box.top ?? 0),
-                              left: toCss(box.x ?? box.left ?? 0),
-                              width: toCss(box.w ?? box.width ?? 0),
-                              height: toCss(box.h ?? box.height ?? 0),
-                            }}
-                            onMouseEnter={() => setHoverField(overlayKey)}
-                            onMouseLeave={() => setHoverField(null)}
-                          />
                         );
                       })}
                     </div>
-                  ) : (
-                    <div className="receipt-modal-image-fallback">Ingen bild</div>
+                  </div>
+
+                  {/* RP6: Betalningstyp (Box 2) - Payment Information */}
+                  <div className="receipt-modal-section">
+                    <h4>Betalningstyp</h4>
+                    <div className="receipt-modal-grid">
+                      {PAYMENT_FIELDS.map((field) => {
+                        const candidates = buildHoverCandidates(field.key, {
+                          source: field.source,
+                          extras: field.extras
+                        });
+                        const hoverKey = resolveBoxField(boxes, candidates);
+                        const highlightKey = hoverKey || candidates[0] || field.key;
+                        return (
+                          <div
+                            key={field.key}
+                            className={`receipt-modal-field ${matchHighlight(highlightKey)}`}
+                            onMouseEnter={() => setHoverField(highlightKey)}
+                            onMouseLeave={() => setHoverField(null)}
+                          >
+                            <label className="field-label" htmlFor={`field-${field.source}-${field.key}`}>
+                              {field.label}
+                            </label>
+                            {editing ? (
+                              field.key === 'expense_type' ? (
+                                <select
+                                  id={`field-${field.source}-${field.key}`}
+                                  className="dm-input"
+                                  value={receiptDraft[field.key] ?? ''}
+                                  onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
+                                  disabled={saving}
+                                >
+                                  {EXPENSE_TYPE_OPTIONS.map((option) => (
+                                    <option key={option.value} value={option.value}>
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : field.key === 'payment_type' ? (
+                                <select
+                                  id={`field-${field.source}-${field.key}`}
+                                  className="dm-input"
+                                  value={receiptDraft[field.key] ?? ''}
+                                  onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
+                                  disabled={saving}
+                                >
+                                  {PAYMENT_TYPE_OPTIONS.map((option) => (
+                                    <option key={option.value} value={option.value}>
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <input
+                                  id={`field-${field.source}-${field.key}`}
+                                  className="dm-input"
+                                  value={receiptDraft[field.key] ?? ''}
+                                  onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
+                                  disabled={saving}
+                                />
+                              )
+                            ) : field.key === 'purchase_datetime' ? (
+                              <div className="field-value">{formatDate(receiptData.purchase_datetime)}</div>
+                            ) : (
+                              <div className="field-value">{receiptData[field.key] || '-'}</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* RP7: Belopp (Box 3) - Amounts and VAT */}
+                  <div className="receipt-modal-section">
+                    <h4>Belopp</h4>
+                    <div className="receipt-modal-grid">
+                      {AMOUNT_FIELDS.map((field) => {
+                        const candidates = buildHoverCandidates(field.key, {
+                          source: field.source,
+                          extras: field.extras
+                        });
+                        const hoverKey = resolveBoxField(boxes, candidates);
+                        const highlightKey = hoverKey || candidates[0] || field.key;
+                        return (
+                          <div
+                            key={field.key}
+                            className={`receipt-modal-field ${matchHighlight(highlightKey)}`}
+                            onMouseEnter={() => setHoverField(highlightKey)}
+                            onMouseLeave={() => setHoverField(null)}
+                          >
+                            <label className="field-label" htmlFor={`field-${field.source}-${field.key}`}>
+                              {field.label}
+                            </label>
+                            {editing ? (
+                              <input
+                                id={`field-${field.source}-${field.key}`}
+                                className="dm-input"
+                                value={receiptDraft[field.key] ?? ''}
+                                onChange={(event) => updateReceiptDraft(field.key, event.target.value)}
+                                disabled={saving}
+                              />
+                            ) : field.format === 'currency' ? (
+                              <div className="field-value">{formatCurrency(Number(receiptData[field.key] || 0))}</div>
+                            ) : (
+                              <div className="field-value">{receiptData[field.key] || '-'}</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* RP8: Övrigt (Box 4) - Other Data (Full Width) */}
+                  <div className="receipt-modal-section">
+                    <h4>Övrigt</h4>
+                    {(() => {
+                      const otherCandidates = buildHoverCandidates('other_data', {
+                        source: 'receipt',
+                        extras: ['receipt.notes', 'notes']
+                      });
+                      const otherHoverKey = resolveBoxField(boxes, otherCandidates);
+                      const otherHighlightKey = otherHoverKey || otherCandidates[0] || 'other_data';
+                      return (
+                        <div
+                          className={`receipt-modal-field ${matchHighlight(otherHighlightKey)}`}
+                          onMouseEnter={() => setHoverField(otherHighlightKey)}
+                          onMouseLeave={() => setHoverField(null)}
+                        >
+                          <label className="field-label" htmlFor="field-receipt-other_data">
+                            Övrig data
+                          </label>
+                          {editing ? (
+                            <textarea
+                              id="field-receipt-other_data"
+                              className="dm-input"
+                              value={receiptDraft.other_data ?? ''}
+                              onChange={(event) => updateReceiptDraft('other_data', event.target.value)}
+                              disabled={saving}
+                              rows={3}
+                              style={{ width: '100%', resize: 'vertical' }}
+                            />
+                          ) : (
+                            <div className="field-value" style={{ whiteSpace: 'pre-wrap' }}>
+                              {receiptData.other_data || '-'}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* OCR Text Section */}
+                  {editing && (
+                    <div className="receipt-modal-section ocr-section">
+                      <h4>OCR-text</h4>
+                      <div className="ocr-content" style={{ whiteSpace: 'pre-wrap', maxHeight: '200px', overflowY: 'auto' }}>
+                        {receiptDraft.ocr_raw || 'Ingen OCR-data tillgänglig'}
+                      </div>
+                    </div>
                   )}
                 </div>
-              </div>
 
-              {/* RP9: Items Table with Accounting (Right Column) */}
-              <div className="receipt-modal-column receipt-modal-right">
-                <div className="receipt-modal-section">
-                  <div className="receipt-item-header-main">Varor och kontering</div>
-                  {itemsSource.length === 0 ? (
-                    <div className="field-value muted">Inga varor registrerade</div>
-                  ) : (
-                    itemsSource.map((item, itemIndex) => {
-                      const itemProposals = proposalsByItem[itemIndex] || [];
-                      const itemDraft = editing && draft ? draft.items[itemIndex] : null;
-                      const getItemValue = (key) => {
-                        if (editing && itemDraft && Object.prototype.hasOwnProperty.call(itemDraft, key)) {
-                          return itemDraft[key];
-                        }
-                        return item[key];
-                      };
-                      return (
-                        <div key={`item-${itemIndex}`} className="receipt-item-card-new">
-                          <div className="receipt-item-header-new">RAD {itemIndex + 1}</div>
-                          <div className="receipt-item-grid-new">
-                            {ITEM_DETAIL_FIELDS.map((field) => {
-                              const computedValue =
-                                field.computed && field.key === 'item_vat_total'
-                                  ? (() => {
+                {/* Center Column - Image */}
+                <div className="receipt-modal-center">
+                  <div className="receipt-modal-image-toolbar">
+                    {hasMultiplePages && (
+                      <div className="flex items-center gap-2 mr-4">
+                        <button type="button" className="btn btn-sm btn-secondary p-1" onClick={handlePrevPage} disabled={currentPageIndex === 0}>
+                          <FiChevronLeft />
+                        </button>
+                        <span className="text-sm font-medium whitespace-nowrap">Sida {currentPageIndex + 1} av {pages.length}</span>
+                        <button type="button" className="btn btn-sm btn-secondary p-1" onClick={handleNextPage} disabled={currentPageIndex === pages.length - 1}>
+                          <FiChevronRight />
+                        </button>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      className="btn btn-text"
+                      onClick={handleOpenImageViewer}
+                      disabled={!baseImageSrc}
+                    >
+                      Visa stor bild
+                    </button>
+                  </div>
+                  <div className="receipt-modal-image-wrapper">
+                    {baseImageSrc ? (
+                      <div className="receipt-modal-image-stage">
+                        <img
+                          ref={imgRef}
+                          src={baseImageSrc}
+                          alt={`Kvitto ${safeReceiptId || ''}`}
+                          className="receipt-modal-image"
+                        />
+                        {boxes.map((box, index) => {
+                          const overlayKey = box.field || `box-${index}`;
+                          const toCss = (val) => {
+                            if (typeof val !== 'number') {
+                              return '0%';
+                            }
+                            if (val > 1) {
+                              return `${val}px`;
+                            }
+                            const clamped = Math.min(Math.max(val, 0), 1);
+                            return `${clamped * 100}%`;
+                          };
+                          return (
+                            <div
+                              key={`${overlayKey}-${index}`}
+                              className={`receipt-modal-overlay ${matchHighlight(overlayKey)}`}
+                              style={{
+                                position: 'absolute',
+                                top: toCss(box.y ?? box.top ?? 0),
+                                left: toCss(box.x ?? box.left ?? 0),
+                                width: toCss(box.w ?? box.width ?? 0),
+                                height: toCss(box.h ?? box.height ?? 0),
+                              }}
+                              onMouseEnter={() => setHoverField(overlayKey)}
+                              onMouseLeave={() => setHoverField(null)}
+                            />
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="receipt-modal-image-fallback">Ingen bild</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* RP9: Items Table with Accounting (Right Column) */}
+                <div className="receipt-modal-column receipt-modal-right">
+                  <div className="receipt-modal-section">
+                    <div className="receipt-item-header-main">Varor och kontering</div>
+                    {itemsSource.length === 0 ? (
+                      <div className="field-value muted">Inga varor registrerade</div>
+                    ) : (
+                      itemsSource.map((item, itemIndex) => {
+                        const itemProposals = proposalsByItem[itemIndex] || [];
+                        const itemDraft = editing && draft ? draft.items[itemIndex] : null;
+                        const getItemValue = (key) => {
+                          if (editing && itemDraft && Object.prototype.hasOwnProperty.call(itemDraft, key)) {
+                            return itemDraft[key];
+                          }
+                          return item[key];
+                        };
+                        return (
+                          <div key={`item-${itemIndex}`} className="receipt-item-card-new">
+                            <div className="receipt-item-header-new">RAD {itemIndex + 1}</div>
+                            <div className="receipt-item-grid-new">
+                              {ITEM_DETAIL_FIELDS.map((field) => {
+                                const computedValue =
+                                  field.computed && field.key === 'item_vat_total'
+                                    ? (() => {
                                       const grossTotal = Number(
                                         getItemValue('item_total_price_inc_vat') ?? getItemValue('item_price_inc_vat') ?? 0
                                       );
@@ -1855,239 +1926,239 @@ export default function ReceiptPreviewModal({
                                       const fallback = Number(getItemValue('vat') || 0) * Number(getItemValue('number') || 1);
                                       return Number.isFinite(fallback) && Math.abs(fallback) > 0 ? fallback.toFixed(2) : '';
                                     })()
-                                  : null;
-                              const readOnlyValue = field.computed ? computedValue : getItemValue(field.key);
-                              const draftValue = itemDraft ? itemDraft[field.key] ?? '' : '';
-                              const itemFieldKey = `items[${itemIndex}].${field.key}`;
-                              const candidates = buildHoverCandidates(field.key, {
-                                source: 'items',
-                                extras: field.extras || [],
-                                index: itemIndex
-                              });
-                              const hoverKey = resolveBoxField(boxes, candidates);
-                              const highlightKey = hoverKey || candidates[0] || itemFieldKey;
-                              return (
-                                <div
-                                  key={`${field.key}-${itemIndex}`}
-                                  className={`receipt-item-cell-new ${matchHighlight(highlightKey)}`}
-                                  onMouseEnter={() => setHoverField(highlightKey)}
-                                  onMouseLeave={() => setHoverField(null)}
-                                >
-                                  <span className="cell-label-new">{field.label}</span>
-                                  {editing && !field.computed ? (
-                                    <input
-                                      className="dm-input-new"
-                                      value={draftValue}
-                                      onChange={(event) => updateItemDraft(itemIndex, field.key, event.target.value)}
-                                      disabled={saving}
-                                    />
-                                  ) : (
-                                    <div className="cell-value-new">{readOnlyValue !== null && readOnlyValue !== undefined && readOnlyValue !== '' ? readOnlyValue : '-'}</div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-
-                          <div className="proposal-group-new">
-                            <div className="proposal-group-header-new">Kontering</div>
-                            {itemProposals.length === 0 ? (
-                              <div className="proposal-empty-new">Inga konteringsförslag</div>
-                            ) : (
-                              itemProposals.map((proposal) => {
-                                const globalIndex = proposal._globalIndex;
-                                const proposalDraft = editing && draft ? draft.proposals[globalIndex] : null;
-                                const debitValue = proposalDraft ? proposalDraft.debit : proposal.debit;
-                                const creditValue = proposalDraft ? proposalDraft.credit : proposal.credit;
-                                const accountValue = proposalDraft ? proposalDraft.account : proposal.account;
-                                const vatRateValue = proposalDraft ? proposalDraft.vat_rate : proposal.vat_rate;
-                                const notesValue = proposalDraft ? proposalDraft.notes : proposal.notes;
-
-                                const isDebit = Number(debitValue || 0) > 0;
-                                const amount = isDebit ? debitValue : creditValue;
-                                const amountDisplay = editing
-                                  ? amount ?? ''
-                                  : amount != null && amount !== ''
-                                  ? formatCurrency(Number(amount))
-                                  : '-';
-                                const vatRateDisplay = editing
-                                  ? vatRateValue ?? ''
-                                  : vatRateValue != null && vatRateValue !== ''
-                                  ? `${Number(vatRateValue).toLocaleString('sv-SE', { maximumFractionDigits: 2 })}%`
-                                  : '-';
-
-                                const accountFieldKey = `proposals[${globalIndex}].account`;
-                                const accountCandidates = buildHoverCandidates('account', {
-                                  source: 'proposals',
-                                  extras: [],
-                                  index: globalIndex
+                                    : null;
+                                const readOnlyValue = field.computed ? computedValue : getItemValue(field.key);
+                                const draftValue = itemDraft ? itemDraft[field.key] ?? '' : '';
+                                const itemFieldKey = `items[${itemIndex}].${field.key}`;
+                                const candidates = buildHoverCandidates(field.key, {
+                                  source: 'items',
+                                  extras: field.extras || [],
+                                  index: itemIndex
                                 });
-                                const accountHoverKey = resolveBoxField(boxes, accountCandidates);
-                                const accountHighlightKey =
-                                  accountHoverKey || accountCandidates[0] || accountFieldKey;
-
-                                const amountFieldKey = `proposals[${globalIndex}].${isDebit ? 'debit' : 'credit'}`;
-                                const amountCandidates = buildHoverCandidates(isDebit ? 'debit' : 'credit', {
-                                  source: 'proposals',
-                                  extras: [],
-                                  index: globalIndex
-                                });
-                                const amountHoverKey = resolveBoxField(boxes, amountCandidates);
-                                const amountHighlightKey =
-                                  amountHoverKey || amountCandidates[0] || amountFieldKey;
-
-                                const vatFieldKey = `proposals[${globalIndex}].vat_rate`;
-                                const vatCandidates = buildHoverCandidates('vat_rate', {
-                                  source: 'proposals',
-                                  extras: [],
-                                  index: globalIndex
-                                });
-                                const vatHoverKey = resolveBoxField(boxes, vatCandidates);
-                                const vatHighlightKey = vatHoverKey || vatCandidates[0] || vatFieldKey;
-
-                                const notesFieldKey = `proposals[${globalIndex}].notes`;
-                                const notesCandidates = buildHoverCandidates('notes', {
-                                  source: 'proposals',
-                                  extras: [],
-                                  index: globalIndex
-                                });
-                                const notesHoverKey = resolveBoxField(boxes, notesCandidates);
-                                const notesHighlightKey =
-                                  notesHoverKey || notesCandidates[0] || notesFieldKey;
-
+                                const hoverKey = resolveBoxField(boxes, candidates);
+                                const highlightKey = hoverKey || candidates[0] || itemFieldKey;
                                 return (
-                                  <div key={`proposal-${globalIndex}`} className="proposal-card-new">
-                                    <div className="proposal-line-new">
-                                      <div
-                                        className={`proposal-cell-new ${matchHighlight(accountHighlightKey)}`}
-                                        onMouseEnter={() => setHoverField(accountHighlightKey)}
-                                        onMouseLeave={() => setHoverField(null)}
-                                      >
-                                        <span className="cell-label-new">{isDebit ? 'Debetkonto' : 'Kreditkonto'}</span>
-                                        {editing ? (
-                                          <input
-                                            className="dm-input-new"
-                                            value={accountValue ?? ''}
-                                            onChange={(event) => updateProposalDraft(globalIndex, 'account', event.target.value)}
-                                            disabled={saving}
-                                            placeholder="Konto"
-                                          />
-                                        ) : (
-                                          <div className="cell-value-new">{accountValue || '-'}</div>
-                                        )}
-                                      </div>
-                                      <div
-                                        className={`proposal-cell-new ${matchHighlight(amountHighlightKey)}`}
-                                        onMouseEnter={() => setHoverField(amountHighlightKey)}
-                                        onMouseLeave={() => setHoverField(null)}
-                                      >
-                                        <span className="cell-label-new">Belopp {isDebit ? 'Debet' : 'Kredit'}</span>
-                                        {editing ? (
-                                          <div className="proposal-amount-inputs-new">
-                                            <input
-                                              className="dm-input-new"
-                                              value={debitValue ?? ''}
-                                              onChange={(event) => updateProposalDraft(globalIndex, 'debit', event.target.value)}
-                                              disabled={saving}
-                                              placeholder="Debet"
-                                            />
-                                            <input
-                                              className="dm-input-new"
-                                              value={creditValue ?? ''}
-                                              onChange={(event) => updateProposalDraft(globalIndex, 'credit', event.target.value)}
-                                              disabled={saving}
-                                              placeholder="Kredit"
-                                            />
-                                          </div>
-                                        ) : (
-                                          <div className="cell-value-new">{amountDisplay}</div>
-                                        )}
-                                      </div>
-                                      <div
-                                        className={`proposal-cell-new ${matchHighlight(vatHighlightKey)}`}
-                                        onMouseEnter={() => setHoverField(vatHighlightKey)}
-                                        onMouseLeave={() => setHoverField(null)}
-                                      >
-                                        <span className="cell-label-new">Momssats</span>
-                                        {editing ? (
-                                          <input
-                                            className="dm-input-new"
-                                            value={vatRateValue ?? ''}
-                                            onChange={(event) => updateProposalDraft(globalIndex, 'vat_rate', event.target.value)}
-                                            disabled={saving}
-                                            placeholder="Moms %"
-                                          />
-                                        ) : (
-                                          <div className="cell-value-new">{vatRateDisplay}</div>
-                                        )}
-                                      </div>
-                                      <div
-                                        className={`proposal-cell-new ${matchHighlight(notesHighlightKey)}`}
-                                        onMouseEnter={() => setHoverField(notesHighlightKey)}
-                                        onMouseLeave={() => setHoverField(null)}
-                                      >
-                                        <span className="cell-label-new">Notering</span>
-                                        {editing ? (
-                                          <input
-                                            className="dm-input-new"
-                                            value={notesValue ?? ''}
-                                            onChange={(event) => updateProposalDraft(globalIndex, 'notes', event.target.value)}
-                                            disabled={saving}
-                                            placeholder="Notering"
-                                          />
-                                        ) : (
-                                          <div className="cell-value-new">{notesValue || 'Ingen notering'}</div>
-                                        )}
-                                      </div>
-                                    </div>
+                                  <div
+                                    key={`${field.key}-${itemIndex}`}
+                                    className={`receipt-item-cell-new ${matchHighlight(highlightKey)}`}
+                                    onMouseEnter={() => setHoverField(highlightKey)}
+                                    onMouseLeave={() => setHoverField(null)}
+                                  >
+                                    <span className="cell-label-new">{field.label}</span>
+                                    {editing && !field.computed ? (
+                                      <input
+                                        className="dm-input-new"
+                                        value={draftValue}
+                                        onChange={(event) => updateItemDraft(itemIndex, field.key, event.target.value)}
+                                        disabled={saving}
+                                      />
+                                    ) : (
+                                      <div className="cell-value-new">{readOnlyValue !== null && readOnlyValue !== undefined && readOnlyValue !== '' ? readOnlyValue : '-'}</div>
+                                    )}
                                   </div>
                                 );
-                              })
-                            )}
+                              })}
+                            </div>
+
+                            <div className="proposal-group-new">
+                              <div className="proposal-group-header-new">Kontering</div>
+                              {itemProposals.length === 0 ? (
+                                <div className="proposal-empty-new">Inga konteringsförslag</div>
+                              ) : (
+                                itemProposals.map((proposal) => {
+                                  const globalIndex = proposal._globalIndex;
+                                  const proposalDraft = editing && draft ? draft.proposals[globalIndex] : null;
+                                  const debitValue = proposalDraft ? proposalDraft.debit : proposal.debit;
+                                  const creditValue = proposalDraft ? proposalDraft.credit : proposal.credit;
+                                  const accountValue = proposalDraft ? proposalDraft.account : proposal.account;
+                                  const vatRateValue = proposalDraft ? proposalDraft.vat_rate : proposal.vat_rate;
+                                  const notesValue = proposalDraft ? proposalDraft.notes : proposal.notes;
+
+                                  const isDebit = Number(debitValue || 0) > 0;
+                                  const amount = isDebit ? debitValue : creditValue;
+                                  const amountDisplay = editing
+                                    ? amount ?? ''
+                                    : amount != null && amount !== ''
+                                      ? formatCurrency(Number(amount))
+                                      : '-';
+                                  const vatRateDisplay = editing
+                                    ? vatRateValue ?? ''
+                                    : vatRateValue != null && vatRateValue !== ''
+                                      ? `${Number(vatRateValue).toLocaleString('sv-SE', { maximumFractionDigits: 2 })}%`
+                                      : '-';
+
+                                  const accountFieldKey = `proposals[${globalIndex}].account`;
+                                  const accountCandidates = buildHoverCandidates('account', {
+                                    source: 'proposals',
+                                    extras: [],
+                                    index: globalIndex
+                                  });
+                                  const accountHoverKey = resolveBoxField(boxes, accountCandidates);
+                                  const accountHighlightKey =
+                                    accountHoverKey || accountCandidates[0] || accountFieldKey;
+
+                                  const amountFieldKey = `proposals[${globalIndex}].${isDebit ? 'debit' : 'credit'}`;
+                                  const amountCandidates = buildHoverCandidates(isDebit ? 'debit' : 'credit', {
+                                    source: 'proposals',
+                                    extras: [],
+                                    index: globalIndex
+                                  });
+                                  const amountHoverKey = resolveBoxField(boxes, amountCandidates);
+                                  const amountHighlightKey =
+                                    amountHoverKey || amountCandidates[0] || amountFieldKey;
+
+                                  const vatFieldKey = `proposals[${globalIndex}].vat_rate`;
+                                  const vatCandidates = buildHoverCandidates('vat_rate', {
+                                    source: 'proposals',
+                                    extras: [],
+                                    index: globalIndex
+                                  });
+                                  const vatHoverKey = resolveBoxField(boxes, vatCandidates);
+                                  const vatHighlightKey = vatHoverKey || vatCandidates[0] || vatFieldKey;
+
+                                  const notesFieldKey = `proposals[${globalIndex}].notes`;
+                                  const notesCandidates = buildHoverCandidates('notes', {
+                                    source: 'proposals',
+                                    extras: [],
+                                    index: globalIndex
+                                  });
+                                  const notesHoverKey = resolveBoxField(boxes, notesCandidates);
+                                  const notesHighlightKey =
+                                    notesHoverKey || notesCandidates[0] || notesFieldKey;
+
+                                  return (
+                                    <div key={`proposal-${globalIndex}`} className="proposal-card-new">
+                                      <div className="proposal-line-new">
+                                        <div
+                                          className={`proposal-cell-new ${matchHighlight(accountHighlightKey)}`}
+                                          onMouseEnter={() => setHoverField(accountHighlightKey)}
+                                          onMouseLeave={() => setHoverField(null)}
+                                        >
+                                          <span className="cell-label-new">{isDebit ? 'Debetkonto' : 'Kreditkonto'}</span>
+                                          {editing ? (
+                                            <input
+                                              className="dm-input-new"
+                                              value={accountValue ?? ''}
+                                              onChange={(event) => updateProposalDraft(globalIndex, 'account', event.target.value)}
+                                              disabled={saving}
+                                              placeholder="Konto"
+                                            />
+                                          ) : (
+                                            <div className="cell-value-new">{accountValue || '-'}</div>
+                                          )}
+                                        </div>
+                                        <div
+                                          className={`proposal-cell-new ${matchHighlight(amountHighlightKey)}`}
+                                          onMouseEnter={() => setHoverField(amountHighlightKey)}
+                                          onMouseLeave={() => setHoverField(null)}
+                                        >
+                                          <span className="cell-label-new">Belopp {isDebit ? 'Debet' : 'Kredit'}</span>
+                                          {editing ? (
+                                            <div className="proposal-amount-inputs-new">
+                                              <input
+                                                className="dm-input-new"
+                                                value={debitValue ?? ''}
+                                                onChange={(event) => updateProposalDraft(globalIndex, 'debit', event.target.value)}
+                                                disabled={saving}
+                                                placeholder="Debet"
+                                              />
+                                              <input
+                                                className="dm-input-new"
+                                                value={creditValue ?? ''}
+                                                onChange={(event) => updateProposalDraft(globalIndex, 'credit', event.target.value)}
+                                                disabled={saving}
+                                                placeholder="Kredit"
+                                              />
+                                            </div>
+                                          ) : (
+                                            <div className="cell-value-new">{amountDisplay}</div>
+                                          )}
+                                        </div>
+                                        <div
+                                          className={`proposal-cell-new ${matchHighlight(vatHighlightKey)}`}
+                                          onMouseEnter={() => setHoverField(vatHighlightKey)}
+                                          onMouseLeave={() => setHoverField(null)}
+                                        >
+                                          <span className="cell-label-new">Momssats</span>
+                                          {editing ? (
+                                            <input
+                                              className="dm-input-new"
+                                              value={vatRateValue ?? ''}
+                                              onChange={(event) => updateProposalDraft(globalIndex, 'vat_rate', event.target.value)}
+                                              disabled={saving}
+                                              placeholder="Moms %"
+                                            />
+                                          ) : (
+                                            <div className="cell-value-new">{vatRateDisplay}</div>
+                                          )}
+                                        </div>
+                                        <div
+                                          className={`proposal-cell-new ${matchHighlight(notesHighlightKey)}`}
+                                          onMouseEnter={() => setHoverField(notesHighlightKey)}
+                                          onMouseLeave={() => setHoverField(null)}
+                                        >
+                                          <span className="cell-label-new">Notering</span>
+                                          {editing ? (
+                                            <input
+                                              className="dm-input-new"
+                                              value={notesValue ?? ''}
+                                              onChange={(event) => updateProposalDraft(globalIndex, 'notes', event.target.value)}
+                                              disabled={saving}
+                                              placeholder="Notering"
+                                            />
+                                          ) : (
+                                            <div className="cell-value-new">{notesValue || 'Ingen notering'}</div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })
-                  )}
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
-        </div>
-        <div className="modal-footer receipt-modal-footer">
-          <div className="footer-hint">Hovra över fält eller bildmarkeringar för att se kopplingarna.</div>
-          <div className="modal-footer-actions">
-            {editing ? (
-              <>
-                <button type="button" className="btn btn-secondary" onClick={handleToggleEdit} disabled={saving}>
-                  Avbryt
-                </button>
-                <button type="button" className="btn btn-primary" onClick={handleSave} disabled={saving}>
-                  <FiSave />
-                  {saving ? 'Sparar...' : 'Spara'}
-                </button>
-              </>
-            ) : (
-              <>
-                <button type="button" className="btn btn-secondary" onClick={handleToggleEdit} disabled={saving || loading || !payload}>
-                  <FiEdit2 />
-                  Redigera
-                </button>
-                <button type="button" className="btn btn-warning" onClick={handleRestartAI} disabled={restarting || saving || loading || !payload} title="Starta om konvertering (kör OCR och AI från början)">
-                  <FiRefreshCw />
-                  {restarting ? 'Startar om konvertering...' : 'Starta om konvertering'}
-                </button>
-                <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={saving || loading} title="Radera kvitto">
-                  <FiTrash2 />
-                  Radera
-                </button>
-              </>
             )}
-            <button type="button" className="btn btn-text" onClick={onClose} disabled={saving}>
-              Stäng
-            </button>
           </div>
-        </div>
+          <div className="modal-footer receipt-modal-footer">
+            <div className="footer-hint">Hovra över fält eller bildmarkeringar för att se kopplingarna.</div>
+            <div className="modal-footer-actions">
+              {editing ? (
+                <>
+                  <button type="button" className="btn btn-secondary" onClick={handleToggleEdit} disabled={saving}>
+                    Avbryt
+                  </button>
+                  <button type="button" className="btn btn-primary" onClick={handleSave} disabled={saving}>
+                    <FiSave />
+                    {saving ? 'Sparar...' : 'Spara'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="btn btn-secondary" onClick={handleToggleEdit} disabled={saving || loading || !payload}>
+                    <FiEdit2 />
+                    Redigera
+                  </button>
+                  <button type="button" className="btn btn-warning" onClick={handleRestartAI} disabled={restarting || saving || loading || !payload} title="Starta om konvertering (kör OCR och AI från början)">
+                    <FiRefreshCw />
+                    {restarting ? 'Startar om konvertering...' : 'Starta om konvertering'}
+                  </button>
+                  <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={saving || loading} title="Radera kvitto">
+                    <FiTrash2 />
+                    Radera
+                  </button>
+                </>
+              )}
+              <button type="button" className="btn btn-text" onClick={onClose} disabled={saving}>
+                Stäng
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       {imageViewerOpen && baseImageSrc && (

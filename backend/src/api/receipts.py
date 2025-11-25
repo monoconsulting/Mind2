@@ -27,48 +27,6 @@ logger = logging.getLogger(__name__)
 
 receipts_bp = Blueprint("receipts", __name__)
 
-from .status_definitions import get_stage_definitions, get_status_label_map
-from .log_helpers import clear_logs_for_file_ids, fetch_related_file_ids
-
-_STAGE_DEFINITIONS = get_stage_definitions()
-_STATUS_LABEL_MAP = get_status_label_map()
-_UPLOAD_STAGE_KEYS = [
-    key for key, meta in _STAGE_DEFINITIONS.items() if str(meta.get("category")).lower() == "upload"
-]
-_UPLOAD_STAGE_FILTER = ", ".join(f"'{key}'" for key in _UPLOAD_STAGE_KEYS) if _UPLOAD_STAGE_KEYS else ""
-_UPLOAD_STAGE_SET = set(_UPLOAD_STAGE_KEYS)
-
-LATEST_STAGE_JOIN = """
-LEFT JOIN (
-    SELECT wr.file_id,
-           wr.source_channel,
-           SUBSTRING_INDEX(GROUP_CONCAT(wsr.stage_key ORDER BY wsr.started_at DESC SEPARATOR ','), ',', 1) AS latest_stage_key,
-           SUBSTRING_INDEX(GROUP_CONCAT(wsr.status ORDER BY wsr.started_at DESC SEPARATOR ','), ',', 1) AS latest_stage_status
-    FROM workflow_stage_runs wsr
-    JOIN workflow_runs wr ON wr.id = wsr.workflow_run_id
-    GROUP BY wr.file_id, wr.source_channel
-) latest_stage ON latest_stage.file_id = u.id
-"""
-
-if _UPLOAD_STAGE_FILTER:
-    UPLOAD_STAGE_JOIN = f"""
-LEFT JOIN (
-    SELECT wr.file_id,
-           SUBSTRING_INDEX(GROUP_CONCAT(wsr.stage_key ORDER BY wsr.started_at DESC SEPARATOR ','), ',', 1) AS upload_stage_key,
-           SUBSTRING_INDEX(GROUP_CONCAT(wsr.status ORDER BY wsr.started_at DESC SEPARATOR ','), ',', 1) AS upload_stage_status
-    FROM workflow_stage_runs wsr
-    JOIN workflow_runs wr ON wr.id = wsr.workflow_run_id
-    WHERE wsr.stage_key IN ({_UPLOAD_STAGE_FILTER})
-    GROUP BY wr.file_id
-) upload_stage ON upload_stage.file_id = u.id
-"""
-    UPLOAD_STAGE_SELECT = "upload_stage.upload_stage_key, upload_stage.upload_stage_status, "
-    UPLOAD_STAGE_GROUP_BY = "upload_stage.upload_stage_key, upload_stage.upload_stage_status"
-else:
-    UPLOAD_STAGE_JOIN = ""
-    UPLOAD_STAGE_SELECT = "NULL as upload_stage_key, NULL as upload_stage_status, "
-    UPLOAD_STAGE_GROUP_BY = ""
-
 
 def _is_lock_timeout(exc: Exception) -> bool:
     return DBLockTimeout is not None and isinstance(exc, DBLockTimeout)
@@ -185,38 +143,6 @@ def _normalise_store_line_item(raw: dict[str, Any], receipt_currency: str | None
     }
 
 
-def _column_exists(table: str, column: str) -> bool:
-    if db_cursor is None:
-        return False
-    try:
-        with db_cursor() as cur:
-            cur.execute(
-                """
-                SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = DATABASE()
-                  AND TABLE_NAME = %s
-                  AND COLUMN_NAME = %s
-                """,
-                (table, column),
-            )
-            return cur.fetchone() is not None
-    except Exception:
-        return False
-
-
-HAS_INGEST_SOURCE_COLUMN = _column_exists("unified_files", "ingest_source_channel")
-HAS_SOURCE_CHANNEL_COLUMN = _column_exists("unified_files", "source_channel")
-
-if HAS_INGEST_SOURCE_COLUMN and HAS_SOURCE_CHANNEL_COLUMN:
-    SOURCE_CHANNEL_EXPR = "COALESCE(u.ingest_source_channel, u.source_channel)"
-elif HAS_INGEST_SOURCE_COLUMN:
-    SOURCE_CHANNEL_EXPR = "u.ingest_source_channel"
-elif HAS_SOURCE_CHANNEL_COLUMN:
-    SOURCE_CHANNEL_EXPR = "u.source_channel"
-else:
-    SOURCE_CHANNEL_EXPR = "NULL"
-
-
 def _load_line_items_from_store(rid: str, receipt_currency: str | None = None) -> list[dict[str, Any]]:
     path = _line_items_path(rid)
     if not path.exists():
@@ -275,61 +201,6 @@ def _store_line_items(rid: str, items: Iterable[dict[str, Any]]) -> bool:
     except Exception:
         logger.error("Failed to persist line items for %s", rid, exc_info=True)
         return False
-
-
-def _format_timestamp(value: Any) -> str | None:
-    if hasattr(value, "isoformat"):
-        try:
-            return value.isoformat()
-        except Exception:
-            return None
-    if isinstance(value, str):
-        return value
-    return None
-
-
-def _fetch_stage_snapshots(file_ids: list[str]) -> dict[str, dict[str, dict[str, Any]]]:
-    """Return a mapping of file_id -> {stage_key: {...}} with the latest entry per stage."""
-    if not file_ids or db_cursor is None:
-        return {}
-    placeholders = ", ".join(["%s"] * len(file_ids))
-    sql = f"""
-        SELECT wr.file_id,
-               wsr.stage_key,
-               wsr.status,
-               wsr.started_at,
-               wsr.finished_at,
-               wsr.message
-        FROM workflow_stage_runs wsr
-        JOIN workflow_runs wr ON wr.id = wsr.workflow_run_id
-        WHERE wr.file_id IN ({placeholders})
-        ORDER BY wsr.started_at DESC, wsr.id DESC
-    """
-    snapshots: dict[str, dict[str, dict[str, Any]]] = {}
-    try:
-        with db_cursor() as cur:
-            cur.execute(sql, tuple(file_ids))
-            rows = cur.fetchall() or []
-    except Exception:
-        return {}
-
-    for file_id, stage_key, status, started_at, finished_at, message in rows:
-        if not stage_key:
-            continue
-        per_file = snapshots.setdefault(file_id, {})
-        if stage_key in per_file:
-            continue  # we already captured the most recent entry for this stage
-        meta = _STAGE_DEFINITIONS.get(stage_key, {})
-        per_file[stage_key] = {
-            "stage_key": stage_key,
-            "status": status,
-            "label": meta.get("label", stage_key),
-            "category": meta.get("category"),
-            "started_at": _format_timestamp(started_at),
-            "finished_at": _format_timestamp(finished_at),
-            "message": message,
-        }
-    return snapshots
 
 # Preview directory removed - using original images only
 # def _preview_dir() -> Path:
@@ -1011,52 +882,12 @@ def list_receipts() -> Any:
     # Optional filters
     q_status = request.args.get("status")
     q_merchant = request.args.get("merchant")
-    q_search = request.args.get("search") or request.args.get("q")
     q_orgnr = request.args.get("orgnr")
     q_tags = request.args.get("tags")
     q_from = request.args.get("from")
     q_to = request.args.get("to")
-    q_purchase_from = request.args.get("purchase_from")
-    q_purchase_to = request.args.get("purchase_to")
     q_file_type = request.args.get("file_type")
-    q_expense_type = request.args.get("expense_type")
-    q_payment_type = request.args.get("payment_type")
-    q_source_channel = request.args.get("source_channel")
-    q_upload_from = request.args.get("upload_from")
-    q_upload_to = request.args.get("upload_to")
-    q_workflow_stage = request.args.get("workflow_stage")
-    q_workflow_stage_status = request.args.get("workflow_stage_status")
-    q_upload_stage = request.args.get("upload_stage")
-    q_upload_stage_status = request.args.get("upload_stage_status")
     include_credit = request.args.get("include_credit", "").lower() in {"1", "true", "yes"}
-
-    # Sorting parameters
-    sort_by = request.args.get("sort_by", "created_at")
-    sort_order = request.args.get("sort_order", "desc").lower()
-
-    # Validate sort_order
-    if sort_order not in {"asc", "desc"}:
-        sort_order = "desc"
-
-    # Map frontend column names to database columns
-    sort_column_map = {
-        "purchase_datetime": "u.purchase_datetime",
-        "company": "c.name",
-        "net_amount": "u.net_amount_sek",
-        "gross_amount": "u.gross_amount_sek",
-        "status": "u.ai_status",
-        "ai_status": "u.ai_status",
-        "file_type": "u.file_type",
-        "uploaded_at": "u.created_at",
-        "created_at": "u.created_at",
-        "expense_type": "u.expense_type",
-        "credit_card_last_4": "u.credit_card_last_4_digits",
-        "credit_card_type": "u.credit_card_type",
-        "payment_type": "u.payment_type",
-    }
-
-    # Get the actual database column (default to created_at if invalid)
-    db_sort_column = sort_column_map.get(sort_by, "u.created_at")
 
     # Simple pagination
     try:
@@ -1079,41 +910,20 @@ def list_receipts() -> Any:
             where: list[str] = ["u.deleted_at IS NULL", "u.file_type != 'pdf'"]
             params: list[Any] = []
             if q_status:
-                where.append("u.ai_status = %s")
+                where.append("ai_status = %s")
                 params.append(q_status)
-            if q_search:
-                wildcard = f"%{q_search}%"
-                search_clauses = [
-                    "c.name LIKE %s",
-                    "u.original_filename LIKE %s",
-                    "u.id LIKE %s",
-                ]
-                search_params: list[Any] = [wildcard, wildcard, wildcard]
-                try:
-                    numeric_year = int(q_search)
-                except Exception:
-                    numeric_year = None
-                if numeric_year and 1900 <= numeric_year <= 2200:
-                    search_clauses.append(
-                        "(YEAR(u.created_at) = %s OR YEAR(u.purchase_datetime) = %s OR YEAR(u.file_creation_timestamp) = %s)"
-                    )
-                    search_params.extend([numeric_year, numeric_year, numeric_year])
-                where.append("(" + " OR ".join(search_clauses) + ")")
-                params.extend(search_params)
-            elif q_merchant:
+            if q_merchant:
                 where.append("c.name LIKE %s")
                 params.append(f"%{q_merchant}%")
             if q_orgnr:
                 where.append("orgnr = %s")
                 params.append(q_orgnr)
-            purchase_from = q_purchase_from or q_from
-            purchase_to = q_purchase_to or q_to
-            if purchase_from:
-                where.append("u.purchase_datetime >= %s")
-                params.append(purchase_from)
-            if purchase_to:
-                where.append("u.purchase_datetime <= %s")
-                params.append(purchase_to)
+            if q_from:
+                where.append("purchase_datetime >= %s")
+                params.append(q_from)
+            if q_to:
+                where.append("purchase_datetime <= %s")
+                params.append(q_to)
             if q_file_type:
                 where.append("u.file_type = %s")
                 params.append(q_file_type)
@@ -1128,42 +938,6 @@ def list_receipts() -> Any:
                         )
                     )
                     params.extend(tag_list)
-            if q_expense_type:
-                where.append("u.expense_type = %s")
-                params.append(q_expense_type)
-            if q_payment_type:
-                where.append("u.payment_type = %s")
-                params.append(q_payment_type)
-            if q_source_channel:
-                if HAS_INGEST_SOURCE_COLUMN and HAS_SOURCE_CHANNEL_COLUMN:
-                    where.append(
-                        "(COALESCE(u.ingest_source_channel, u.source_channel) = %s)"
-                    )
-                    params.append(q_source_channel)
-                elif HAS_INGEST_SOURCE_COLUMN:
-                    where.append("u.ingest_source_channel = %s")
-                    params.append(q_source_channel)
-                elif HAS_SOURCE_CHANNEL_COLUMN:
-                    where.append("u.source_channel = %s")
-                    params.append(q_source_channel)
-            if q_upload_from:
-                where.append("COALESCE(u.file_creation_timestamp, u.created_at) >= %s")
-                params.append(q_upload_from)
-            if q_upload_to:
-                where.append("COALESCE(u.file_creation_timestamp, u.created_at) <= %s")
-                params.append(q_upload_to)
-            if q_workflow_stage:
-                where.append("latest_stage.latest_stage_key = %s")
-                params.append(q_workflow_stage)
-            if q_workflow_stage_status:
-                where.append("latest_stage.latest_stage_status = %s")
-                params.append(q_workflow_stage_status)
-            if q_upload_stage and UPLOAD_STAGE_JOIN:
-                where.append("upload_stage.upload_stage_key = %s")
-                params.append(q_upload_stage)
-            if q_upload_stage_status and UPLOAD_STAGE_JOIN:
-                where.append("upload_stage.upload_stage_status = %s")
-                params.append(q_upload_stage_status)
 
             if not include_credit:
                 # Exclude credit card statements by default
@@ -1176,14 +950,10 @@ def list_receipts() -> Any:
 
             # Count (needs same joins as main query)
             with db_cursor() as cur:
-                count_query = (
-                    "SELECT COUNT(1) FROM unified_files u "
-                    "LEFT JOIN companies c ON c.id = u.company_id "
-                    f"{LATEST_STAGE_JOIN} "
-                    f"{UPLOAD_STAGE_JOIN} "
-                    f"{where_sql}"
+                cur.execute(
+                    f"SELECT COUNT(1) FROM unified_files u LEFT JOIN companies c ON c.id = u.company_id {where_sql}",
+                    tuple(params),
                 )
-                cur.execute(count_query, tuple(params))
                 (total,) = cur.fetchone() or (0,)
 
             # Page
@@ -1193,29 +963,25 @@ def list_receipts() -> Any:
                     "u.net_amount_sek, u.gross_amount_sek, u.ai_status, u.file_type, u.workflow_type, "
                     "u.submitted_by, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, "
                     "u.expense_type, u.credit_card_last_4_digits, u.credit_card_type, u.payment_type, "
-                    f"{SOURCE_CHANNEL_EXPR} as ingest_source_channel, "
                     "COALESCE(GROUP_CONCAT(t.tag), '') as tags, "
-                    "latest_stage.latest_stage_key, "
-                    "latest_stage.latest_stage_status, "
-                    f"{UPLOAD_STAGE_SELECT}"
-                    "CONCAT_WS(' ', latest_stage.latest_stage_key, latest_stage.latest_stage_status) as workflow_stage_status "
+                    # Get latest workflow stage status
+                    "(SELECT CONCAT(wsr.stage_key, ' ', wsr.status) "
+                    " FROM workflow_runs wr "
+                    " JOIN workflow_stage_runs wsr ON wsr.workflow_run_id = wr.id "
+                    " WHERE wr.file_id = u.id "
+                    " ORDER BY wsr.started_at DESC LIMIT 1) as workflow_stage_status "
                     "FROM unified_files u "
                     "LEFT JOIN companies c ON c.id = u.company_id "
                     "LEFT JOIN file_tags t ON t.file_id=u.id "
                     "LEFT JOIN file_locations fl ON fl.file_id=u.id "
-                    f"{LATEST_STAGE_JOIN} "
-                    f"{UPLOAD_STAGE_JOIN} "
                     f"{where_sql} "
                     "GROUP BY u.id, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, c.name, u.workflow_type, "
-                    "u.expense_type, u.credit_card_last_4_digits, u.credit_card_type, u.payment_type, "
-                    f"{SOURCE_CHANNEL_EXPR}, "
-                    f"latest_stage.latest_stage_key, latest_stage.latest_stage_status{', ' + UPLOAD_STAGE_GROUP_BY if UPLOAD_STAGE_GROUP_BY else ''} "
-                    f"ORDER BY {db_sort_column} {sort_order.upper()}, u.created_at DESC LIMIT %s OFFSET %s"
+                    "u.expense_type, u.credit_card_last_4_digits, u.credit_card_type, u.payment_type "
+                    "ORDER BY u.created_at DESC LIMIT %s OFFSET %s"
                 )
                 cur.execute(query, tuple(params + [page_size, offset]))
                 results = cur.fetchall()
                 logger.info(f"Query returned {len(results)} rows")
-                eligible_rows: list[dict[str, Any]] = []
                 for (
                     rid,
                     fname,
@@ -1235,12 +1001,7 @@ def list_receipts() -> Any:
                     credit_card_last_4,
                     credit_card_type,
                     payment_type,
-                    ingest_source_channel,
                     tag_csv,
-                    latest_stage_key,
-                    latest_stage_status,
-                    upload_stage_key,
-                    upload_stage_status,
                     workflow_stage_status,
                 ) in results:
                     wf_type = (workflow_type or "").lower()
@@ -1286,7 +1047,7 @@ def list_receipts() -> Any:
                     if include_credit:
                         if wf_type == "creditcard_invoice" or file_type_lower.startswith("cc_") or file_type_lower == "credit_card":
                             document_type = "Credit Card"
-                    eligible_rows.append(
+                    items.append(
                         {
                             "id": rid,
                             "original_filename": fname,
@@ -1298,12 +1059,8 @@ def list_receipts() -> Any:
                             "net_amount": net_value,
                             "gross_amount": gross_value,
                             "status": status,
-                            "ai_status": status,
-                            "workflow_stage_status": workflow_stage_status,
-                            "workflow_stage_key": latest_stage_key,
-                            "workflow_stage_state": latest_stage_status,
-                            "upload_stage_key": upload_stage_key,
-                            "upload_stage_status": upload_stage_status,
+                            "ai_status": status,  # Add ai_status field so frontend deps can detect changes
+                            "workflow_stage_status": workflow_stage_status,  # Current workflow stage
                             "file_type": file_type,
                             "workflow_type": workflow_type,
                             "submitted_by": submitted_by,
@@ -1313,56 +1070,7 @@ def list_receipts() -> Any:
                             "credit_card_last_4": str(credit_card_last_4) if credit_card_last_4 not in (None, 0, "") else None,
                             "credit_card_type": credit_card_type,
                             "payment_type": payment_type,
-                            "ingest_source_channel": ingest_source_channel,
                             "tags": [t for t in (tag_csv or "").split(",") if t],
-                        }
-                    )
-                stage_snapshots = _fetch_stage_snapshots([entry["id"] for entry in eligible_rows])
-                for entry in eligible_rows:
-                    stage_meta = stage_snapshots.get(entry["id"], {})
-                    upload_stage_info = None
-                    upload_stage_key = entry.get("upload_stage_key")
-                    if upload_stage_key:
-                        upload_stage_info = {
-                            "stage_key": upload_stage_key,
-                            "status": entry.get("upload_stage_status"),
-                            "label": _STAGE_DEFINITIONS.get(upload_stage_key, {}).get("label", upload_stage_key),
-                        }
-                    workflow_stage_key = entry.get("workflow_stage_key")
-                    workflow_display = entry.get("workflow_stage_status")
-                    if not workflow_display and workflow_stage_key and entry.get("workflow_stage_state"):
-                        workflow_display = f"{workflow_stage_key} {entry.get('workflow_stage_state')}"
-                    items.append(
-                        {
-                            **{k: entry[k] for k in (
-                                "id",
-                                "original_filename",
-                                "merchant",
-                                "purchase_datetime",
-                                "purchase_date",
-                                "file_creation_timestamp",
-                                "location",
-                                "net_amount",
-                                "gross_amount",
-                                "status",
-                                "ai_status",
-                                "file_type",
-                                "workflow_type",
-                                "submitted_by",
-                                "document_type",
-                                "line_item_count",
-                                "expense_type",
-                                "credit_card_last_4",
-                                "credit_card_type",
-                                "payment_type",
-                                "tags",
-                            )},
-                            "workflow_stage_status": workflow_display,
-                            "workflow_stage_key": workflow_stage_key,
-                            "workflow_stage_state": entry.get("workflow_stage_state"),
-                            "ingest_source_channel": entry.get("ingest_source_channel"),
-                            "upload_stage": upload_stage_info,
-                            "workflow_stages": stage_meta,
                         }
                     )
         except Exception as e:
@@ -1933,156 +1641,6 @@ def soft_delete_receipt(rid: str) -> Any:
     return jsonify({"id": rid, "deleted": True}), 200
 
 
-def _parse_other_data(raw: Any) -> dict[str, Any]:
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str) and raw:
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            return {}
-    return {}
-
-
-def _resolve_restart_workflow(
-    *,
-    file_type: Optional[str],
-    workflow_type: Optional[str],
-    other_data: dict[str, Any],
-) -> str:
-    workflow_value = (workflow_type or "").lower()
-    if workflow_value == "creditcard_invoice":
-        return "WF3_FIRSTCARD_INVOICE"
-
-    detected_kind = (other_data.get("detected_kind") or "").lower()
-    file_type_value = (file_type or "").lower()
-
-    if detected_kind in {"pdf", "document"} or file_type_value == "pdf":
-        return "WF2_PDF_SPLIT"
-
-    return "WF1_RECEIPT"
-
-
-def _update_ai_status(file_id: str, status: str) -> None:
-    try:
-        from services.db.files import set_ai_status  # type: ignore
-    except Exception:
-        set_ai_status = None  # type: ignore
-
-    if set_ai_status is not None:
-        try:
-            set_ai_status(file_id, status)
-            return
-        except Exception:
-            logger.warning("Failed to set ai_status via helper for %s", file_id, exc_info=True)
-
-    if db_cursor is None:
-        return
-    try:
-        with db_cursor() as cur:
-            cur.execute(
-                "UPDATE unified_files SET ai_status=%s, updated_at=NOW() WHERE id=%s",
-                (status, file_id),
-            )
-    except Exception:
-        logger.warning("Fallback ai_status update failed for %s", file_id, exc_info=True)
-
-
-@receipts_bp.post("/receipts/<rid>/restart-ai")
-def restart_ai_workflow(rid: str) -> Any:
-    """Restart AI workflow for a receipt by creating a new workflow run."""
-    if db_cursor is None:
-        return jsonify({"error": "db_unavailable"}), 503
-
-    try:
-        # Import here to avoid circular imports
-        from services.workflow_runs import create_workflow_run
-        from services.tasks import dispatch_workflow, log_import_event
-
-        with db_cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, workflow_type, file_type, content_hash, other_data
-                FROM unified_files
-                WHERE id = %s AND deleted_at IS NULL
-                """,
-                (rid,),
-            )
-            row = cur.fetchone()
-
-        if not row:
-            return jsonify({"error": "receipt_not_found"}), 404
-
-        file_id, workflow_type, file_type, content_hash, other_data_raw = row
-        other_data = _parse_other_data(other_data_raw)
-        workflow_key = _resolve_restart_workflow(
-            file_type=file_type,
-            workflow_type=workflow_type,
-            other_data=other_data,
-        )
-        effective_hash = content_hash or other_data.get("content_hash") or file_id
-
-        workflow_run_id = create_workflow_run(
-            workflow_key=workflow_key,
-            source_channel="manual_restart",
-            file_id=file_id,
-            content_hash=effective_hash,
-        )
-
-        if not workflow_run_id:
-            logger.error("Failed to create workflow run for receipt %s", rid)
-            return jsonify({"error": "workflow_creation_failed"}), 500
-
-        log_import_event(
-            workflow_run_id,
-            "restart_dispatch",
-            status="running",
-            message="Startar om konvertering via förhandsgranskning",
-        )
-
-        _update_ai_status(file_id, "queued")
-
-        success = dispatch_workflow(workflow_run_id)
-
-        if not success:
-            _update_ai_status(file_id, "failed")
-            log_import_event(
-                workflow_run_id,
-                "restart_dispatch",
-                status="failed",
-                message="Dispatch misslyckades",
-            )
-            logger.error("Failed to dispatch workflow %s for receipt %s", workflow_run_id, rid)
-            return jsonify(
-                {
-                    "error": "workflow_dispatch_failed",
-                    "workflow_run_id": workflow_run_id,
-                    "workflow_key": workflow_key,
-                }
-            ), 500
-
-        logger.info(
-            "Successfully restarted AI workflow for receipt %s, workflow_run_id: %s",
-            rid,
-            workflow_run_id,
-        )
-        return jsonify(
-            {
-                "success": True,
-                "receipt_id": file_id,
-                "workflow_run_id": workflow_run_id,
-                "workflow_key": workflow_key,
-            }
-        ), 200
-
-    except Exception as exc:
-        logger.error("Error restarting AI workflow for receipt %s", rid, exc_info=True)
-        _update_ai_status(rid, "failed")
-        return jsonify({"error": "restart_failed", "message": str(exc)}), 500
-
-
 @receipts_bp.get("/receipts/<rid>/ai-history")
 def get_ai_processing_history(rid: str) -> Any:
     """Get all AI processing history records for a specific file."""
@@ -2396,7 +1954,6 @@ def get_workflow_status(rid: str) -> Any:
 
     # Default to "pending" instead of "N/A" - will be updated based on detected_kind
     pdf_convert_status = "pending"
-    upload_stage_summary: dict[str, Any] | None = None
 
     if db_cursor is not None:
         try:
@@ -2527,13 +2084,8 @@ def get_workflow_status(rid: str) -> Any:
                     # Only update if we haven't seen this stage yet (most recent first)
                     if stage_key and stage_key not in seen_stages:
                         seen_stages.add(stage_key)
-                        status_label = status.lower() if isinstance(status, str) else ""
-                        translated_status = _STATUS_LABEL_MAP.get(status_label, status)
-                        stage_label = _STAGE_DEFINITIONS.get(stage_key, {}).get("label", stage_key)
                         workflow_status[stage_key] = {
                             "status": status,
-                            "label": stage_label,
-                            "status_label": translated_status,
                             "ai_stage_name": ai_stage_name,
                             "log_text": log_text,
                             "error_message": error_message,
@@ -2543,14 +2095,6 @@ def get_workflow_status(rid: str) -> Any:
                             "model": model_name,
                             "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
                         }
-                        if stage_key in _UPLOAD_STAGE_SET and upload_stage_summary is None:
-                            upload_stage_summary = {
-                                "stage_key": stage_key,
-                                "status": status,
-                                "label": stage_label,
-                                "status_label": translated_status,
-                                "updated_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
-                            }
 
         except Exception as e:
             logger.error(f"Error fetching workflow status for {rid}: {e}")
@@ -2559,26 +2103,5 @@ def get_workflow_status(rid: str) -> Any:
 
     # Set pdf_convert status
     workflow_status["pdf_convert"] = pdf_convert_status
-    workflow_status["upload_stage"] = upload_stage_summary
 
     return jsonify(workflow_status), 200
-
-
-@receipts_bp.delete("/receipts/<rid>/log")
-def delete_receipt_log(rid: str) -> Any:
-    """Clear workflow and AI logs for a receipt."""
-    if db_cursor is None:
-        return jsonify({"error": "db_unavailable"}), 503
-
-    related_file_ids = fetch_related_file_ids(rid)
-    if not related_file_ids:
-        return jsonify({"error": "not_found", "receipt_id": rid}), 404
-
-    deleted_counts = clear_logs_for_file_ids(related_file_ids)
-    return jsonify(
-        {
-            "receipt_id": rid,
-            "deleted": deleted_counts,
-            "related_file_ids": related_file_ids,
-        }
-    ), 200

@@ -1,29 +1,28 @@
 -- Expand unified_files with AI ingestion columns and supporting tables
 -- Derived from mono_se_db_9 (3).sql dump (2025-09-29)
 
--- Add columns to unified_files (duplicate errors will be ignored by migration system)
-ALTER TABLE unified_files ADD COLUMN payment_type VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Enter "cash" or "card"';
-ALTER TABLE unified_files ADD COLUMN purchase_datetime DATETIME NULL COMMENT 'Date and time on the receipt';
-ALTER TABLE unified_files ADD COLUMN expense_type VARCHAR(255) NULL COMMENT 'personal or corporate classification';
-ALTER TABLE unified_files ADD COLUMN gross_amount_original DECIMAL(12,2) NULL COMMENT 'amount including VAT';
-ALTER TABLE unified_files ADD COLUMN net_amount_original DECIMAL(12,2) NULL COMMENT 'amount excluding VAT';
-ALTER TABLE unified_files ADD COLUMN exchange_rate DECIMAL(12,6) NULL COMMENT 'Exchange rate example: 1 USD=11.33 SEK';
-ALTER TABLE unified_files ADD COLUMN currency VARCHAR(222) NOT NULL DEFAULT 'SEK' COMMENT 'Currency used for purchase';
-ALTER TABLE unified_files ADD COLUMN gross_amount_sek DECIMAL(12,2) NULL COMMENT 'Gross amount converted to SEK';
-ALTER TABLE unified_files ADD COLUMN net_amount_sek DECIMAL(12,2) NULL COMMENT 'Net amount converted to SEK';
-ALTER TABLE unified_files ADD COLUMN ocr_raw LONGTEXT NULL COMMENT 'Raw OCR text without coordinates';
-ALTER TABLE unified_files ADD COLUMN company_id INT NULL COMMENT 'companies.id that sold the product';
-ALTER TABLE unified_files ADD COLUMN receipt_number VARCHAR(255) NULL COMMENT 'Unique receipt number';
-ALTER TABLE unified_files ADD COLUMN submitted_by VARCHAR(64) NULL COMMENT 'User that submitted the file';
-ALTER TABLE unified_files ADD COLUMN file_suffix VARCHAR(32) NULL COMMENT 'File extension without dot';
-ALTER TABLE unified_files ADD COLUMN file_category INT NULL COMMENT 'Reference to file_categories.id';
-ALTER TABLE unified_files ADD COLUMN approved_by INT NULL COMMENT 'User id that approved the receipt';
-ALTER TABLE unified_files ADD COLUMN other_data LONGTEXT NULL COMMENT 'Any additional receipt metadata';
-ALTER TABLE unified_files ADD COLUMN credit_card_match TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 when receipt matched to credit card invoice';
+ALTER TABLE unified_files
+  ADD COLUMN IF NOT EXISTS payment_type VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Enter "cash" or "card"',
+  ADD COLUMN IF NOT EXISTS purchase_datetime DATETIME NULL COMMENT 'Date and time on the receipt',
+  ADD COLUMN IF NOT EXISTS expense_type VARCHAR(255) NULL COMMENT 'personal or corporate classification',
+  ADD COLUMN IF NOT EXISTS gross_amount_original DECIMAL(12,2) NULL COMMENT 'amount including VAT',
+  ADD COLUMN IF NOT EXISTS net_amount_original DECIMAL(12,2) NULL COMMENT 'amount excluding VAT',
+  ADD COLUMN IF NOT EXISTS exchange_rate DECIMAL(12,6) NULL COMMENT 'Exchange rate example: 1 USD=11.33 SEK',
+  ADD COLUMN IF NOT EXISTS currency VARCHAR(222) NOT NULL DEFAULT 'SEK' COMMENT 'Currency used for purchase',
+  ADD COLUMN IF NOT EXISTS gross_amount_sek DECIMAL(12,2) NULL COMMENT 'Gross amount converted to SEK',
+  ADD COLUMN IF NOT EXISTS net_amount_sek DECIMAL(12,2) NULL COMMENT 'Net amount converted to SEK',
+  ADD COLUMN IF NOT EXISTS ocr_raw LONGTEXT NULL COMMENT 'Raw OCR text without coordinates',
+  ADD COLUMN IF NOT EXISTS company_id INT NULL COMMENT 'companies.id that sold the product',
+  ADD COLUMN IF NOT EXISTS receipt_number VARCHAR(255) NULL COMMENT 'Unique receipt number',
+  ADD COLUMN IF NOT EXISTS submitted_by VARCHAR(64) NULL COMMENT 'User that submitted the file',
+  ADD COLUMN IF NOT EXISTS file_suffix VARCHAR(32) NULL COMMENT 'File extension without dot',
+  ADD COLUMN IF NOT EXISTS file_category INT NULL COMMENT 'Reference to file_categories.id',
+  ADD COLUMN IF NOT EXISTS approved_by INT NULL COMMENT 'User id that approved the receipt',
+  ADD COLUMN IF NOT EXISTS other_data LONGTEXT NULL COMMENT 'Any additional receipt metadata',
+  ADD COLUMN IF NOT EXISTS credit_card_match TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 when receipt matched to credit card invoice';
 
--- Create indexes (duplicate errors will be ignored by migration system)
-CREATE INDEX idx_unified_files_company ON unified_files(company_id);
-CREATE INDEX idx_unified_files_receipt_number ON unified_files(receipt_number);
+CREATE INDEX IF NOT EXISTS idx_unified_files_company ON unified_files(company_id);
+CREATE INDEX IF NOT EXISTS idx_unified_files_receipt_number ON unified_files(receipt_number);
 
 -- Ensure ai_accounting_proposals table exists with correct structure
 CREATE TABLE IF NOT EXISTS ai_accounting_proposals (
@@ -36,7 +35,7 @@ CREATE TABLE IF NOT EXISTS ai_accounting_proposals (
   notes VARCHAR(255) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX idx_ai_accounting_proposals_receipt ON ai_accounting_proposals(receipt_id);
+CREATE INDEX IF NOT EXISTS idx_ai_accounting_proposals_receipt ON ai_accounting_proposals(receipt_id);
 
 -- Receipt items extracted from OCR/AI
 CREATE TABLE IF NOT EXISTS receipt_items (
@@ -53,7 +52,7 @@ CREATE TABLE IF NOT EXISTS receipt_items (
   vat DECIMAL(10,2) NULL,
   vat_percentage DECIMAL(7,6) NULL
 );
-CREATE INDEX idx_receipt_items_main ON receipt_items(main_id);
+CREATE INDEX IF NOT EXISTS idx_receipt_items_main ON receipt_items(main_id);
 
 -- Vendor directory populated by AI
 CREATE TABLE IF NOT EXISTS companies (
@@ -115,9 +114,9 @@ CREATE TABLE IF NOT EXISTS creditcard_invoices_main (
   note_4 TEXT NULL,
   note_5 TEXT NULL
 );
-CREATE UNIQUE INDEX ux_creditcard_invoices_number ON creditcard_invoices_main(invoice_number);
-CREATE INDEX ix_creditcard_invoices_date ON creditcard_invoices_main(invoice_date);
-CREATE INDEX ix_creditcard_invoices_number_long ON creditcard_invoices_main(invoice_number_long);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_creditcard_invoices_number ON creditcard_invoices_main(invoice_number);
+CREATE INDEX IF NOT EXISTS ix_creditcard_invoices_date ON creditcard_invoices_main(invoice_date);
+CREATE INDEX IF NOT EXISTS ix_creditcard_invoices_number_long ON creditcard_invoices_main(invoice_number_long);
 
 CREATE TABLE IF NOT EXISTS creditcard_invoice_items (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -143,9 +142,9 @@ CREATE TABLE IF NOT EXISTS creditcard_invoice_items (
   project_code VARCHAR(100) NULL,
   CONSTRAINT fk_creditcard_items_main FOREIGN KEY (main_id) REFERENCES creditcard_invoices_main(id) ON DELETE CASCADE ON UPDATE CASCADE
 );
-CREATE UNIQUE INDEX ux_creditcard_invoice_line ON creditcard_invoice_items(main_id, line_no);
-CREATE INDEX ix_creditcard_invoice_purchase_date ON creditcard_invoice_items(purchase_date);
-CREATE INDEX ix_creditcard_invoice_merchant ON creditcard_invoice_items(merchant_name);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_creditcard_invoice_line ON creditcard_invoice_items(main_id, line_no);
+CREATE INDEX IF NOT EXISTS ix_creditcard_invoice_purchase_date ON creditcard_invoice_items(purchase_date);
+CREATE INDEX IF NOT EXISTS ix_creditcard_invoice_merchant ON creditcard_invoice_items(merchant_name);
 
 CREATE TABLE IF NOT EXISTS creditcard_receipt_matches (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,

@@ -102,7 +102,7 @@ function Banner({ banner, onDismiss }) {
   )
 }
 
-function SearchAndFilters({ searchTerm, onSearch, onReset, loading, pageSize, onPageSizeChange }) {
+function SearchAndFilters({ searchTerm, onSearch, onReset, loading, pageSize, onPageSizeChange, showDuplicates, onShowDuplicatesChange }) {
   const [value, setValue] = React.useState(searchTerm)
 
   React.useEffect(() => {
@@ -148,6 +148,17 @@ function SearchAndFilters({ searchTerm, onSearch, onReset, loading, pageSize, on
           </button>
         </form>
         <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-gray-300">
+            <input
+              type="checkbox"
+              className="dm-checkbox"
+              checked={showDuplicates}
+              onChange={(e) => onShowDuplicatesChange(e.target.checked)}
+              disabled={loading}
+            />
+            Visa dubbletter
+          </label>
+          <div className="w-px h-6 bg-gray-700 mx-2" />
           <label className="text-sm text-gray-300 whitespace-nowrap" htmlFor="page-size">
             Visa per sida:
           </label>
@@ -281,7 +292,7 @@ function usePreviewImage({ receiptId }) {
 
     if (!sources.length) {
       setState({ src: null, loading: false, error: null });
-      return () => {};
+      return () => { };
     }
 
     setState({ src: null, loading: true, error: null });
@@ -335,7 +346,7 @@ function ReceiptPreview({ receipt, onPreview, onCache }) {
         onCache(receipt.id, null);
       };
     }
-    return () => {};
+    return () => { };
   }, [receipt.id, src, onCache]);
 
   const label = error ? 'Kunde inte ladda' : 'Ingen bild';
@@ -402,7 +413,7 @@ function MapModal({ open, receipt, onClose }) {
                 width="100%"
                 height="100%"
                 style={{ border: 0, borderRadius: '8px' }}
-                src={`https://www.openstreetmap.org/export/embed.html?bbox=${lon-0.01},${lat-0.01},${lon+0.01},${lat+0.01}&layer=mapnik&marker=${lat},${lon}`}
+                src={`https://www.openstreetmap.org/export/embed.html?bbox=${lon - 0.01},${lat - 0.01},${lon + 0.01},${lat + 0.01}&layer=mapnik&marker=${lat},${lon}`}
                 title={`Karta för kvitto ${receipt.id}`}
               />
               <div style={{
@@ -615,6 +626,7 @@ export default function ReceiptsList() {
   const previewCache = React.useRef(new Map())
   const [sortColumn, setSortColumn] = React.useState('purchase_datetime')
   const [sortDirection, setSortDirection] = React.useState('desc')
+  const [showDuplicates, setShowDuplicates] = React.useState(false)
   const [logState, setLogState] = React.useState(INITIAL_LOG_STATE)
 
   const fetchReceiptLog = React.useCallback(async (receiptId) => {
@@ -710,6 +722,7 @@ export default function ReceiptsList() {
     if (filters.tag) params.set('tags', filters.tag)
     if (sortColumn) params.set('sort_by', sortColumn)
     if (sortDirection) params.set('sort_order', sortDirection)
+    if (showDuplicates) params.set('show_duplicates', 'true')
 
     try {
       const res = await api.fetch(`/ai/api/receipts?${params.toString()}`)
@@ -768,7 +781,7 @@ export default function ReceiptsList() {
         setLoading(false)
       }
     }
-  }, [page, pageSize, searchTerm, filters, sortColumn, sortDirection])
+  }, [page, pageSize, searchTerm, filters, sortColumn, sortDirection, showDuplicates])
 
   React.useEffect(() => {
     loadReceipts()
@@ -1230,6 +1243,8 @@ export default function ReceiptsList() {
         loading={loading}
         pageSize={pageSize}
         onPageSizeChange={handlePageSizeChange}
+        showDuplicates={showDuplicates}
+        onShowDuplicatesChange={setShowDuplicates}
       />
 
       <div className="card overflow-hidden">

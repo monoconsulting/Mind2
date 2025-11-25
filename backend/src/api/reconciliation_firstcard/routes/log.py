@@ -16,7 +16,6 @@ from flask import jsonify
 
 from .. import recon_bp
 from ..utils.db_helpers import load_invoice_document
-from ...log_helpers import clear_logs_for_file_ids, fetch_related_file_ids
 
 try:
     from services.db.connection import db_cursor
@@ -296,27 +295,3 @@ def invoice_log(invoice_id: str) -> Any:
         "metadata": metadata,
     }
     return jsonify(payload), 200
-
-
-@recon_bp.delete("/reconciliation/firstcard/invoices/<invoice_id>/log")
-def delete_invoice_log(invoice_id: str) -> Any:
-    """Clear workflow and AI logs for a FirstCard invoice."""
-    if db_cursor is None:  # pragma: no cover
-        return jsonify({"error": "db_unavailable"}), 503
-
-    doc = load_invoice_document(invoice_id)
-    if not doc:
-        return jsonify({"error": "not_found"}), 404
-
-    related_file_ids = fetch_related_file_ids(invoice_id)
-    if not related_file_ids:
-        return jsonify({"error": "not_found", "invoice_id": invoice_id}), 404
-
-    deleted_counts = clear_logs_for_file_ids(related_file_ids)
-    return jsonify(
-        {
-            "invoice_id": invoice_id,
-            "deleted": deleted_counts,
-            "related_file_ids": related_file_ids,
-        }
-    ), 200
