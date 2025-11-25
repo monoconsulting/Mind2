@@ -49,11 +49,14 @@
       "Bash(cat 0-trace.trace)",
       "Bash(cat resources/src@*.txt)",
       "Bash(cat 0-trace.network)",
-      "Bash(start \"\" \"web/test-results/_artifacts/2025-09-27_19-42_receipt_i-15fe7-ocess-preview-first-receipt-chromium-ultrawide/video.webm\")"
+      "Bash(start \"\" \"web/test-results/_artifacts/2025-09-27_19-42_receipt_i-15fe7-ocess-preview-first-receipt-chromium-ultrawide/video.webm\")",
+      "Bash(git log:*)"
     ],
     "deny": [],
     "ask": []
   },
   "enableAllProjectMcpServers": true,
-  "enabledMcpjsonServers": ["playwright"]
+  "enabledMcpjsonServers": [
+    "playwright"
+  ]
 }

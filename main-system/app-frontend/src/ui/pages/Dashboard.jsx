@@ -177,7 +177,7 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       <div className="text-secondary text-sm">
-        Daglig lägesbild över automatiserad kvittohantering och systemhälsa
+        Daglig lägesbild över automatiserad kvittohantering och systemhälsa (DEBUG)
       </div>
 
       <div className="stats-grid">
@@ -244,11 +244,10 @@ export default function Dashboard() {
             )}
           </button>
           {apiStatus && (
-            <div className={`p-4 rounded-lg text-sm ${
-              apiStatus.type === 'success'
+            <div className={`p-4 rounded-lg text-sm ${apiStatus.type === 'success'
                 ? 'bg-green-900 text-green-200 border border-green-700'
                 : 'bg-red-900 text-red-200 border border-red-700'
-            }`}>
+              }`}>
               {apiStatus.message}
             </div>
           )}
