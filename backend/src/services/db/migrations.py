@@ -89,9 +89,6 @@ def apply_migrations(seed_demo: bool = True) -> None:
                     # Ignore idempotency errors
                     if (
                         "Duplicate column name" in msg
-                        or "Duplicate key name" in msg
-                        or "Unknown column" in msg
-                        or "Can't DROP" in msg and "check that column/key exists" in msg
                         or "already exists" in msg
                         or "exists" in msg and "constraint" in msg.lower()
                     ):

@@ -5,5 +5,5 @@ ALTER TABLE companies MODIFY COLUMN orgnr VARCHAR(22) NULL;
 -- Update unique constraint to handle NULL values properly
 -- MySQL allows multiple NULL values in unique indexes
 -- This ensures we can have multiple companies without orgnr
--- Note: DROP INDEX IF EXISTS not supported, so we skip DROP and let CREATE fail if index exists
+DROP INDEX IF EXISTS ux_companies_orgnr ON companies;
 CREATE UNIQUE INDEX ux_companies_orgnr ON companies(orgnr);

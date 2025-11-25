@@ -117,6 +117,7 @@ export default function ManualMatch() {
   const [loadingRight, setLoadingRight] = useState(false)
   const [matching, setMatching] = useState(false)
   const [banner, setBanner] = useState(null)
+  const [filterStatus, setFilterStatus] = useState('all') // 'all', 'matched', 'unmatched'
 
   const [fcSortColumn, setFcSortColumn] = useState('purchase_date')
   const [fcSortDirection, setFcSortDirection] = useState('asc')
@@ -164,11 +165,20 @@ export default function ManualMatch() {
     }
   }, [receiptSortColumn])
 
-  // Sorted FC items (client-side sorting)
+  // Sorted and Filtered FC items
   const sortedFcItems = useMemo(() => {
-    if (!fcSortColumn) return fcItems
+    let items = [...fcItems]
 
-    const sorted = [...fcItems].sort((a, b) => {
+    // Filter
+    if (filterStatus === 'matched') {
+      items = items.filter(i => i.matched !== 0)
+    } else if (filterStatus === 'unmatched') {
+      items = items.filter(i => i.matched === 0)
+    }
+
+    if (!fcSortColumn) return items
+
+    return items.sort((a, b) => {
       let aVal, bVal
 
       switch (fcSortColumn) {
@@ -196,9 +206,50 @@ export default function ManualMatch() {
       if (aVal > bVal) return fcSortDirection === 'asc' ? 1 : -1
       return 0
     })
+  }, [fcItems, fcSortColumn, fcSortDirection, filterStatus])
 
-    return sorted
-  }, [fcItems, fcSortColumn, fcSortDirection])
+  // Sorted and Filtered Receipts
+  const sortedReceipts = useMemo(() => {
+    let items = [...receipts]
+
+    // Filter
+    if (filterStatus === 'matched') {
+      items = items.filter(r => matchedReceiptIds.has(r.id))
+    } else if (filterStatus === 'unmatched') {
+      items = items.filter(r => !matchedReceiptIds.has(r.id))
+    }
+
+    if (!receiptSortColumn) return items
+
+    return items.sort((a, b) => {
+      let aVal, bVal
+
+      switch (receiptSortColumn) {
+        case 'purchase_datetime':
+          aVal = a.purchase_datetime || a.purchase_date || ''
+          bVal = b.purchase_datetime || b.purchase_date || ''
+          break
+        case 'company':
+          aVal = (a.merchant || a.company || '').toLowerCase()
+          bVal = (b.merchant || b.company || '').toLowerCase()
+          break
+        case 'gross_amount':
+          aVal = Number(a.gross_amount || a.total_gross || 0)
+          bVal = Number(b.gross_amount || b.total_gross || 0)
+          break
+        case 'status':
+          aVal = matchedReceiptIds.has(a.id) ? 1 : 0
+          bVal = matchedReceiptIds.has(b.id) ? 1 : 0
+          break
+        default:
+          return 0
+      }
+
+      if (aVal < bVal) return receiptSortDirection === 'asc' ? -1 : 1
+      if (aVal > bVal) return receiptSortDirection === 'asc' ? 1 : -1
+      return 0
+    })
+  }, [receipts, receiptSortColumn, receiptSortDirection, filterStatus, matchedReceiptIds])
 
   // Fetch statements
   const fetchStatements = useCallback(async () => {
@@ -313,7 +364,7 @@ export default function ManualMatch() {
       while ((page - 1) * pageSize < total) {
         const params = new URLSearchParams({
           from,
-          to,
+          to: `${to} 23:59:59`,
           page: String(page),
           page_size: String(pageSize),
         })
@@ -404,6 +455,24 @@ export default function ManualMatch() {
       setMatching(false)
     }
   }, [canMatch, fcItems, selectedItemId, selectedReceiptId, loadFcItems, loadReceipts])
+
+  const handleDeleteReceipt = useCallback(async (id) => {
+    if (!window.confirm('Är du säker på att du vill radera detta kvitto?')) return
+    try {
+      const res = await api.fetch(`/ai/api/receipts/${id}`, { method: 'DELETE' })
+      if (res.ok) {
+        setBanner({ type: 'success', message: 'Kvitto raderat' })
+        // Remove locally
+        setReceipts(prev => prev.filter(r => r.id !== id))
+        if (selectedReceiptId === id) setSelectedReceiptId(null)
+      } else {
+        setBanner({ type: 'error', message: 'Kunde inte radera kvitto' })
+      }
+    } catch (err) {
+      console.error('Delete error', err)
+      setBanner({ type: 'error', message: 'Ett fel inträffade vid radering' })
+    }
+  }, [selectedReceiptId])
 
   // Modal handlers
   const openReceiptModal = useCallback((receiptId) => {
@@ -579,14 +648,19 @@ export default function ManualMatch() {
             )}
           </div>
 
-          <div className="flex-1 flex justify-center lg:justify-end">
-            <button
-              className="btn btn-primary"
-              disabled={!canMatch}
-              onClick={handleMatch}
-            >
-              {matching ? 'MATCHAR...' : 'MATCHA'}
-            </button>
+          <div className="flex-1 flex justify-center lg:justify-end items-center gap-4">
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-gray-300">Visa</label>
+              <select
+                className="dm-input w-40"
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value)}
+              >
+                <option value="all">Alla</option>
+                <option value="matched">Matchade</option>
+                <option value="unmatched">Ej matchade</option>
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -734,22 +808,31 @@ export default function ManualMatch() {
                         )}
                       </div>
                     </th>
-                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleReceiptSort('status')}>
+                      <div className="flex items-center gap-1">
+                        Status
+                        {receiptSortColumn === 'status' && (
+                          <span>{receiptSortDirection === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                      </div>
+                    </th>
                     <th className="px-4 py-3 text-center">Åtgärd</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {receipts.length === 0 && !loadingRight ? (
+                  {sortedReceipts.length === 0 && !loadingRight ? (
                     <tr className="border-t border-gray-700">
-                      <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
                         Inga kvitton för vald period.
                       </td>
                     </tr>
                   ) : (
-                    receipts.map((r) => {
+                    sortedReceipts.map((r) => {
                       const checked = selectedReceiptId === r.id
                       const isMatched = matchedReceiptIds.has(r.id)
                       const selectable = !isMatched
+                      const showMatchButton = checked && canMatch
+
                       return (
                         <tr key={r.id} className="border-t border-gray-700 hover:bg-gray-800/30">
                           <td className="px-4 py-3 align-top">
@@ -777,13 +860,33 @@ export default function ManualMatch() {
                             </span>
                           </td>
                           <td className="px-4 py-3 text-center align-top">
-                            <button
-                              type="button"
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => openReceiptModal(r.id)}
-                            >
-                              <FiEye /> Visa
-                            </button>
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => openReceiptModal(r.id)}
+                                title="Visa"
+                              >
+                                <FiEye />
+                              </button>
+                              <button
+                                type="button"
+                                className={`btn btn-sm ${showMatchButton ? 'btn-primary' : 'btn-secondary opacity-50 cursor-not-allowed'}`}
+                                onClick={handleMatch}
+                                disabled={!showMatchButton}
+                                title="Matcha"
+                              >
+                                Matcha
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-danger btn-sm"
+                                onClick={() => handleDeleteReceipt(r.id)}
+                                title="Radera"
+                              >
+                                Radera
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       )

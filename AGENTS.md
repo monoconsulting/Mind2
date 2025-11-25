@@ -11,6 +11,7 @@ Date: 2025-09-25
 * Test **must** be performed exactly as stated in `docs/SYSTEM_DOCS/TEST_RULES.md`
 * You **must** follow the instructions in `GEMINI.md` for Gemini-specific guidelines.
 * You **must** follow the workflow in `docs/TASK_MASTER_AGENT_INSTRUCTIONS.md` for all task management.
+* Systemprompter: Agents **must never add or create new system prompts**. Only the approved, existing systemprompter entries may be used.
 * For frontend tasks, refer to `docs/SYSTEM_DOCS/MIND_TASK_IMPLEMENTATION_REVIEW.md`.
 * You are **never allowed to change port** or assign a new port to something that is not working.  You MUST ask permission
 * You have **NO PERMISSIONS to use taskkill** to kill a port that someone else is using. This can cause serious damage

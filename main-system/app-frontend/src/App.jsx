@@ -26,11 +26,10 @@ function NavButton({ icon: Icon, label, to, isActive, hasSubmenu, isExpanded, on
 
   return (
     <button
-      className={`w-full text-left flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
-        isActive
-          ? 'active bg-red-600 text-white'
-          : 'text-gray-400 hover:text-white hover:bg-red-600 hover:bg-opacity-20'
-      }`}
+      className={`w-full text-left flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${isActive
+        ? 'active bg-red-600 text-white'
+        : 'text-gray-400 hover:text-white hover:bg-red-600 hover:bg-opacity-20'
+        }`}
       onClick={handleClick}
     >
       <Icon className="text-lg flex-shrink-0" />
@@ -46,11 +45,10 @@ function SubNavButton({ icon: Icon, label, to, isActive }) {
   const navigate = useNavigate()
   return (
     <button
-      className={`w-full text-left flex items-center gap-3 pl-12 pr-4 py-2 rounded-lg transition-all duration-200 text-sm ${
-        isActive
-          ? 'bg-red-600 bg-opacity-50 text-white'
-          : 'text-gray-400 hover:text-white hover:bg-red-600 hover:bg-opacity-10'
-      }`}
+      className={`w-full text-left flex items-center gap-3 pl-12 pr-4 py-2 rounded-lg transition-all duration-200 text-sm ${isActive
+        ? 'bg-red-600 bg-opacity-50 text-white'
+        : 'text-gray-400 hover:text-white hover:bg-red-600 hover:bg-opacity-10'
+        }`}
       onClick={() => navigate(to)}
     >
       <Icon className="text-base flex-shrink-0" />
