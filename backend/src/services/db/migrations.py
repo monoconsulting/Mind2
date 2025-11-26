@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from pathlib import Path
 from typing import Iterable
 
 from .connection import db_cursor
-import re
 
 # Resolve migrations directory in both dev (repo) and container (/app) contexts
 def _resolve_migrations_dir() -> Path:
+    """Return the canonical migrations directory (`database/migrations`)."""
     here = Path(__file__).resolve()
     # Try repo layout: backend/src/services/db/ -> repo/database/migrations
     try:
@@ -24,14 +25,59 @@ def _resolve_migrations_dir() -> Path:
     if container_candidate.exists():
         return container_candidate
     # Fallback to sibling database/migrations relative to source tree
+    # Note: backend/migrations is deprecated and not used by the migration runner.
     return here.parents[2] / "database" / "migrations"
 
 
+# database/migrations is the single source of truth for schema migrations.
+# backend/migrations is deprecated and intentionally ignored by the migration runner.
 MIGRATIONS_DIR = _resolve_migrations_dir()
 
 
+def _validate_and_list_sql_files() -> list[Path]:
+    """Return validated .sql migrations sorted by name.
+
+    Rules:
+    - only .sql files are considered
+    - file name must start with four digits + underscore (NNNN_description.sql)
+    - prefixes must be unique
+    """
+    sql_files: list[Path] = []
+    prefixes: set[str] = set()
+    for path in MIGRATIONS_DIR.iterdir():
+        if not path.is_file():
+            continue
+        if path.suffix.lower() != ".sql":
+            # Non-SQL files (README/SUMMARY/etc.) are ignored safely.
+            continue
+        # Skip deprecated stubs kept for history only
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                first_nonempty = ""
+                for line in fh:
+                    stripped = line.strip()
+                    if stripped:
+                        first_nonempty = stripped
+                        break
+                if first_nonempty.startswith("-- Deprecated migration"):
+                    continue
+        except OSError:
+            # If unreadable, fall through to naming validation which will raise
+            pass
+        name = path.name
+        match = re.match(r"^(\d{4})_.+\.sql$", name)
+        if not match:
+            raise ValueError(f"Invalid migration filename: {name}")
+        prefix = match.group(1)
+        if prefix in prefixes:
+            raise ValueError(f"Duplicate migration prefix detected: {prefix}")
+        prefixes.add(prefix)
+        sql_files.append(path)
+    return sorted(sql_files)
+
+
 def list_migration_files() -> Iterable[Path]:
-    return sorted(MIGRATIONS_DIR.glob("*.sql"))
+    return _validate_and_list_sql_files()
 
 
 def _split_sql(sql: str) -> list[str]:

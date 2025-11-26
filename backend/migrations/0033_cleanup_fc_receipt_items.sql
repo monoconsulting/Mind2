@@ -1,0 +1,38 @@
+-- Deprecated: Migration moved to 0035_cleanup_fc_receipt_items.sql
+-- This file is no longer executed. Kept for historical reference only.
+
+-- -- Migration 0033: Clean up FirstCard data from receipt_items
+-- -- Date: 2025-10-14
+-- -- Purpose: Remove FC credit card invoice items that were incorrectly imported to receipt_items
+-- --          These should be in creditcard_invoices_main and creditcard_invoice_items instead
+--
+-- -- Create backup table first
+-- CREATE TABLE IF NOT EXISTS receipt_items_fc_backup AS
+-- SELECT ri.*
+-- FROM receipt_items ri
+-- JOIN unified_files uf ON ri.main_id = uf.id
+-- WHERE uf.submitted_by = 'invoice_upload'
+--   AND uf.original_filename LIKE 'FC_%';
+--
+-- -- Show what will be deleted
+-- SELECT
+--   COUNT(*) as items_to_delete,
+--   COUNT(DISTINCT ri.main_id) as affected_files
+-- FROM receipt_items ri
+-- JOIN unified_files uf ON ri.main_id = uf.id
+-- WHERE uf.submitted_by = 'invoice_upload'
+--   AND uf.original_filename LIKE 'FC_%';
+--
+-- -- Delete the incorrect FC data from receipt_items
+-- DELETE ri FROM receipt_items ri
+-- JOIN unified_files uf ON ri.main_id = uf.id
+-- WHERE uf.submitted_by = 'invoice_upload'
+--   AND uf.original_filename LIKE 'FC_%';
+--
+-- -- Verify deletion
+-- SELECT
+--   COUNT(*) as remaining_fc_items
+-- FROM receipt_items ri
+-- JOIN unified_files uf ON ri.main_id = uf.id
+-- WHERE uf.submitted_by = 'invoice_upload'
+--   AND uf.original_filename LIKE 'FC_%';
