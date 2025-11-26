@@ -44,3 +44,7 @@ temp
 # Large files
 *.zip
 _dbdumps/
+
+# Database dumps (may contain secrets)
+.dbbackup/
+database_dump*.sql
