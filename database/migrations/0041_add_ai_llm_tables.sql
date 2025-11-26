@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS ai_system_prompts (
 -- Insert default system prompts (using INSERT IGNORE for MySQL)
 INSERT IGNORE INTO ai_system_prompts (prompt_key, title, description, prompt_content) VALUES
     ('document_analysis', 'Dokumentanalys', 'Analyserar kvitton, fakturor och andra dokument', ''),
-    ('expense_classification', 'Utlägg eller företag', 'Avgör om ett kvitto är ett personligt utlägg eller företagskostnad', ''),
+    ('expense_classification', 'UtlÃ¤gg eller fÃ¶retag', 'AvgÃ¶r om ett kvitto Ã¤r ett personligt utlÃ¤gg eller fÃ¶retagskostnad', ''),
     ('receipt_items_classification', 'Klassificering av kvittoposter', 'Kategoriserar och sorterar kvittodata', ''),
     ('accounting', 'Kontering', 'Hanterar all konterings-relaterad information', ''),
     ('first_card', 'First Card', 'Matchar FirstCard-fakturor mot befintliga kvitton', '');
