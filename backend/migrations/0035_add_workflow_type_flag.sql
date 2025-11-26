@@ -1,0 +1,41 @@
+-- Deprecated: Migration moved to 0037_add_workflow_type_flag.sql
+-- This file is no longer executed. Kept for historical reference only.
+
+-- -- Migration 0035: Add workflow_type flag for hard pipeline enforcement
+-- -- Date: 2025-10-14
+-- -- Purpose: Add explicit workflow_type column to prevent FC files from EVER going through wrong pipeline
+--
+-- -- Add workflow_type column
+-- ALTER TABLE unified_files
+-- ADD COLUMN workflow_type VARCHAR(32) DEFAULT 'receipt' COMMENT 'Determines which processing pipeline: receipt or creditcard_invoice';
+--
+-- -- Create index for fast lookups
+-- CREATE INDEX idx_workflow_type ON unified_files(workflow_type);
+--
+-- -- Mark all existing FC files as creditcard_invoice workflow
+-- UPDATE unified_files
+-- SET workflow_type = 'creditcard_invoice'
+-- WHERE submitted_by = 'invoice_upload'
+--   AND original_filename LIKE 'FC_%';
+--
+-- -- Verify the update
+-- SELECT
+--   workflow_type,
+--   COUNT(*) as file_count,
+--   GROUP_CONCAT(DISTINCT file_type) as file_types
+-- FROM unified_files
+-- WHERE submitted_by = 'invoice_upload'
+--   AND original_filename LIKE 'FC_%'
+-- GROUP BY workflow_type;
+--
+-- -- Show all FC files with their new workflow_type
+-- SELECT
+--   id,
+--   original_filename,
+--   file_type,
+--   workflow_type,
+--   submitted_by
+-- FROM unified_files
+-- WHERE submitted_by = 'invoice_upload'
+--   AND original_filename LIKE 'FC_%'
+-- ORDER BY original_filename;
