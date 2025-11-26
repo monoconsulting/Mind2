@@ -1,0 +1,71 @@
+-- Deprecated migration (2025-11-26)
+-- This migration has been replaced by database/migrations/0042_create_workflow_tracking.sql
+-- It is kept only for historical reference.
+-- The original SQL content has been commented out below.
+--
+-- ORIGINAL CONTENT (commented out)
+-- -- Workflow tracking tables for redesigned ingestion
+--
+-- CREATE TABLE IF NOT EXISTS workflow_runs (
+--   id BIGINT AUTO_INCREMENT PRIMARY KEY,
+--   workflow_key VARCHAR(40) NOT NULL COMMENT 'e.g., WF1_RECEIPT, WF2_PDF_SPLIT',
+--   source_channel VARCHAR(40) NULL COMMENT 'upload_portal, ftp, api, ...',
+--   file_id VARCHAR(36) NULL COMMENT 'FK to unified_files.id (root file)',
+--   content_hash VARCHAR(64) NULL,
+--   current_stage VARCHAR(40) NOT NULL DEFAULT 'queued',
+--   status ENUM('queued','running','succeeded','failed','canceled') NOT NULL DEFAULT 'queued',
+--   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+--   KEY idx_wfr_workflow (workflow_key),
+--   KEY idx_wfr_file (file_id),
+--   KEY idx_wfr_hash (content_hash)
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+--
+-- CREATE TABLE IF NOT EXISTS workflow_stage_runs (
+--   id BIGINT AUTO_INCREMENT PRIMARY KEY,
+--   workflow_run_id BIGINT NOT NULL,
+--   stage_key VARCHAR(40) NOT NULL COMMENT 'e.g., dispatch, ocr, merge_ocr',
+--   status ENUM('queued','running','succeeded','failed','skipped') NOT NULL DEFAULT 'queued',
+--   started_at TIMESTAMP NULL,
+--   finished_at TIMESTAMP NULL,
+--   message TEXT NULL,
+--   INDEX idx_wfs_workflow_run (workflow_run_id),
+--   CONSTRAINT fk_wfs_wfr FOREIGN KEY (workflow_run_id)
+--     REFERENCES workflow_runs(id) ON DELETE CASCADE
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+--
+--
+-- -- Read-only views for quick diagnostics
+-- ALTER TABLE workflow_runs CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+-- ALTER TABLE workflow_stage_runs CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+--
+-- CREATE OR REPLACE VIEW v_workflow_overview AS
+-- SELECT
+--   wfr.id AS workflow_run_id,
+--   wfr.workflow_key,
+--   wfr.source_channel,
+--   wfr.file_id,
+--   wfr.content_hash,
+--   wfr.current_stage,
+--   wfr.status,
+--   wfr.created_at,
+--   wfr.updated_at,
+--   uf.original_filename,
+--   uf.mime_type,
+--   uf.file_suffix
+-- FROM workflow_runs wfr
+-- LEFT JOIN unified_files uf ON uf.id = wfr.file_id;
+--
+-- CREATE OR REPLACE VIEW v_workflow_stages AS
+-- SELECT
+--   wfr.id AS workflow_run_id,
+--   wfr.workflow_key,
+--   wfs.stage_key,
+--   wfs.status,
+--   wfs.started_at,
+--   wfs.finished_at,
+--   TIMESTAMPDIFF(SECOND, wfs.started_at, wfs.finished_at) AS duration_s,
+--   LEFT(wfs.message, 200) AS message_snippet
+-- FROM workflow_stage_runs wfs
+-- JOIN workflow_runs wfr ON wfr.id = wfs.workflow_run_id
+-- ORDER BY wfr.id DESC, wfs.id ASC;

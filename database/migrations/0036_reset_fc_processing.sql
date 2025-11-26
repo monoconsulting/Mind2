@@ -1,0 +1,55 @@
+-- Migration 0034: Reset FirstCard files for reprocessing
+-- Date: 2025-10-14
+-- Purpose: Clean processing history and reset FC files to be reprocessed through correct pipeline
+
+-- Backup processing history
+CREATE TABLE IF NOT EXISTS ai_processing_history_fc_backup AS
+SELECT aph.*
+FROM ai_processing_history aph
+WHERE aph.file_id IN (
+  SELECT id FROM unified_files
+  WHERE submitted_by = 'invoice_upload'
+    AND original_filename LIKE 'FC_%'
+);
+
+-- Show what will be deleted
+SELECT
+  COUNT(*) as history_records_to_delete,
+  COUNT(DISTINCT file_id) as affected_files
+FROM ai_processing_history
+WHERE file_id IN (
+  SELECT id FROM unified_files
+  WHERE submitted_by = 'invoice_upload'
+    AND original_filename LIKE 'FC_%'
+);
+
+-- Delete incorrect processing history
+DELETE FROM ai_processing_history
+WHERE file_id IN (
+  SELECT id FROM unified_files
+  WHERE submitted_by = 'invoice_upload'
+    AND original_filename LIKE 'FC_%'
+);
+
+-- Verify deletion
+SELECT
+  COUNT(*) as remaining_history_records
+FROM ai_processing_history
+WHERE file_id IN (
+  SELECT id FROM unified_files
+  WHERE submitted_by = 'invoice_upload'
+    AND original_filename LIKE 'FC_%'
+);
+
+-- Show files ready for reprocessing
+SELECT
+  id,
+  original_filename,
+  file_type,
+  submitted_by,
+  created_at
+FROM unified_files
+WHERE submitted_by = 'invoice_upload'
+  AND original_filename LIKE 'FC_%'
+ORDER BY created_at;
+
