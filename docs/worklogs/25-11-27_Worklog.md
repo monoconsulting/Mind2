@@ -7,7 +7,7 @@
 - **What changed:** Phase B implementation - Central status definitions module with 4 enums (InvoiceProcessingStatus, InvoiceDocumentStatus, InvoiceLineMatchStatus, AiStatus). Replaced all hardcoded status strings in services/tasks/* and api/* with constants. Updated documentation.
 - **Why:** Consolidate status values to prevent drift, enable type safety, and ensure consistency across codebase
 - **Risk level:** Low (same string values, only refactoring)
-- **Deploy status:** Pending commit/push
+- **Deploy status:** Done (pushed to dev)
 
 ---
 
@@ -17,7 +17,7 @@
 - **Author:** Claude Code
 - **Project/Repo:** monoconsulting/Mind2
 - **Branch:** `dev`
-- **Commit range:** 26cf0a8..a7f9d05
+- **Commit range:** a7f9d05..bb8118c
 - **Related tickets/PRs:** N/A
 - **Template version:** 1.1
 
@@ -59,7 +59,7 @@
 
 | Time | Title | Change Type | Scope | Tickets | Commits | Files Touched |
 |---|---|---|---|---|---|---|
-| 17:15 | Phase B: Central status definitions & constant replacement | refactor | `services, api, docs` | PHASE-B | `f6e5ca4` | `status_constants.py, invoice_status.py, tasks/*, api/*, docs/*` |
+| 17:15 | Phase B: Central status definitions & constant replacement | refactor | `services, api, docs` | PHASE-B | `bb8118c` | `status_constants.py, invoice_status.py, tasks/*, api/*, docs/*` |
 | 15:42 | Cleanup deprecated suffixes and reorganize docs | chore | `migrations, docs` | N/A | `a7f9d05` | `database/migrations/*, docs/features/*` |
 
 ### Entry Template (copy & paste below; newest entry goes **above** older ones)
@@ -71,7 +71,7 @@
 - **Scope (component/module):** `services/status_constants`, `services/invoice_status`, `services/tasks/*`, `api/reconciliation_firstcard/*`, `docs`
 - **Tickets/PRs:** PHASE-B (from MIND_FULL_UPDATE_2025-11-26_PHASE_B.md)
 - **Branch:** `dev`
-- **Commit(s):** `f6e5ca4`
+- **Commit(s):** `bb8118c`
 - **Environment:** N/A
 - **Commands run:**
   ```bash
@@ -291,7 +291,7 @@ N/A
 
 | Ticket | Commit SHA | Files | Test(s) |
 |---|---|---|---|
-| PHASE-B | `f6e5ca4` | status_constants.py, invoice_status.py, tasks/*, api/*, docs/* | test_invoice_status.py |
+| PHASE-B | `bb8118c` | status_constants.py, invoice_status.py, tasks/*, api/*, docs/* | test_invoice_status.py |
 | N/A | `a7f9d05` | migrations/*, docs/* | N/A |
 
 ---
