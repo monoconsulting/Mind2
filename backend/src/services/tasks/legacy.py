@@ -8,6 +8,7 @@ from typing import Any, List
 
 from .common import (
     AccountingEntry,
+    AiStatus,
     Receipt,
     ReceiptStatus,
     celery_app,
@@ -87,7 +88,7 @@ def process_ocr(file_id: str) -> dict[str, Any]:
             purchase_iso=result.get("purchase_datetime"),
             ocr_raw=result.get("text"),
         )
-        ok = _update_file_status(file_id, status="ocr_done", confidence=float(result.get("confidence") or 0.9))
+        ok = _update_file_status(file_id, status=AiStatus.OCR_DONE.value, confidence=float(result.get("confidence") or 0.9))
     else:
         if file_type in {"invoice", "invoice_page"}:
             target_invoice = invoice_parent_id or file_id
@@ -99,7 +100,7 @@ def process_ocr(file_id: str) -> dict[str, Any]:
                 "status": "ocr_error",
                 "ok": False,
             }
-        ok = _update_file_status(file_id, status="ocr_done", confidence=0.5)
+        ok = _update_file_status(file_id, status=AiStatus.OCR_DONE.value, confidence=0.5)
 
     _history(file_id, job="ocr", status="success" if ok else "error")
 
@@ -151,7 +152,7 @@ def process_ocr(file_id: str) -> dict[str, Any]:
         except Exception:
             logger.debug("process_ai_pipeline fallback failed for %s", file_id)
 
-    return {"file_id": file_id, "status": "ocr_done", "ok": ok, "real": bool(result)}
+    return {"file_id": file_id, "status": AiStatus.OCR_DONE.value, "ok": ok, "real": bool(result)}
 
 
 @celery_app.task(name="process_classification")
@@ -254,10 +255,10 @@ def process_validation(file_id: str) -> dict[str, Any]:
     report = validate_receipt(receipt)
     status_map = {
         ReceiptStatus.PASSED: "passed",
-        ReceiptStatus.MANUAL_REVIEW: "manual_review",
-        ReceiptStatus.FAILED: "failed",
+        ReceiptStatus.MANUAL_REVIEW: AiStatus.MANUAL_REVIEW.value,
+        ReceiptStatus.FAILED: AiStatus.FAILED.value,
     }
-    new_status = status_map.get(report.status, "manual_review")
+    new_status = status_map.get(report.status, AiStatus.MANUAL_REVIEW.value)
     ok = _update_file_status(file_id, status=new_status)
     _history(file_id, job="validation", status="success" if ok else "error")
 

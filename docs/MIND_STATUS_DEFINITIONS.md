@@ -14,7 +14,22 @@ Detta dokument listar ALLA statusar (stage_keys) som skrivs till `workflow_stage
 3. [WF3_FIRSTCARD_INVOICE - FirstCard-fakturor](#wf3_firstcard_invoice---firstcard-fakturor)
 4. [Återuppta/Omstart-statusar](#återupptaomstart-statusar)
 5. [Gemensamma Utfall-statusar](#gemensamma-utfall-statusar)
-6. [Svenska översättningar i frontend](#svenska-översättningar-i-frontend)
+6. [AiStatus Definitions](#aistatus-definitions)
+7. [Svenska översättningar i frontend](#svenska-översättningar-i-frontend)
+
+---
+
+## AiStatus Definitions
+
+Statusar för `unified_files.ai_status` (definierade i `backend/src/services/status_constants.py`):
+
+- `uploaded` - Fil uppladdad, väntar på bearbetning
+- `processing` - Bearbetning pågår (generell)
+- `ocr_done` - OCR slutförd
+- `ocr_failed` - OCR misslyckades
+- `manual_review` - Kräver manuell granskning
+- `completed` - Färdigbehandlad
+- `failed` - Misslyckades
 
 ---
 

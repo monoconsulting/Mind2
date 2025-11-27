@@ -24,6 +24,7 @@ from services.invoice_status import (
     InvoiceProcessingStatus,
     invoice_documents_supports_updated_at,
 )
+from services.status_constants import InvoiceLineMatchStatus
 from services.validation import _as_decimal
 
 try:
@@ -69,9 +70,9 @@ def _count_invoice_lines(invoice_id: str) -> tuple[int, int]:
     try:
         with db_cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT COUNT(*),
-                       SUM(CASE WHEN match_status IN ('auto','manual','confirmed') THEN 1 ELSE 0 END)
+                       SUM(CASE WHEN match_status IN ('{InvoiceLineMatchStatus.AUTO.value}','{InvoiceLineMatchStatus.MANUAL.value}','{InvoiceLineMatchStatus.CONFIRMED.value}') THEN 1 ELSE 0 END)
                   FROM invoice_lines
                  WHERE invoice_id=%s
                 """,
@@ -438,7 +439,7 @@ def _find_invoice_line_id_for_item(
                 "SELECT id",
                 "  FROM invoice_lines",
                 " WHERE invoice_id=%s",
-                "   AND (match_status IS NULL OR match_status IN ('pending','unmatched','auto'))",
+                f"   AND (match_status IS NULL OR match_status IN ('{InvoiceLineMatchStatus.PENDING.value}','{InvoiceLineMatchStatus.UNMATCHED.value}','{InvoiceLineMatchStatus.AUTO.value}'))",
             ]
             if merchant_hint:
                 query.append(" ORDER BY ")

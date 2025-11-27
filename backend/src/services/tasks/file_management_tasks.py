@@ -13,6 +13,7 @@ from .common import (
     AccountingEntry,
     InvoiceDocumentStatus,
     InvoiceProcessingStatus,
+    AiStatus,
     Receipt,
     ReceiptItem,
     ReceiptStatus,
@@ -130,7 +131,7 @@ def _move_to_manual_review(file_id: str, reason: str | None = None) -> None:
     """Best-effort helper that marks a file as requiring manual review."""
 
     try:
-        set_ai_status(file_id, "manual_review")
+        set_ai_status(file_id, AiStatus.MANUAL_REVIEW.value)
     except Exception:
         logger.debug("Failed to set manual review status for %s", file_id)
     if reason:
@@ -205,7 +206,7 @@ def _maybe_advance_invoice_from_file(file_id: str, success: bool) -> None:
     page_status = metadata.get("page_status")
     if not isinstance(page_status, dict):
         page_status = {}
-    page_status[file_id] = "ocr_done" if success else "ocr_failed"
+    page_status[file_id] = AiStatus.OCR_DONE.value if success else AiStatus.OCR_FAILED.value
     metadata["page_status"] = page_status
 
     progress = _invoice_page_progress(invoice_id, metadata)

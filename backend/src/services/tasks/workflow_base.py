@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from .common import db_cursor, log_event, set_ai_status
+from .common import AiStatus, db_cursor, log_event, set_ai_status
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +263,7 @@ def begin_import_stage(workflow_run_id: Optional[int], stage_base: str, *, messa
         wfr = get_workflow_run(workflow_run_id)
         if wfr and wfr.get("file_id"):
             from services.db.files import set_ai_status
-            set_ai_status(wfr["file_id"], "processing")
+            set_ai_status(wfr["file_id"], AiStatus.PROCESSING.value)
             logger.info("Set ai_status='processing' for file_id=%s at stage=%s", wfr["file_id"], stage_base)
 
 def complete_import_stage(
@@ -292,7 +292,7 @@ def complete_import_stage(
         wfr = get_workflow_run(workflow_run_id)
         if wfr and wfr.get("file_id"):
             from services.db.files import set_ai_status
-            set_ai_status(wfr["file_id"], "completed")
+            set_ai_status(wfr["file_id"], AiStatus.COMPLETED.value)
             logger.info("Set ai_status='completed' for file_id=%s after finalize_ok", wfr["file_id"])
 
 def log_import_decision(

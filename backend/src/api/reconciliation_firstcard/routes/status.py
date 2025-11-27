@@ -28,10 +28,23 @@ except Exception:  # pragma: no cover
     db_cursor = None  # type: ignore
 
 
+from services.status_constants import (
+    AiStatus,
+    InvoiceProcessingStatus,
+    InvoiceLineMatchStatus,
+)
+
+
 logger = logging.getLogger(__name__)
 
 # OCR status constants
-_OCR_COMPLETE_STATUSES = {"ocr_done", "completed", "processed", "ready", "ai_done"}
+_OCR_COMPLETE_STATUSES = {
+    AiStatus.OCR_DONE.value,
+    AiStatus.COMPLETED.value,
+    "processed",
+    "ready",
+    "ai_done",
+}
 
 
 @recon_bp.get("/reconciliation/firstcard/invoices/<invoice_id>/status")
@@ -58,7 +71,7 @@ def invoice_status(invoice_id: str) -> Any:
             {
                 "file_id": record["id"],
                 "page_number": int(page_number),
-                "status": record.get("ai_status") or "uploaded",
+                "status": record.get("ai_status") or AiStatus.UPLOADED.value,
             }
         )
 
@@ -69,7 +82,7 @@ def invoice_status(invoice_id: str) -> Any:
                 {
                     "file_id": record["id"],
                     "page_number": idx,
-                    "status": record.get("ai_status") or "uploaded",
+                    "status": record.get("ai_status") or AiStatus.UPLOADED.value,
                 }
             )
 
@@ -91,7 +104,7 @@ def invoice_status(invoice_id: str) -> Any:
 
     processing_status = metadata.get("processing_status")
     if not processing_status:
-        processing_status = "ocr_done" if completed_pages >= total_pages and total_pages else "ocr_pending"
+        processing_status = InvoiceProcessingStatus.OCR_DONE.value if completed_pages >= total_pages and total_pages else InvoiceProcessingStatus.OCR_PENDING.value
 
     ai_summary = metadata.get("ai_summary")
     if not ai_summary:
@@ -292,7 +305,7 @@ def invoice_detail(invoice_id: str) -> Any:
                     "currency": currency,
                     "description": description or merchant_name or "",
                     "merchant_name": merchant_name,
-                    "match_status": match_status or "pending",
+                    "match_status": match_status or InvoiceLineMatchStatus.PENDING.value,
                     "match_score": float(match_score) if match_score is not None else None,
                     "matched_file_id": matched_file_id,
                     "matched_receipt": matched_receipt,
@@ -303,9 +316,9 @@ def invoice_detail(invoice_id: str) -> Any:
             # Build items array for backward compatibility (deprecated, but kept for now)
             # Map match_status to legacy matched flag
             matched_flag = 0
-            if match_status == "manual":
+            if match_status == InvoiceLineMatchStatus.MANUAL.value:
                 matched_flag = 2
-            elif match_status in ("auto", "confirmed"):
+            elif match_status in (InvoiceLineMatchStatus.AUTO.value, InvoiceLineMatchStatus.CONFIRMED.value):
                 matched_flag = 1
 
             items.append(
