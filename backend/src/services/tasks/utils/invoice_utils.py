@@ -7,12 +7,13 @@ from typing import Any, Optional
 from .._compat import get_override
 from ..common import (
     InvoiceProcessingStatus,
+    AiStatus,
     db_cursor as _base_db_cursor,
     invoice_documents_supports_updated_at,
 )
 
 _INVOICE_PAGE_COMPLETE_STATUSES = {
-    "ocr_done",
+    AiStatus.OCR_DONE.value,
     InvoiceProcessingStatus.OCR_DONE.value,
     InvoiceProcessingStatus.READY_FOR_MATCHING.value,
     InvoiceProcessingStatus.MATCHING_COMPLETED.value,

@@ -12,6 +12,7 @@ from typing import List, Optional
 from .common import (
     AccountingClassificationRequest,
     AccountingEntry,
+    AiStatus,
     AccountingRule,
     DataExtractionRequest,
     DocumentClassificationRequest,
@@ -133,7 +134,7 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
                 "utanf├╢r till├Ñtna typer)."
             )
             complete_import_stage(workflow_run_id, "detect_type", success=False, message=reason)
-            log_import_event(workflow_run_id, "manual_review", message=reason)
+            log_import_event(workflow_run_id, AiStatus.MANUAL_REVIEW.value, message=reason)
             _move_to_manual_review(file_id, reason)
             raise UnsupportedDocumentTypeError(reason)
         complete_import_stage(

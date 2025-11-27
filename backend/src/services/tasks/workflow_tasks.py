@@ -7,6 +7,7 @@ from typing import Any, Optional
 from .common import (
     InvoiceDocumentStatus,
     InvoiceProcessingStatus,
+    AiStatus,
     CreditCardInvoiceExtractionRequest,
     DocumentClassificationRequest,
     celery_app,
@@ -470,7 +471,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
                 f"AI1 klassificerade dokumentet som '{classification.document_type}' "
                 "men endast FC-fakturor till├Ñts i detta fl├╢de."
             )
-            log_import_event(workflow_run_id, "manual_review", message=reason)
+            log_import_event(workflow_run_id, AiStatus.MANUAL_REVIEW.value, message=reason)
             _move_to_manual_review(file_id, reason)
             log_finalize_failure(workflow_run_id, reason)
             mark_stage(

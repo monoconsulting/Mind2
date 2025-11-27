@@ -3,8 +3,19 @@ $sourceDir = "E:\projects\Mind2"
 
 # Get current date and time in YYMMDD_HH-MM format
 $timestamp = Get-Date -Format "yyMMdd_HH-mm"
-$zipFile = "$sourceDir\codebase_$timestamp.zip"
-$dumpFile = "$sourceDir\database_dump_$timestamp.sql"
+
+# Create backup folders if they don't exist
+$codebaseBackupDir = "$sourceDir\.codebasebackup"
+$dbBackupDir = "$sourceDir\.dbbackup"
+if (-not (Test-Path $codebaseBackupDir)) {
+    New-Item -ItemType Directory -Path $codebaseBackupDir -Force | Out-Null
+}
+if (-not (Test-Path $dbBackupDir)) {
+    New-Item -ItemType Directory -Path $dbBackupDir -Force | Out-Null
+}
+
+$zipFile = "$codebaseBackupDir\codebase_$timestamp.zip"
+$dumpFile = "$dbBackupDir\database_dump_$timestamp.sql"
 
 Write-Host "Creating codebase archive WITH DATABASE: codebase_$timestamp.zip" -ForegroundColor Green
 Write-Host ""
@@ -27,25 +38,38 @@ if (Test-Path $envFile) {
 if ($dbName -and $dbUser -and $dbPass) {
     Write-Host "Database: $dbName" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "Creating MySQL dump..." -ForegroundColor Yellow
 
-    # Create MySQL dump using docker exec
-    $dumpCommand = "docker exec mind2-mysql-1 mysqldump -u$dbUser -p$dbPass $dbName"
+    # Check if MySQL container is running
+    $containerStatus = docker inspect -f '{{.State.Running}}' mind2-mysql-1 2>$null
 
-    try {
-        Invoke-Expression "$dumpCommand > `"$dumpFile`" 2>&1"
+    if ($containerStatus -ne "true") {
+        Write-Host "Warning: MySQL container (mind2-mysql-1) is not running!" -ForegroundColor Red
+        Write-Host "Start Docker services first: mind_docker_compose_up.bat" -ForegroundColor Yellow
+        Write-Host "Continuing without database dump..." -ForegroundColor Yellow
+        Write-Host ""
+    } else {
+        Write-Host "Creating MySQL dump..." -ForegroundColor Yellow
 
-        if (Test-Path $dumpFile) {
-            $dumpSize = (Get-Item $dumpFile).Length / 1MB
-            Write-Host "Database dump created: $([math]::Round($dumpSize, 2)) MB" -ForegroundColor Green
-        } else {
-            Write-Host "Warning: Database dump failed. Continuing without dump..." -ForegroundColor Red
+        # Create MySQL dump using docker exec
+        $dumpCommand = "docker exec mind2-mysql-1 mysqldump -u$dbUser -p$dbPass $dbName"
+
+        try {
+            Invoke-Expression "$dumpCommand 2>`$null" | Out-File -FilePath $dumpFile -Encoding utf8
+
+            if ((Test-Path $dumpFile) -and ((Get-Item $dumpFile).Length -gt 1000)) {
+                $dumpSize = (Get-Item $dumpFile).Length / 1MB
+                Write-Host "Database dump created: $([math]::Round($dumpSize, 2)) MB" -ForegroundColor Green
+            } else {
+                Write-Host "Warning: Database dump failed or is empty. Continuing without dump..." -ForegroundColor Red
+                if (Test-Path $dumpFile) { Remove-Item $dumpFile -Force }
+            }
+        } catch {
+            Write-Host "Warning: Could not create database dump. Error: $_" -ForegroundColor Red
+            Write-Host "Continuing without dump..." -ForegroundColor Yellow
+            if (Test-Path $dumpFile) { Remove-Item $dumpFile -Force }
         }
-    } catch {
-        Write-Host "Warning: Could not create database dump. Error: $_" -ForegroundColor Red
-        Write-Host "Continuing without dump..." -ForegroundColor Yellow
+        Write-Host ""
     }
-    Write-Host ""
 } else {
     Write-Host "Warning: Could not read database configuration from .env file" -ForegroundColor Red
     Write-Host "Continuing without database dump..." -ForegroundColor Yellow
@@ -82,7 +106,9 @@ $excludePatterns = @(
     "ui-design",
     "nul",
     "test-results",
-    "playwright-report"
+    "playwright-report",
+    ".codebasebackup",
+    ".dbbackup"
 )
 
 $excludeExtensions = @(
@@ -207,18 +233,20 @@ Compress-Archive -Path "$tempDir\*" -DestinationPath $zipFile -Force
 Write-Host "Cleaning up temporary files..." -ForegroundColor Cyan
 Remove-Item -Path $tempDir -Recurse -Force
 
-# Remove temporary database dump
-if (Test-Path $dumpFile) {
-    Remove-Item $dumpFile -Force
-}
-
 Write-Host ""
 Write-Host "Archive created successfully!" -ForegroundColor Green
-Write-Host "Location: $zipFile" -ForegroundColor White
-$fileSize = (Get-Item $zipFile).Length / 1MB
-Write-Host ("Size: {0:N2} MB" -f $fileSize) -ForegroundColor White
 Write-Host ""
-Write-Host "Contents:" -ForegroundColor Yellow
+Write-Host "Locations:" -ForegroundColor Yellow
+Write-Host "  Codebase: $zipFile" -ForegroundColor White
+$fileSize = (Get-Item $zipFile).Length / 1MB
+Write-Host ("  Size: {0:N2} MB" -f $fileSize) -ForegroundColor Gray
+if ($hasDump) {
+    Write-Host "  Database: $dumpFile" -ForegroundColor White
+    $dumpSize = (Get-Item $dumpFile).Length / 1MB
+    Write-Host ("  Size: {0:N2} MB" -f $dumpSize) -ForegroundColor Gray
+}
+Write-Host ""
+Write-Host "Contents of zip:" -ForegroundColor Yellow
 Write-Host "  - Complete codebase (excluding node_modules, cache, media files)" -ForegroundColor White
 if ($hasDump) {
     Write-Host "  - Full MySQL database dump (database_dump.sql)" -ForegroundColor White

@@ -45,6 +45,7 @@ temp
 *.zip
 _dbdumps/
 
-# Database dumps (may contain secrets)
+# Backup folders (may contain secrets)
 .dbbackup/
+.codebasebackup/
 database_dump*.sql

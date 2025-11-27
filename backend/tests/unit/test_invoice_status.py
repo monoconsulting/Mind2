@@ -5,10 +5,11 @@ from contextlib import contextmanager
 import pytest
 
 from services import invoice_status
-from services.invoice_status import (
+from services.status_constants import (
     InvoiceDocumentStatus,
     InvoiceLineMatchStatus,
     InvoiceProcessingStatus,
+    AiStatus,
 )
 
 
@@ -166,3 +167,88 @@ def test_transition_line_status_and_link(monkeypatch):
     assert db.lines[1]["matched_file_id"] == "receipt-1"
     assert calls[-1][0] == "line_match_status"
     assert calls[-1][2] == InvoiceLineMatchStatus.AUTO.value
+
+
+def test_constants_match_documented_values():
+    """Verify that the Enums match the documented values in FIRSTCARD_STATUS_FLOW.md."""
+
+    # processing_status
+    expected_processing = {
+        "uploaded",
+        "ocr_pending",
+        "ocr_done",
+        "ai_processing",
+        "ready_for_matching",
+        "matching_completed",
+        "completed",
+        "failed",
+    }
+    actual_processing = {s.value for s in InvoiceProcessingStatus}
+    assert actual_processing == expected_processing
+
+    # document_status
+    expected_document = {
+        "imported",
+        "matching",
+        "partially_matched",
+        "matched",
+        "processing",
+        "completed",
+        "failed",
+    }
+    actual_document = {s.value for s in InvoiceDocumentStatus}
+    assert actual_document == expected_document
+
+    # match_status
+    expected_match = {
+        "pending",
+        "auto",
+        "manual",
+        "confirmed",
+        "unmatched",
+        "ignored",
+    }
+    actual_match = {s.value for s in InvoiceLineMatchStatus}
+    assert actual_match == expected_match
+
+    # ai_status
+    expected_ai = {
+        "uploaded",
+        "processing",
+        "ocr_done",
+        "ocr_failed",
+        "manual_review",
+        "completed",
+        "failed",
+    }
+    actual_ai = {s.value for s in AiStatus}
+    assert actual_ai == expected_ai
+
+
+def test_transition_inferred_allowed_from(monkeypatch):
+    db = MiniDB()
+    monkeypatch.setattr(invoice_status, "db_cursor", db.cursor)
+
+    # Setup: doc-1 is UPLOADED.
+    # Transition UPLOADED -> OCR_PENDING is allowed in dictionary.
+
+    ok = invoice_status.transition_processing_status(
+        "doc-1",
+        InvoiceProcessingStatus.OCR_PENDING,
+        # allowed_from omitted
+    )
+
+    assert ok is True
+    assert db.documents["doc-1"]["processing_status"] == InvoiceProcessingStatus.OCR_PENDING.value
+
+    # Setup: doc-1 is now OCR_PENDING.
+    # Transition OCR_PENDING -> AI_PROCESSING is NOT allowed directly (must go via OCR_DONE).
+    # Dictionary: OCR_PENDING -> {OCR_DONE, FAILED}
+
+    ok = invoice_status.transition_processing_status(
+        "doc-1",
+        InvoiceProcessingStatus.AI_PROCESSING,
+    )
+
+    assert ok is False
+    assert db.documents["doc-1"]["processing_status"] == InvoiceProcessingStatus.OCR_PENDING.value

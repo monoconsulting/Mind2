@@ -34,6 +34,7 @@ from services.invoice_status import (
     transition_document_status,
     transition_processing_status,
 )
+from services.status_constants import InvoiceLineMatchStatus
 from observability.events import log_event
 
 try:
@@ -229,11 +230,11 @@ def system_summary() -> Any:
             }
 
             cur.execute(
-                """
+                f"""
                 SELECT
                     SUM(
                         CASE
-                            WHEN match_status IS NULL OR match_status IN ('pending', 'unmatched', '')
+                            WHEN match_status IS NULL OR match_status IN ('{InvoiceLineMatchStatus.PENDING.value}', '{InvoiceLineMatchStatus.UNMATCHED.value}', '')
                                 THEN 1 ELSE 0 END
                     ) AS unmatched,
                     COUNT(*) AS total
@@ -247,12 +248,12 @@ def system_summary() -> Any:
             }
 
             cur.execute(
-                """
+                f"""
                 SELECT
                     SUM(
                         CASE
                             WHEN processing_status IS NULL
-                                 OR processing_status NOT IN ('matching_completed', 'completed')
+                                 OR processing_status NOT IN ('{InvoiceProcessingStatus.MATCHING_COMPLETED.value}', '{InvoiceProcessingStatus.COMPLETED.value}')
                                  THEN 1 ELSE 0 END
                     ) AS incomplete,
                     COUNT(*) AS total

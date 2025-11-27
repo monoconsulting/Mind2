@@ -30,6 +30,7 @@ from models.ai_processing import (
 from services.ai_service import AIService
 from services.box_enrichment import run_box_enrichment
 from services.db.connection import db_cursor, get_connection
+from services.status_constants import InvoiceLineMatchStatus
 from api.middleware import auth_required
 from observability.events import log_event
 
@@ -503,7 +504,7 @@ def _potential_credit_matches(req: CreditCardMatchRequest) -> List[Tuple[Any, ..
         amount_value = req.amount
         amount_for_order = amount_value if amount_value is not None else Decimal("0")
         cursor.execute(
-            """
+            f"""
             SELECT il.id,
                    COALESCE(il.merchant_name, il.description) AS candidate_name,
                    il.amount
@@ -511,7 +512,7 @@ def _potential_credit_matches(req: CreditCardMatchRequest) -> List[Tuple[Any, ..
          LEFT JOIN creditcard_receipt_matches AS m ON m.invoice_item_id = il.id
              WHERE (%s IS NULL OR DATE(il.transaction_date) = %s)
                AND (%s IS NULL OR il.amount IS NULL OR ABS(il.amount - %s) <= 5)
-               AND (il.match_status IS NULL OR il.match_status IN ('pending','unmatched'))
+               AND (il.match_status IS NULL OR il.match_status IN ('{InvoiceLineMatchStatus.PENDING.value}','{InvoiceLineMatchStatus.UNMATCHED.value}'))
                AND m.invoice_item_id IS NULL
                AND (%s IS NULL OR il.invoice_id = %s)
           ORDER BY ABS(IFNULL(il.amount, %s) - %s)

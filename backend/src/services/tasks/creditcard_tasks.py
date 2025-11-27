@@ -16,6 +16,7 @@ from .common import (
     InvoiceDocumentStatus,
     InvoiceLineMatchStatus,
     InvoiceProcessingStatus,
+    AiStatus,
     _persist_credit_card_match,
     db_cursor,
     insert_unified_file,
@@ -166,7 +167,7 @@ def _ensure_creditcard_pages_and_ocr(
                         content_hash=page_hash,
                         submitted_by="workflow",
                         original_filename=f"{safe_filename}-page-{page_number:04d}.png",
-                        ai_status="uploaded",
+                        ai_status=AiStatus.UPLOADED.value,
                         mime_type="image/png",
                         file_suffix=".png",
                         original_file_id=file_id,
@@ -311,7 +312,7 @@ def _ensure_creditcard_pages_and_ocr(
             if text:
                 texts.append(text)
                 _update_file_fields(page_id, ocr_raw=text)
-                _update_file_status(page_id, "ocr_done")
+                _update_file_status(page_id, InvoiceProcessingStatus.OCR_DONE.value)
                 log_event(
                     logger,
                     "convert.creditcard.page_ocr_completed",
@@ -358,7 +359,7 @@ def _ensure_creditcard_pages_and_ocr(
         )
     other_data["combined_ocr_text"] = combined_text
     update_other_data(file_id, other_data)
-    _update_file_status(file_id, "ocr_done")
+    _update_file_status(file_id, InvoiceProcessingStatus.OCR_DONE.value)
 
     if combined_text:
         log_event(
@@ -412,9 +413,9 @@ def _load_credit_items_for_invoice(
 
         # Map match_status to legacy matched_flag for backward compatibility
         matched_flag = 0
-        if match_status == "manual":
+        if match_status == InvoiceLineMatchStatus.MANUAL.value:
             matched_flag = 2
-        elif match_status in ("auto", "confirmed"):
+        elif match_status in (InvoiceLineMatchStatus.AUTO.value, InvoiceLineMatchStatus.CONFIRMED.value):
             matched_flag = 1
 
         items.append(
@@ -540,9 +541,9 @@ def auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
                        match_status
                   FROM invoice_lines
                  WHERE invoice_id=%s
-                   AND (match_status IS NULL OR match_status IN ('pending','unmatched'))
+                   AND (match_status IS NULL OR match_status IN (%s, %s))
                 """,
-                (document_id,),
+                (document_id, InvoiceLineMatchStatus.PENDING.value, InvoiceLineMatchStatus.UNMATCHED.value),
             )
             pending_rows = cur.fetchall() or []
     except Exception:
@@ -922,10 +923,15 @@ def auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
             with db_cursor() as cur:
                 cur.execute(
                     (
-                        "SELECT COUNT(*), SUM(CASE WHEN match_status IN ('auto','manual','confirmed') "
-                        "THEN 1 ELSE 0 END) FROM invoice_lines WHERE invoice_id=%s"
+                        "SELECT COUNT(*), SUM(CASE WHEN match_status IN (%s, %s, %s) "
+                        "THEN 1 ELSE 0 END) FROM invoice_lines WHERE invoice_id=%%s"
                     ),
-                    (document_id,),
+                    (
+                        InvoiceLineMatchStatus.AUTO.value,
+                        InvoiceLineMatchStatus.MANUAL.value,
+                        InvoiceLineMatchStatus.CONFIRMED.value,
+                        document_id,
+                    ),
                 )
                 row = cur.fetchone()
                 if row:
@@ -966,10 +972,15 @@ def refresh_invoice_match_state(document_id: str) -> tuple[int, int]:
         with db_cursor() as cur:
             cur.execute(
                 (
-                    "SELECT COUNT(*), SUM(CASE WHEN match_status IN ('auto','manual','confirmed') "
-                    "THEN 1 ELSE 0 END) FROM invoice_lines WHERE invoice_id=%s"
+                    "SELECT COUNT(*), SUM(CASE WHEN match_status IN (%s, %s, %s) "
+                    "THEN 1 ELSE 0 END) FROM invoice_lines WHERE invoice_id=%%s"
                 ),
-                (document_id,),
+                (
+                    InvoiceLineMatchStatus.AUTO.value,
+                    InvoiceLineMatchStatus.MANUAL.value,
+                    InvoiceLineMatchStatus.CONFIRMED.value,
+                    document_id,
+                ),
             )
             row = cur.fetchone()
             if row:

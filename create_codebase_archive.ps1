@@ -3,7 +3,14 @@ $sourceDir = "E:\projects\Mind2"
 
 # Get current date and time in YYMMDD_HH-MM format
 $timestamp = Get-Date -Format "yyMMdd_HH-mm"
-$zipFile = "$sourceDir\codebase_$timestamp.zip"
+
+# Create backup folder if it doesn't exist
+$backupDir = "$sourceDir\.codebasebackup"
+if (-not (Test-Path $backupDir)) {
+    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+}
+
+$zipFile = "$backupDir\codebase_$timestamp.zip"
 
 Write-Host "Creating codebase archive (code only): codebase_$timestamp.zip" -ForegroundColor Green
 Write-Host ""
@@ -37,7 +44,9 @@ $excludePatterns = @(
     "ui-design",
     "nul",
     "test-results",
-    "playwright-report"
+    "playwright-report",
+    ".codebasebackup",
+    ".dbbackup"
 )
 
 $excludeExtensions = @(

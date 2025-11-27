@@ -21,6 +21,7 @@ from ..utils.db_helpers import (
     as_date,
     as_decimal,
 )
+from services.status_constants import InvoiceLineMatchStatus
 
 try:
     from services.db.connection import db_cursor
@@ -58,9 +59,9 @@ def invoice_lines(invoice_id: str) -> Any:
     try:
         with db_cursor() as cur:
             cur.execute(
-                "SELECT COUNT(1), "
-                "SUM(CASE WHEN match_status IN ('auto','manual','confirmed') THEN 1 ELSE 0 END) "
-                "FROM invoice_lines WHERE invoice_id=%s",
+                f"SELECT COUNT(1), "
+                f"SUM(CASE WHEN match_status IN ('{InvoiceLineMatchStatus.AUTO.value}','{InvoiceLineMatchStatus.MANUAL.value}','{InvoiceLineMatchStatus.CONFIRMED.value}') THEN 1 ELSE 0 END) "
+                f"FROM invoice_lines WHERE invoice_id=%s",
                 (invoice_id,),
             )
             row = cur.fetchone()

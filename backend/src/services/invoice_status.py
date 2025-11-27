@@ -31,6 +31,12 @@ except Exception:  # pragma: no cover
     db_cursor = None  # type: ignore
 
 from observability.metrics import record_invoice_state_assertion
+from services.status_constants import (
+    InvoiceDocumentStatus,
+    InvoiceLineMatchStatus,
+    InvoiceProcessingStatus,
+    AiStatus,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -84,43 +90,6 @@ def _record_fallback_timestamp(document_id: str) -> None:
             )
     except Exception:  # pragma: no cover - best-effort fallback
         logger.debug("Failed to persist fallback timestamp for invoice %s", document_id)
-
-
-class InvoiceProcessingStatus(str, Enum):
-    """Technical processing states for ``invoice_documents``."""
-
-    UPLOADED = "uploaded"
-    OCR_PENDING = "ocr_pending"
-    OCR_DONE = "ocr_done"
-    AI_PROCESSING = "ai_processing"
-    READY_FOR_MATCHING = "ready_for_matching"
-    MATCHING_COMPLETED = "matching_completed"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-class InvoiceDocumentStatus(str, Enum):
-    """Business lifecycle states exposed to end users."""
-
-    IMPORTED = "imported"
-    MATCHING = "matching"
-    MATCHED = "matched"
-    PARTIALLY_MATCHED = "partially_matched"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-class InvoiceLineMatchStatus(str, Enum):
-    """Per-line reconciliation states."""
-
-    PENDING = "pending"
-    AUTO = "auto"
-    MANUAL = "manual"
-    CONFIRMED = "confirmed"
-    UNMATCHED = "unmatched"
-    IGNORED = "ignored"
-
-
 # Allowed transitions expressed as ``current -> {next}``
 PROCESSING_TRANSITIONS: dict[InvoiceProcessingStatus, set[InvoiceProcessingStatus]] = {
     InvoiceProcessingStatus.UPLOADED: {
@@ -171,6 +140,10 @@ DOCUMENT_STATUS_TRANSITIONS: dict[InvoiceDocumentStatus, set[InvoiceDocumentStat
     InvoiceDocumentStatus.PARTIALLY_MATCHED: {
         InvoiceDocumentStatus.MATCHED,
         InvoiceDocumentStatus.COMPLETED,
+        InvoiceDocumentStatus.FAILED,
+    },
+    InvoiceDocumentStatus.PROCESSING: {
+        InvoiceDocumentStatus.MATCHING,
         InvoiceDocumentStatus.FAILED,
     },
     InvoiceDocumentStatus.COMPLETED: set(),
@@ -233,7 +206,7 @@ def _record_illegal(entity: str, object_id: str, target: str) -> None:
 def transition_processing_status(
     document_id: str,
     target: InvoiceProcessingStatus,
-    allowed_from: Iterable[InvoiceProcessingStatus],
+    allowed_from: Iterable[InvoiceProcessingStatus] | None = None,
 ) -> bool:
     """Atomically update ``invoice_documents.processing_status``.
 
@@ -241,9 +214,14 @@ def transition_processing_status(
         document_id: Invoice identifier.
         target: Target processing state.
         allowed_from: One or more current states that may transition into ``target``.
+                      If None, inferred from ``PROCESSING_TRANSITIONS`` (plus target for idempotency).
     """
 
-    states = tuple(allowed_from)
+    if allowed_from is None:
+        states = {s for s, dests in PROCESSING_TRANSITIONS.items() if target in dests}
+        states.add(target)
+    else:
+        states = set(allowed_from)
     if not states:
         raise ValueError("allowed_from must contain at least one state")
     if db_cursor is None:
@@ -273,9 +251,13 @@ def transition_processing_status(
 def transition_document_status(
     document_id: str,
     target: InvoiceDocumentStatus,
-    allowed_from: Iterable[InvoiceDocumentStatus],
+    allowed_from: Iterable[InvoiceDocumentStatus] | None = None,
 ) -> bool:
-    states = tuple(allowed_from)
+    if allowed_from is None:
+        states = {s for s, dests in DOCUMENT_STATUS_TRANSITIONS.items() if target in dests}
+        states.add(target)
+    else:
+        states = set(allowed_from)
     if not states:
         raise ValueError("allowed_from must contain at least one state")
     if db_cursor is None:
@@ -302,9 +284,13 @@ def transition_document_status(
 def transition_line_status(
     line_id: int,
     target: InvoiceLineMatchStatus,
-    allowed_from: Iterable[InvoiceLineMatchStatus],
+    allowed_from: Iterable[InvoiceLineMatchStatus] | None = None,
 ) -> bool:
-    states = tuple(allowed_from)
+    if allowed_from is None:
+        states = {s for s, dests in LINE_STATUS_TRANSITIONS.items() if target in dests}
+        states.add(target)
+    else:
+        states = set(allowed_from)
     if not states:
         raise ValueError("allowed_from must contain at least one state")
     if db_cursor is None:
@@ -332,11 +318,15 @@ def transition_line_status_and_link(
     matched_file_id: str,
     score: float | None,
     target: InvoiceLineMatchStatus,
-    allowed_from: Iterable[InvoiceLineMatchStatus],
+    allowed_from: Iterable[InvoiceLineMatchStatus] | None = None,
 ) -> bool:
     """Update ``match_status`` together with ``matched_file_id`` and ``match_score``."""
 
-    states = tuple(allowed_from)
+    if allowed_from is None:
+        states = {s for s, dests in LINE_STATUS_TRANSITIONS.items() if target in dests}
+        states.add(target)
+    else:
+        states = set(allowed_from)
     if not states:
         raise ValueError("allowed_from must contain at least one state")
     if db_cursor is None:

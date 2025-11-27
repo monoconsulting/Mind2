@@ -13,6 +13,7 @@ if 'mysql' not in sys.modules:
         raise RuntimeError('mysql connector stub is not available in tests')
 
     mysql_connector.connect = _stub_connect
+    mysql_connector.errors = types.ModuleType('mysql.connector.errors')
     mysql_pkg.connector = mysql_connector
     sys.modules['mysql'] = mysql_pkg
     sys.modules['mysql.connector'] = mysql_connector
