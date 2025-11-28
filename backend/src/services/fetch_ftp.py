@@ -13,6 +13,14 @@ from ftplib import FTP, FTP_TLS, error_perm
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
+from services.ftp_service import (
+    FTPConfig,
+    ftp_connection,
+    list_files,
+    download_file,
+    delete_file,
+)
+
 from services.storage import FileStorage
 from services.tasks import (
     begin_import_stage,
@@ -27,11 +35,17 @@ try:
 except Exception:  # pragma: no cover
     db_cursor = None  # type: ignore
 try:
-    from services.db.files import set_ai_status
+    from services.db.files import (
+        set_ai_status,
+        create_unified_file,
+        DuplicateFileError,
+    )
 except Exception:  # pragma: no cover
     def set_ai_status(file_id: str, status: str) -> bool:  # type: ignore
         _ = (file_id, status)
         return False
+    class DuplicateFileError(Exception): pass
+    def create_unified_file(*args, **kwargs): pass
 
 
 INSERT_HISTORY_SQL = """
@@ -140,116 +154,76 @@ def _insert_unified_file(
     file_id: str,
     filename: str,
     metadata: Dict[str, Any],
-    content_hash: str
-) -> None:
-    """Insert file record with metadata from FTP. AI will populate business data later."""
-    if db_cursor is None:
-        return
+    content_hash: str,
+    source: str = "ftp"
+) -> Optional[str]:
+    """Insert file record with metadata from FTP using create_unified_file. Returns workflow_run_id."""
+    file_suffix = _get_file_suffix(filename)
+    file_category = _get_file_category(file_suffix)
 
-    try:
-        file_suffix = _get_file_suffix(filename)
-        file_category = _get_file_category(file_suffix)
+    # Extract ONLY metadata fields (file system data, NOT business data)
+    original_file_id = metadata.get('file_id')
+    original_file_name = metadata.get('original_name')
+    file_creation_timestamp = metadata.get('timestamp')
+    original_file_size = metadata.get('file_size')
+    mime_type = metadata.get('file_type')
 
-        # Extract ONLY metadata fields (file system data, NOT business data)
-        original_file_id = metadata.get('file_id')
-        original_file_name = metadata.get('original_name')
-        file_creation_timestamp = metadata.get('timestamp')
-        original_file_size = metadata.get('file_size')
-        mime_type = metadata.get('file_type')
+    # Convert datetime strings to datetime objects if needed
+    if file_creation_timestamp and isinstance(file_creation_timestamp, str):
+        try:
+            # Handle ISO format with timezone: 2025-09-07T19:33:00+02:00
+            # Remove timezone info for MySQL compatibility
+            timestamp_clean = re.sub(r'[+-]\d{2}:\d{2}$', '', file_creation_timestamp)
+            file_creation_timestamp = datetime.fromisoformat(timestamp_clean.replace('T', ' '))
+        except:
+            file_creation_timestamp = None
 
-        # Convert datetime strings to datetime objects if needed
-        if file_creation_timestamp and isinstance(file_creation_timestamp, str):
-            try:
-                # Handle ISO format with timezone: 2025-09-07T19:33:00+02:00
-                # Remove timezone info for MySQL compatibility
-                timestamp_clean = re.sub(r'[+-]\d{2}:\d{2}$', '', file_creation_timestamp)
-                file_creation_timestamp = datetime.fromisoformat(timestamp_clean.replace('T', ' '))
-            except:
-                file_creation_timestamp = None
-
-        with db_cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO unified_files (
-                    id, file_type, created_at, content_hash,
-                    file_category, file_suffix, original_filename,
-                    original_file_id, original_file_name, file_creation_timestamp,
-                    original_file_size, mime_type, submitted_by, ai_status, ocr_raw, other_data
-                ) VALUES (
-                    %s, %s, NOW(), %s,
-                    %s, %s, %s,
-                    %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s
-                )
-                """,
-                (
-                    file_id, "receipt", content_hash,
-                    file_category, file_suffix, filename,
-                    original_file_id, original_file_name, file_creation_timestamp,
-                    original_file_size, mime_type, 'ftp', 'ftp_fetched', '', '{}'
-                )
-            )
-            logger.info(f"Inserted unified_file {file_id} with metadata and hash {content_hash[:16]}...")
-
-            # Log successful FTP fetch
-            file_size = metadata.get('file_size', 'unknown')
-            _history(
-                file_id=file_id,
-                job="ftp_fetch",
-                status="success",
-                ai_stage_name="FTP-FileFetched",
-                log_text=f"File fetched from FTP: filename={filename}, size={file_size} bytes, hash={content_hash[:16]}..., metadata_fields={list(metadata.keys())}",
-                provider="ftp",
-            )
-    except Exception as e:
-        # Check for duplicate hash
-        if 'Duplicate entry' in str(e) and 'idx_content_hash' in str(e):
-            logger.warning(f"Skipping duplicate file {filename} (hash: {content_hash[:16]}...)")
-            raise ValueError("Duplicate file")
-        logger.error(f"Error inserting unified file: {e}")
-        raise
-
-
-def _dispatch_receipt_workflow(file_id: str, content_hash: str, source_channel: str) -> None:
-    """Create and dispatch a WF1 workflow for the fetched file."""
-    workflow_run_id = create_workflow_run(
-        workflow_key="WF1_RECEIPT",
-        source_channel=source_channel,
+    unified_file = create_unified_file(
         file_id=file_id,
+        file_type="receipt",
         content_hash=content_hash,
+        submitted_by=source,
+        original_filename=filename,
+        initial_ai_status="ftp_fetched",
+        mime_type=mime_type,
+        file_suffix=file_suffix,
+        original_file_id=original_file_id,
+        original_file_name=original_file_name,
+        original_file_size=original_file_size,
+        extra_metadata={},
+        source=source,
+        file_category=file_category,
+        workflow_type="WF1_RECEIPT"
     )
-    if not workflow_run_id:
-        logger.error("Failed to create workflow run for FTP file %s", file_id)
-        return
+    logger.info(f"Inserted unified_file {file_id} with metadata and hash {content_hash[:16]}...")
 
-    begin_import_stage(
-        workflow_run_id,
-        "src_ftp",
-        message=f"{source_channel} import för {file_id}",
+    # Log successful FTP fetch
+    file_size = metadata.get('file_size', 'unknown')
+    _history(
+        file_id=file_id,
+        job="ftp_fetch",
+        status="success",
+        ai_stage_name="FTP-FileFetched",
+        log_text=f"File fetched from FTP: filename={filename}, size={file_size} bytes, hash={content_hash[:16]}..., metadata_fields={list(metadata.keys())}. Metadata från FTP registrerad",
+        provider="ftp",
     )
-    complete_import_stage(
-        workflow_run_id,
-        "src_ftp",
-        success=True,
-        message="FTP-fil sparad lokalt",
-    )
-    begin_import_stage(
-        workflow_run_id,
-        "ingest_store",
-        message=f"Skrev unified_files {file_id}",
-    )
-    complete_import_stage(
-        workflow_run_id,
-        "ingest_store",
-        success=True,
-        message="Metadata från FTP registrerad",
-    )
+    
+    workflow_run_id = unified_file.workflow_run_id
+    if not workflow_run_id:
+        logger.warning(f"No workflow run created for file {file_id}")
+        return None
+
     begin_import_stage(
         workflow_run_id,
         "ingest_wf1",
         message="Skapar WF1 workflow_run",
     )
+    
+    return workflow_run_id
 
+
+def _dispatch_and_complete(workflow_run_id: str, file_id: str) -> bool:
+    """Helper to dispatch workflow and update stage"""
     if not dispatch_workflow(workflow_run_id):
         logger.error(
             "Dispatch of workflow_run %s failed for file %s",
@@ -262,7 +236,7 @@ def _dispatch_receipt_workflow(file_id: str, content_hash: str, source_channel: 
             success=False,
             message="WF1 kunde inte dispatchas",
         )
-        return
+        return False
 
     complete_import_stage(
         workflow_run_id,
@@ -276,6 +250,7 @@ def _dispatch_receipt_workflow(file_id: str, content_hash: str, source_channel: 
         workflow_run_id,
         file_id,
     )
+    return True
 
 
 def _insert_file_location(file_id: str, location: Dict[str, Any]) -> None:
@@ -383,9 +358,10 @@ def fetch_from_local_inbox() -> FetchResult:
             # Add file size to metadata for logging
             metadata['file_size'] = len(data)
 
+            workflow_run_id = None
             # Insert file record with metadata and hash (handles duplicates)
             try:
-                _insert_unified_file(file_id, p.name, metadata, content_hash)
+                workflow_run_id = _insert_unified_file(file_id, p.name, metadata, content_hash)
             except ValueError as ve:
                 if "Duplicate file" in str(ve):
                     skipped.append(p.name)
@@ -404,8 +380,9 @@ def fetch_from_local_inbox() -> FetchResult:
             if 'tags' in metadata:
                 _insert_file_tags(file_id, metadata['tags'])
 
-            # Create workflow run for receipts uploaded via local inbox
-            _dispatch_receipt_workflow(file_id, content_hash, "ftp_local")
+            # Dispatch workflow if created
+            if workflow_run_id:
+                _dispatch_and_complete(workflow_run_id, file_id)
 
             downloaded.append((file_id, p.name))
             logger.info(f"Local: Successfully processed {p.name} as {file_id}")
@@ -442,185 +419,107 @@ def fetch_from_local_inbox() -> FetchResult:
 
 
 def fetch_from_ftp() -> FetchResult:
-    """Fetch files from FTP server with metadata support"""
-    host = os.getenv("FTP_HOST")
-    logger.info(f"FTP DEBUG: Starting fetch_from_ftp, host={host}")
-
-    if not host:
-        logger.info("FTP DEBUG: No host configured, falling back to local inbox mode")
+    """Fetch files from FTP server with metadata support using ftp_service"""
+    try:
+        config = FTPConfig.from_env()
+    except ValueError as e:
+        logger.info(f"FTP DEBUG: {e}, falling back to local inbox mode")
         return fetch_from_local_inbox()
 
-    port = int(os.getenv("FTP_PORT", "21"))
-    user = os.getenv("FTP_USER", "anonymous")
-    password = os.getenv("FTP_PASS", "anonymous@")
-    passive = os.getenv("FTP_PASSIVE", "true").lower() not in {"false", "0", "no"}
-    remote_dir = os.getenv("FTP_REMOTE_DIR", "/")
-    use_tls = os.getenv("FTP_TLS", "false").lower() in {"1", "true", "yes"}
-    allowed_exts = [e.strip() for e in (os.getenv("FTP_ALLOWED_EXT", "pdf,jpg,jpeg,png").split(",")) if e.strip()]
-    delete_after = os.getenv("FTP_DELETE_AFTER", "false").lower() in {"1", "true", "yes"}
-
-    logger.info(f"FTP DEBUG: Config - host={host}, port={port}, user={user}, remote_dir={remote_dir}")
-    logger.info(f"FTP DEBUG: Config - use_tls={use_tls}, passive={passive}, allowed_exts={allowed_exts}")
+    logger.info(f"FTP DEBUG: Starting fetch_from_ftp, host={config.host}")
+    logger.info(f"FTP DEBUG: Config - host={config.host}, port={config.port}, user={config.user}, remote_dir={config.remote_directory}")
+    logger.info(f"FTP DEBUG: Config - use_tls={config.use_tls}, passive={config.passive}, allowed_exts={config.allowed_extensions}")
 
     downloaded: List[Tuple[str, str]] = []
     skipped: List[str] = []
     errors: List[str] = []
-    metadata_cache: Dict[str, Dict[str, Any]] = {}
-
+    
     fs = _storage()
-    ftp = None
+
     try:
-        logger.info("FTP DEBUG: Creating FTP connection...")
-        if use_tls:
-            ftp = FTP_TLS()
-            ftp.context = ssl.create_default_context()
-            logger.info("FTP DEBUG: Using FTP_TLS")
-        else:
-            ftp = FTP()
-            logger.info("FTP DEBUG: Using regular FTP")
+        with ftp_connection(config) as ftp:
+            logger.info("FTP DEBUG: Getting file list...")
+            files = list_files(ftp, config)
+            logger.info(f"FTP DEBUG: Found {len(files)} allowed files")
 
-        logger.info(f"FTP DEBUG: Connecting to {host}:{port}")
-        ftp.connect(host=host, port=port, timeout=20)
-        logger.info("FTP DEBUG: Connection established, attempting login...")
+            for remote_file in files:
+                name = remote_file.filename
+                logger.info(f"FTP DEBUG: Processing file: {name}")
 
-        ftp.login(user=user, passwd=password)
-        logger.info("FTP DEBUG: Login successful")
-
-        if use_tls and isinstance(ftp, FTP_TLS):
-            logger.info("FTP DEBUG: Setting TLS protection mode")
-            ftp.prot_p()
-
-        ftp.set_pasv(passive)
-        logger.info(f"FTP DEBUG: Set passive mode to {passive}")
-
-        if remote_dir:
-            logger.info(f"FTP DEBUG: Changing to directory: {remote_dir}")
-            ftp.cwd(remote_dir)
-            logger.info(f"FTP DEBUG: Successfully changed to directory: {remote_dir}")
-
-        logger.info("FTP DEBUG: Getting file list...")
-        names = ftp.nlst()
-        logger.info(f"FTP DEBUG: Found {len(names)} files: {names[:10]}...")
-
-        # First, download all JSON metadata files
-        for name in names:
-            if name.lower().endswith('.json'):
                 try:
-                    buf = bytearray()
-                    ftp.retrbinary(f"RETR {name}", buf.extend)
-                    metadata = json.loads(buf.decode('utf-8'))
-                    base_name = name[:-5]  # Remove .json extension
-                    metadata_cache[base_name] = metadata
-                    logger.info(f"FTP DEBUG: Loaded metadata for {base_name}")
-                except Exception as e:
-                    logger.error(f"FTP DEBUG: Error loading metadata {name}: {e}")
-
-        # Process actual files
-        for name in names:
-            logger.info(f"FTP DEBUG: Checking file: {name}")
-
-            # Skip JSON metadata files
-            if name.lower().endswith('.json'):
-                continue
-
-            if not _allowed(name, allowed_exts):
-                logger.info(f"FTP DEBUG: SKIPPED (extension): {name}")
-                skipped.append(name)
-                continue
-
-            logger.info(f"FTP DEBUG: ALLOWED: {name}")
-            try:
-                file_id = str(uuid.uuid4())
-                logger.info(f"FTP DEBUG: Downloading {name} with file_id {file_id}")
-                buf = bytearray()
-                ftp.retrbinary(f"RETR {name}", buf.extend)
-                logger.info(f"FTP DEBUG: Downloaded {len(buf)} bytes for {name}")
-
-                # Calculate content hash for duplicate detection
-                data = bytes(buf)
-                content_hash = hashlib.sha256(data).hexdigest()
-                logger.info(f"FTP DEBUG: Calculated hash {content_hash[:16]}... for {name}")
-
-                # Get metadata if available
-                metadata = metadata_cache.get(name, {})
-                # Add file size to metadata for logging
-                metadata['file_size'] = len(data)
-
-                # Insert file record with metadata and hash (handles duplicates)
-                try:
-                    _insert_unified_file(file_id, name, metadata, content_hash)
-                except ValueError as ve:
-                    if "Duplicate file" in str(ve):
-                        skipped.append(name)
-                        logger.info(f"FTP DEBUG: SKIPPED duplicate file {name}")
-                        # Delete from FTP if configured
-                        if delete_after:
-                            try:
-                                ftp.delete(name)
-                                if name in metadata_cache:
-                                    try:
-                                        ftp.delete(name + '.json')
-                                    except:
-                                        pass
-                                logger.info(f"FTP DEBUG: Deleted duplicate {name} from FTP server")
-                            except error_perm:
-                                logger.info(f"FTP DEBUG: Could not delete {name} - permission denied")
-                        continue
-                    raise
-
-                # Save file to storage
-                fs.save(file_id, name, data)
-
-                # Insert location data if available
-                if 'location' in metadata:
-                    _insert_file_location(file_id, metadata['location'])
-
-                # Insert tags if available
-                if 'tags' in metadata:
-                    _insert_file_tags(file_id, metadata['tags'])
-
-                # Create workflow run for receipts delivered via FTP
-                _dispatch_receipt_workflow(file_id, content_hash, "ftp")
-
-                downloaded.append((file_id, name))
-                logger.info(f"FTP DEBUG: Successfully saved {name} as {file_id}")
-
-                if delete_after:
+                    # Try to download metadata file
+                    metadata = {}
+                    metadata_filename = name + ".json"
                     try:
-                        ftp.delete(name)
-                        # Also delete metadata file if it exists
-                        if name in metadata_cache:
-                            try:
-                                ftp.delete(name + '.json')
-                            except:
-                                pass
+                        json_data = download_file(ftp, metadata_filename)
+                        metadata = json.loads(json_data.decode('utf-8'))
+                        logger.info(f"FTP DEBUG: Loaded metadata for {name}")
+                    except Exception:
+                        # Metadata file might not exist, which is fine
+                        pass
+
+                    file_id = str(uuid.uuid4())
+                    logger.info(f"FTP DEBUG: Downloading {name} with file_id {file_id}")
+                    
+                    file_data = download_file(ftp, name)
+                    logger.info(f"FTP DEBUG: Downloaded {len(file_data)} bytes for {name}")
+
+                    # Calculate content hash for duplicate detection
+                    content_hash = hashlib.sha256(file_data).hexdigest()
+                    logger.info(f"FTP DEBUG: Calculated hash {content_hash[:16]}... for {name}")
+
+                    workflow_run_id = None
+                    # Insert file record with metadata and hash (handles duplicates)
+                    try:
+                        workflow_run_id = _insert_unified_file(file_id, name, metadata, content_hash, source="ftp")
+                    except ValueError as ve:
+                        if "Duplicate file" in str(ve):
+                            skipped.append(name)
+                            logger.info(f"FTP DEBUG: Skipped duplicate file {name}")
+                            continue
+                        raise
+
+                    # Save file to storage (CRITICAL FIX: was missing in original code)
+                    fs.save(file_id, name, file_data)
+
+                    # Insert location data if available
+                    if 'location' in metadata:
+                        _insert_file_location(file_id, metadata['location'])
+
+                    # Insert tags if available
+                    if 'tags' in metadata:
+                        _insert_file_tags(file_id, metadata['tags'])
+
+                    # Dispatch workflow if created
+                    if workflow_run_id:
+                        _dispatch_and_complete(workflow_run_id, file_id)
+
+                    downloaded.append((file_id, name))
+                    logger.info(f"FTP DEBUG: Successfully saved {name} as {file_id}")
+
+                    if config.delete_after:
+                        delete_file(ftp, name)
+                        delete_file(ftp, metadata_filename)
                         logger.info(f"FTP DEBUG: Deleted {name} from FTP server")
-                    except error_perm:
-                        logger.info(f"FTP DEBUG: Could not delete {name} - permission denied")
-            except Exception as e:
-                logger.error(f"FTP DEBUG: Error processing {name}: {e}")
-                errors.append(f"{name}: {e}")
-                # Log error if we have a file_id
-                if 'file_id' in locals():
-                    _history(
-                        file_id=file_id,
-                        job="ftp_fetch",
-                        status="error",
-                        ai_stage_name="FTP-FileFetched",
-                        log_text=f"Failed to process file from FTP: {name}",
-                        error_message=f"{type(e).__name__}: {str(e)}",
-                        provider="ftp",
-                    )
+
+                except Exception as e:
+                    logger.error(f"FTP DEBUG: Error processing {name}: {e}")
+                    errors.append(f"{name}: {e}")
+                    # Log error if we have a file_id
+                    if 'file_id' in locals():
+                        _history(
+                            file_id=file_id,
+                            job="ftp_fetch",
+                            status="error",
+                            ai_stage_name="FTP-FileFetched",
+                            log_text=f"Failed to process file from FTP: {name}",
+                            error_message=f"{type(e).__name__}: {str(e)}",
+                            provider="ftp",
+                        )
+
     except Exception as e:
         logger.error(f"FTP DEBUG: Connection error: {e}")
         errors.append(str(e))
-    finally:
-        try:
-            if ftp is not None:
-                logger.info("FTP DEBUG: Closing FTP connection")
-                ftp.quit()
-        except Exception:
-            pass
 
     logger.info(f"FTP DEBUG: Fetch complete - downloaded: {len(downloaded)}, skipped: {len(skipped)}, errors: {len(errors)}")
     return FetchResult(downloaded=downloaded, skipped=skipped, errors=errors)

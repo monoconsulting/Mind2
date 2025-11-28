@@ -22,7 +22,7 @@ from services.tasks import (
 from services.workflow_runs import create_workflow_run
 from services.db.files import (
     list_unprocessed,
-    insert_unified_file,
+    create_unified_file,
     update_other_data,
     DuplicateFileError,
     set_ai_status,
@@ -134,28 +134,25 @@ def upload_files() -> Any:
                 errors.append(f"Unsupported file type: {safe_filename}")
                 continue
 
-            insert_unified_file(
+            unified_file = create_unified_file(
                 file_id=file_id,
                 file_type=detection.kind,
                 content_hash=file_hash,
                 submitted_by=submitted_by,
                 original_filename=safe_filename,
-                ai_status="processing",
+                initial_ai_status="processing",
                 mime_type=detection.mime_type,
                 file_suffix=Path(safe_filename).suffix,
                 original_file_id=file_id,
                 original_file_name=safe_filename,
                 original_file_size=len(data),
-                other_data={"detected_kind": detection.kind, "source": "web_upload"},
+                extra_metadata={"detected_kind": detection.kind},
+                source="web_upload",
+                workflow_type=workflow_key,
             )
             fs.save_original(file_id, safe_filename, data)
 
-            workflow_run_id = create_workflow_run(
-                workflow_key=workflow_key,
-                source_channel="web_upload",
-                file_id=file_id,
-                content_hash=file_hash
-            )
+            workflow_run_id = unified_file.workflow_run_id
 
             if workflow_run_id:
                 begin_import_stage(

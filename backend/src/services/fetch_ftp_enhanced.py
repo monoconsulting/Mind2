@@ -18,20 +18,25 @@ try:
     from services.db.connection import db_cursor
 except Exception:  # pragma: no cover
     db_cursor = None  # type: ignore
+
 try:
-    from services.db.files import set_ai_status
+    from services.db.files import set_ai_status, create_unified_file, DuplicateFileError
 except Exception:  # pragma: no cover
     def set_ai_status(file_id: str, status: str) -> bool:  # type: ignore
         _ = (file_id, status)
         return False
+    
+    def create_unified_file(**kwargs) -> Any:
+        return None
 
+    class DuplicateFileError(Exception):
+        pass
 
 @dataclass
 class FetchResult:
     downloaded: List[Tuple[str, str]]  # (id, filename)
     skipped: List[str]
     errors: List[str]
-
 
 def _allowed(name: str, exts: List[str]) -> bool:
     """Check if file extension is allowed"""
@@ -41,13 +46,11 @@ def _allowed(name: str, exts: List[str]) -> bool:
         return False
     return any(name_l.endswith("." + ext.lower()) for ext in exts)
 
-
 def _get_file_suffix(filename: str) -> str:
     """Extract file extension without dot"""
     if '.' in filename:
         return filename.rsplit('.', 1)[1].lower()
     return ''
-
 
 def _get_file_category(file_suffix: str) -> Optional[int]:
     """Get file category ID based on file suffix"""
@@ -70,7 +73,6 @@ def _get_file_category(file_suffix: str) -> Optional[int]:
         logger.error(f"Error getting file category: {e}")
         return None
 
-
 def _load_metadata(file_path: Path) -> Dict[str, Any]:
     """Load metadata from JSON file if it exists"""
     json_path = Path(str(file_path) + '.json')
@@ -82,16 +84,10 @@ def _load_metadata(file_path: Path) -> Dict[str, Any]:
             logger.error(f"Error loading metadata from {json_path}: {e}")
     return {}
 
-
 def _find_or_create_company(merchant_name: Optional[str], orgnr: Optional[str]) -> Optional[int]:
     """
     Find or create a company in the companies table.
     Returns company_id if found/created, None if not possible.
-
-    Strategy:
-    1. If orgnr provided: lookup by orgnr, create if not found
-    2. If only name provided: lookup by name, create if not found
-    3. If neither provided: return None
     """
     if db_cursor is None:
         return None
@@ -149,7 +145,6 @@ def _find_or_create_company(merchant_name: Optional[str], orgnr: Optional[str]) 
         logger.error(f"Error finding/creating company (name={merchant_name}, orgnr={orgnr}): {e}")
         return None
 
-
 def _insert_unified_file(
     file_id: str,
     filename: str,
@@ -178,39 +173,40 @@ def _insert_unified_file(
                 purchase_datetime = None
 
         # Find or create company if merchant info provided
-        # This replaces direct merchant_name storage which doesn't exist in schema
         company_id = None
         if merchant_name or orgnr:
             company_id = _find_or_create_company(merchant_name, orgnr)
             if company_id:
                 logger.info(f"Linked file {file_id} to company_id={company_id}")
 
-        with db_cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO unified_files (
-                    id, file_type, created_at,
-                    file_category, file_suffix,
-                    company_id, vat, purchase_datetime,
-                    gross_amount, net_amount, original_filename
-                ) VALUES (
-                    %s, %s, NOW(),
-                    %s, %s,
-                    %s, %s, %s,
-                    %s, %s, %s
-                )
-                """,
-                (
-                    file_id, "receipt",
-                    file_category, file_suffix,
-                    company_id, orgnr, purchase_datetime,
-                    gross_amount, net_amount, filename
-                )
-            )
-            logger.info(f"Inserted unified_file {file_id} with metadata (company_id={company_id})")
+        # Use create_unified_file instead of direct SQL
+        create_unified_file(
+            file_id=file_id,
+            file_type="receipt",
+            original_filename=filename,
+            file_category=file_category,
+            file_suffix=file_suffix,
+            company_id=company_id,
+            submitted_by="ftp_enhanced",
+            source="ftp_enhanced",
+            initial_ai_status="new",
+            initial_process_status="uploaded",
+            workflow_type="WF1_RECEIPT", # Assuming generic receipt workflow
+            extra_metadata={
+                "vat": orgnr,
+                "purchase_datetime": purchase_datetime.isoformat() if purchase_datetime else None,
+                "gross_amount": gross_amount,
+                "net_amount": net_amount,
+                "merchant_name": merchant_name,
+                "orgnr": orgnr
+            }
+        )
+        logger.info(f"Inserted unified_file {file_id} with metadata (company_id={company_id})")
+
+    except DuplicateFileError:
+        logger.warning(f"Duplicate file detected: {filename} (id={file_id})")
     except Exception as e:
         logger.error(f"Error inserting unified file: {e}")
-
 
 def _insert_file_location(file_id: str, location: Dict[str, Any]) -> None:
     """Insert file location data"""
@@ -235,7 +231,6 @@ def _insert_file_location(file_id: str, location: Dict[str, Any]) -> None:
     except Exception as e:
         logger.error(f"Error inserting file location: {e}")
 
-
 def _insert_file_tags(file_id: str, tags: List[str]) -> None:
     """Insert file tags"""
     if db_cursor is None or not tags:
@@ -258,14 +253,16 @@ def _insert_file_tags(file_id: str, tags: List[str]) -> None:
     except Exception as e:
         logger.error(f"Error inserting file tags: {e}")
 
-
 def _storage() -> FileStorage:
     base = os.getenv("STORAGE_DIR", "/data/storage")
     return FileStorage(base)
 
-
 def fetch_from_local_inbox() -> FetchResult:
-    """Fetch files from local inbox directory with metadata support"""
+    """
+    Deprecated: Use services.fetch_ftp.fetch_from_local_inbox instead.
+    
+    Fetch files from local inbox directory with metadata support
+    """
     inbox = os.getenv("FTP_LOCAL_DIR")
     move_dir = os.getenv("FTP_LOCAL_MOVE_DIR")
     allowed_exts = [e.strip() for e in (os.getenv("FTP_ALLOWED_EXT", "pdf,jpg,jpeg,png,txt").split(",")) if e.strip()]
@@ -339,9 +336,12 @@ def fetch_from_local_inbox() -> FetchResult:
 
     return FetchResult(downloaded=downloaded, skipped=skipped, errors=errors)
 
-
 def fetch_from_ftp() -> FetchResult:
-    """Fetch files from FTP server with metadata support"""
+    """
+    Deprecated: Use services.fetch_ftp.fetch_from_ftp instead.
+    
+    Fetch files from FTP server with metadata support
+    """
     host = os.getenv("FTP_HOST")
     logger.info(f"FTP DEBUG: Starting fetch_from_ftp, host={host}")
 

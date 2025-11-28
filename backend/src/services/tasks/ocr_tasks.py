@@ -12,7 +12,7 @@ from .common import (
     AiStatus,
     celery_app,
     db_cursor,
-    insert_unified_file,
+    create_unified_file,
     log_event,
     pdf_to_png_pages,
     run_ocr,
@@ -187,23 +187,24 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
             page_id = str(uuid.uuid4())
             page_hash = hashlib.sha256(page.bytes).hexdigest()
 
-            insert_unified_file(
+            create_unified_file(
                 file_id=page_id,
                 file_type="pdf_page",
                 content_hash=page_hash,
                 submitted_by="workflow",
                 original_filename=f"{safe_filename}-page-{page_number:04d}.png",
-                ai_status=AiStatus.UPLOADED.value,
+                initial_ai_status=AiStatus.UPLOADED.value,
                 mime_type="image/png",
                 file_suffix=".png",
                 original_file_id=file_id,
                 original_file_name=safe_filename,
                 original_file_size=len(page.bytes),
-                other_data={
+                extra_metadata={
                     "detected_kind": "pdf_page",
                     "page_number": page_number,
                     "source_pdf": file_id,
                 },
+                create_workflow=False,
             )
 
             stored_page_name = f"page-{page_number:04d}.png"
