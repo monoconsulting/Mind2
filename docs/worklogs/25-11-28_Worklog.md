@@ -62,6 +62,7 @@
 
 | Time | Title | Change Type | Scope | Tickets | Commits | Files Touched |
 |---|---|---|---|---|---|---|
+| 20:05 | Phase F provider split & AI logging | refactor, test | `ai_service; ai_models; ai_logging` | PHASE-F | - | ai_service.py, ai_processing.py, ai_logging.py, tests |
 | 18:30 | Phase E ManualMatch pagination & API tests | feat, test | `frontend ManualMatch; backend tests` | PHASE-E | - | ManualMatch.jsx, test_manual_match_api.py |
 | 17:00 | Phase D Complete - GIT_END | feat, test | `services, api, tests` | PHASE-D | `27797cf` | 7 files |
 | 16:00 | Phase D Review & Commit | review | `services, api, tests` | PHASE-D | - | 7 files |
@@ -69,6 +70,45 @@
 | 12:00 | Phase C: All Tasks Complete | feat, refactor | `services, api, tests` | PHASE-C | - | 12 files |
 
 ---
+
+#### [20:05] Refactor/Test: Phase F provider split, orchestrators, AI logging
+
+- **Change type:** refactor, test
+- **Scope (component/module):** `services/ai_service`, `models/ai_processing`, `services/ai_logging`, `tasks history`, unit tests
+- **Tickets/PRs:** PHASE-F
+- **Branch:** `dev`
+- **Commit(s):** N/A (working tree)
+- **Environment:** local
+- **Commands run:**
+  ```bash
+  python -m pytest backend/tests/unit/test_ai_processing_models.py backend/tests/unit/test_ai_service_validation.py backend/tests/unit/test_ai_service_extract_data.py backend/tests/unit/test_ai_logging.py backend/tests/unit/test_ai_providers.py backend/tests/unit/test_ai_history_logging.py
+  ```
+- **Result summary:** Split provider HTTP logic out of `ai_service.py`, added orchestrators `run_ai1`–`run_ai6` and updated all call sites; hardened AI response validation (currency/decimal/name checks); introduced unified `log_ai_call` helper and rerouted ingestion/FTP/task logging; added unit coverage for providers, validation, and logging. Tests pass; Pydantic v1 validator deprecation warnings remain (follow-up).
+- **Files changed (exact):**
+  - `backend/src/services/ai_service.py` - imports providers module, adds orchestrators, logs via `log_ai_call`, stricter AI3 item validation
+  - `backend/src/models/ai_processing.py` - normalization validators for currency/decimals/required fields
+  - `backend/src/services/ai_logging.py` - **NEW** unified ai_processing_history logger
+  - `backend/src/api/ai_processing.py` - calls orchestrators
+  - `backend/src/services/tasks/invoice_tasks.py` - FC parse uses AI6 orchestrator
+  - `backend/src/services/tasks/workflow_tasks.py` - workflow AI6 parsing via orchestrator
+  - `backend/src/services/fetch_ftp.py`, `backend/src/services/tasks/history.py` - history writes routed through `log_ai_call`
+  - Tests: `backend/tests/unit/test_ai_processing_models.py`, `test_ai_service_validation.py`, `test_ai_service_extract_data.py`, `test_ai_logging.py`, `test_ai_providers.py`, `test_ai_history_logging.py`
+- **Unified diff (summary):**
+  ```diff
+  + from services.ai.providers import BaseLLMProvider, ProviderResponse, ...
+  + from services.ai_logging import log_ai_call
+  + def run_ai1_document_classification(...):
+  + def run_ai2_expense_classification(...):
+  + def run_ai3_data_extraction(...):
+  + def run_ai4_accounting_classification(...):
+  + def run_ai5_credit_card_match(...):
+  + def run_ai6_credit_card_invoice_parsing(...):
+  + class ReceiptItem(...): validators for name/number/amounts
+  + ai_logging.log_ai_call(...) centralizes ai_processing_history inserts
+  ```
+- **Tests executed:** `python -m pytest backend/tests/unit/test_ai_processing_models.py backend/tests/unit/test_ai_service_validation.py backend/tests/unit/test_ai_service_extract_data.py backend/tests/unit/test_ai_logging.py backend/tests/unit/test_ai_providers.py backend/tests/unit/test_ai_history_logging.py` ✔️
+- **Artifacts:** N/A
+- **Next action:** Migrate validators to `@field_validator` (pydantic v2) to clear warnings.
 
 #### [18:30] Feat/Test: Phase E ManualMatch pagination & toasts
 

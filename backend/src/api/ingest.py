@@ -28,49 +28,12 @@ from services.db.files import (
     set_ai_status,
 )
 from services.db.connection import db_cursor
+from services.ai_logging import log_ai_call
 
 logger = logging.getLogger(__name__)
 
-INSERT_HISTORY_SQL = '''
-    INSERT INTO ai_processing_history
-    (file_id, job_type, status, ai_stage_name, log_text, error_message,
-     confidence, processing_time_ms, provider, model_name)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-'''
-
-def _history(
-    file_id: str,
-    job: str,
-    status: str,
-    ai_stage_name: str | None = None,
-    log_text: str | None = None,
-    error_message: str | None = None,
-    confidence: float | None = None,
-    processing_time_ms: int | None = None,
-    provider: str | None = None,
-    model_name: str | None = None,
-) -> None:
-    if db_cursor is None:
-        return
-    try:
-        with db_cursor() as cur:
-            cur.execute(
-                INSERT_HISTORY_SQL,
-                (
-                    file_id,
-                    job,
-                    status,
-                    ai_stage_name,
-                    log_text,
-                    error_message,
-                    confidence,
-                    processing_time_ms,
-                    provider,
-                    model_name,
-                ),
-            )
-    except Exception:
-        pass
+# Deprecated local history helper; uses unified log_ai_call in services.ai_logging
+_history = log_ai_call
 
 def _hash_exists(content_hash: str) -> bool:
     if db_cursor is None:

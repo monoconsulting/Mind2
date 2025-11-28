@@ -22,7 +22,7 @@ def _stub_prompts(monkeypatch):
 def test_extract_data_includes_credit_card_fields(monkeypatch):
     """AIService.extract_data should map all credit card fields from LLM output."""
 
-    def _fake_generate(self, prompt_key, payload):
+    def _fake_generate(self, prompt_key, payload, file_id=None):
         assert prompt_key == "data_extraction"
         return {
             "unified_file": {
@@ -75,7 +75,7 @@ def test_extract_data_includes_credit_card_fields(monkeypatch):
 def test_extract_data_accepts_last4_alias(monkeypatch):
     """If the LLM returns credit_card_last_4 we still capture the digits."""
 
-    def _fake_generate(self, prompt_key, payload):
+    def _fake_generate(self, prompt_key, payload, file_id=None):
         return {
             "unified_file": {
                 "payment_type": "card",

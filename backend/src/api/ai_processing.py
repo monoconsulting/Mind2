@@ -538,7 +538,7 @@ def _potential_credit_matches(req: CreditCardMatchRequest) -> List[Tuple[Any, ..
 
 def classify_document_internal(req: DocumentClassificationRequest) -> DocumentClassificationResponse:
     ai_service = AIService()
-    result = ai_service.classify_document(req)
+    result = ai_service.run_ai1_document_classification(req)
     with closing(get_connection()) as conn:
         conn.start_transaction()
         cursor = conn.cursor()
@@ -563,7 +563,7 @@ def classify_document_internal(req: DocumentClassificationRequest) -> DocumentCl
 
 def classify_expense_internal(req: ExpenseClassificationRequest) -> ExpenseClassificationResponse:
     ai_service = AIService()
-    result = ai_service.classify_expense(req)
+    result = ai_service.run_ai2_expense_classification(req)
     with closing(get_connection()) as conn:
         conn.start_transaction()
         cursor = conn.cursor()
@@ -588,7 +588,7 @@ def classify_expense_internal(req: ExpenseClassificationRequest) -> ExpenseClass
 
 def extract_data_internal(req: DataExtractionRequest) -> DataExtractionResponse:
     ai_service = AIService()
-    result = ai_service.extract_data(req)
+    result = ai_service.run_ai3_data_extraction(req)
     _persist_extraction_result(req.file_id, result)
     return result
 
@@ -596,7 +596,7 @@ def extract_data_internal(req: DataExtractionRequest) -> DataExtractionResponse:
 def classify_accounting_internal(req: AccountingClassificationRequest) -> AccountingClassificationResponse:
     chart_of_accounts = _load_chart_of_accounts()
     ai_service = AIService()
-    result = ai_service.classify_accounting(req, chart_of_accounts)
+    result = ai_service.run_ai4_accounting_classification(req, chart_of_accounts)
     _persist_accounting_proposals(req.file_id, result.proposals, result.confidence)
     return result
 
@@ -613,7 +613,7 @@ def match_credit_card_internal(req: CreditCardMatchRequest) -> CreditCardMatchRe
         candidates=len(potential_matches),
     )
     ai_service = AIService()
-    result = ai_service.match_credit_card(req, potential_matches)
+    result = ai_service.run_ai5_credit_card_match(req, potential_matches)
     log_event(
         logger,
         "matching.ai.result",

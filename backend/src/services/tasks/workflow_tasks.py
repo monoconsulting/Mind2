@@ -514,7 +514,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     ai6_model = ai_service.prompt_model_names.get("credit_card_invoice_parsing", "unknown")
     fc_coordinator.begin_fc_import_stage(workflow_run_id, "fc_parse", message="AI6 tolkning av faktura")
     try:
-        extraction = ai_service.parse_credit_card_invoice(request)
+        extraction = ai_service.run_ai6_credit_card_invoice_parsing(request)
         elapsed = int((time.time() - start_time) * 1000)
 
         ai6_prompt = ai_service.prompts.get("credit_card_invoice_parsing", "")

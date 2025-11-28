@@ -79,7 +79,7 @@ def process_invoice_document(invoice_id: str) -> dict[str, Any]:
         page_ids=page_ids,
     )
 
-    extraction = ai_service.parse_credit_card_invoice(request)
+    extraction = ai_service.run_ai6_credit_card_invoice_parsing(request)
 
     main_id = _persist_creditcard_invoice_main(invoice_id, extraction.header, combined_text)
     if not main_id:
