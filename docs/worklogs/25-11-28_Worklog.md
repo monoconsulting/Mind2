@@ -62,10 +62,32 @@
 
 | Time | Title | Change Type | Scope | Tickets | Commits | Files Touched |
 |---|---|---|---|---|---|---|
+| 18:30 | Phase E ManualMatch pagination & API tests | feat, test | `frontend ManualMatch; backend tests` | PHASE-E | - | ManualMatch.jsx, test_manual_match_api.py |
 | 17:00 | Phase D Complete - GIT_END | feat, test | `services, api, tests` | PHASE-D | `27797cf` | 7 files |
 | 16:00 | Phase D Review & Commit | review | `services, api, tests` | PHASE-D | - | 7 files |
 | 14:00 | Phase C Complete - Final Review & Fix | fix | `services` | PHASE-C | `50004ac` | `fetch_ftp_enhanced.py, fetch_ftp_updated.py` |
 | 12:00 | Phase C: All Tasks Complete | feat, refactor | `services, api, tests` | PHASE-C | - | 12 files |
+
+---
+
+#### [18:30] Feat/Test: Phase E ManualMatch pagination & toasts
+
+- **Change type:** feat, test
+- **Scope (component/module):** `ui/pages/ManualMatch.jsx`, `tests/integration/test_manual_match_api.py`
+- **Tickets/PRs:** PHASE-E
+- **Branch:** `PHASE-E-manualmatch-ui`
+- **Commit(s):** - (pending)
+- **Environment:** local
+- **Commands run:**
+  ```bash
+  python -m pytest backend/tests/integration/test_manual_match_api.py -q --maxfail=1
+  ```
+- **Result summary:** Added client-side pagination with page-size selectors and consistent toasts in ManualMatch; introduced backend integration coverage for statements, invoice detail/lines, receipts listing, match, and confirm flows.
+- **Files changed (exact):**
+  - `main-system/app-frontend/src/ui/pages/ManualMatch.jsx` - new `PaginationControls`/`PageSizeSelector` helpers, pagination state & range labels for FC items/receipts, refactored error handling via `showError/showSuccess`, tables now render paginated subsets.
+  - `backend/tests/integration/test_manual_match_api.py` - **NEW** fake cursor helpers plus API tests for statements, invoice detail + lines, receipts listing, match endpoint, and statement confirm.
+- **Tests executed:** `python -m pytest backend/tests/integration/test_manual_match_api.py -q --maxfail=1` ✔
+- **Next action:** Prepare commit for Phase E UI/tests (no deploy yet).
 
 ---
 

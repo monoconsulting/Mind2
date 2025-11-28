@@ -3,9 +3,45 @@
  * @description Manual matching view for linking FirstCard transaction items to receipts.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FiCheckCircle, FiAlertTriangle, FiEye } from 'react-icons/fi'
+import { FiCheckCircle, FiAlertTriangle, FiChevronLeft, FiChevronRight, FiEye } from 'react-icons/fi'
 import { api } from '../api'
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal'
+
+function PaginationControls({ page, totalPages, onPrev, onNext, label }) {
+  if (!totalPages || totalPages <= 1) return null
+  return (
+    <div className="flex items-center gap-2 text-sm text-gray-300 flex-wrap">
+      <button type="button" className="btn btn-secondary btn-sm" onClick={onPrev} disabled={page <= 1}>
+        <FiChevronLeft />
+        Föregående
+      </button>
+      <div className="px-2 py-1 rounded bg-gray-800/70 border border-gray-700">
+        {label || `Sida ${page} av ${totalPages}`}
+      </div>
+      <button type="button" className="btn btn-secondary btn-sm" onClick={onNext} disabled={page >= totalPages}>
+        Nästa
+        <FiChevronRight />
+      </button>
+    </div>
+  )
+}
+
+function PageSizeSelector({ label, value, onChange, options = [10, 15, 25, 50] }) {
+  return (
+    <label className="flex items-center gap-2 text-sm text-gray-300">
+      <span>{label}</span>
+      <select
+        className="dm-input w-24"
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value) || value)}
+      >
+        {options.map((opt) => (
+          <option key={opt} value={opt}>{opt}</option>
+        ))}
+      </select>
+    </label>
+  )
+}
 
 function formatAmount(value, currency = 'SEK') {
   if (typeof value !== 'number' || Number.isNaN(value)) return '-'
@@ -118,6 +154,10 @@ export default function ManualMatch() {
   const [matching, setMatching] = useState(false)
   const [banner, setBanner] = useState(null)
   const [filterStatus, setFilterStatus] = useState('all') // 'all', 'matched', 'unmatched'
+  const [linesPage, setLinesPage] = useState(1)
+  const [receiptsPage, setReceiptsPage] = useState(1)
+  const [linesPerPage, setLinesPerPage] = useState(15)
+  const [receiptsPerPage, setReceiptsPerPage] = useState(15)
 
   const [fcSortColumn, setFcSortColumn] = useState('purchase_date')
   const [fcSortDirection, setFcSortDirection] = useState('asc')
@@ -128,6 +168,9 @@ export default function ManualMatch() {
   const [previewReceipt, setPreviewReceipt] = useState(null)
 
   const lastFetchKeyRef = useRef(null)
+  const dismissBanner = useCallback(() => setBanner(null), [])
+  const showError = useCallback((message) => setBanner({ type: 'error', message }), [])
+  const showSuccess = useCallback((message) => setBanner({ type: 'success', message }), [])
 
   const monthKey = useMemo(() => {
     if (!year || !month) return null
@@ -251,6 +294,78 @@ export default function ManualMatch() {
     })
   }, [receipts, receiptSortColumn, receiptSortDirection, filterStatus, matchedReceiptIds])
 
+  const totalLinePages = useMemo(
+    () => Math.max(1, Math.ceil(sortedFcItems.length / linesPerPage)),
+    [sortedFcItems.length, linesPerPage]
+  )
+  const totalReceiptPages = useMemo(
+    () => Math.max(1, Math.ceil(sortedReceipts.length / receiptsPerPage)),
+    [sortedReceipts.length, receiptsPerPage]
+  )
+
+  const visibleFcItems = useMemo(() => {
+    const start = (linesPage - 1) * linesPerPage
+    return sortedFcItems.slice(start, start + linesPerPage)
+  }, [sortedFcItems, linesPage, linesPerPage])
+
+  const visibleReceipts = useMemo(() => {
+    const start = (receiptsPage - 1) * receiptsPerPage
+    return sortedReceipts.slice(start, start + receiptsPerPage)
+  }, [sortedReceipts, receiptsPage, receiptsPerPage])
+
+  const fcRangeLabel = useMemo(() => {
+    if (!sortedFcItems.length) return '0 av 0'
+    const start = (linesPage - 1) * linesPerPage + 1
+    const end = Math.min(sortedFcItems.length, start + linesPerPage - 1)
+    return `${start}-${end} av ${sortedFcItems.length}`
+  }, [sortedFcItems.length, linesPage, linesPerPage])
+
+  const receiptRangeLabel = useMemo(() => {
+    if (!sortedReceipts.length) return '0 av 0'
+    const start = (receiptsPage - 1) * receiptsPerPage + 1
+    const end = Math.min(sortedReceipts.length, start + receiptsPerPage - 1)
+    return `${start}-${end} av ${sortedReceipts.length}`
+  }, [sortedReceipts.length, receiptsPage, receiptsPerPage])
+
+  const goToPrevLinesPage = useCallback(() => setLinesPage((prev) => Math.max(1, prev - 1)), [])
+  const goToNextLinesPage = useCallback(
+    () => setLinesPage((prev) => Math.min(totalLinePages, prev + 1)),
+    [totalLinePages]
+  )
+  const goToPrevReceiptsPage = useCallback(() => setReceiptsPage((prev) => Math.max(1, prev - 1)), [])
+  const goToNextReceiptsPage = useCallback(
+    () => setReceiptsPage((prev) => Math.min(totalReceiptPages, prev + 1)),
+    [totalReceiptPages]
+  )
+
+  useEffect(() => {
+    setLinesPage((prev) => Math.min(prev, totalLinePages) || 1)
+  }, [totalLinePages])
+
+  useEffect(() => {
+    setReceiptsPage((prev) => Math.min(prev, totalReceiptPages) || 1)
+  }, [totalReceiptPages])
+
+  useEffect(() => {
+    setLinesPage(1)
+  }, [monthKey, filterStatus, fcSortColumn, fcSortDirection, linesPerPage, fcItems.length])
+
+  useEffect(() => {
+    setReceiptsPage(1)
+  }, [monthKey, filterStatus, receiptSortColumn, receiptSortDirection, receiptsPerPage, receipts.length])
+
+  useEffect(() => {
+    if (selectedItemId && !fcItems.some((item) => item.id === selectedItemId)) {
+      setSelectedItemId(null)
+    }
+  }, [fcItems, selectedItemId])
+
+  useEffect(() => {
+    if (selectedReceiptId && !receipts.some((r) => r.id === selectedReceiptId)) {
+      setSelectedReceiptId(null)
+    }
+  }, [receipts, selectedReceiptId])
+
   // Fetch statements
   const fetchStatements = useCallback(async () => {
     setLoadingStatements(true)
@@ -274,7 +389,7 @@ export default function ManualMatch() {
       }
     } catch (err) {
       console.error('Failed to fetch statements', err)
-      setBanner({ type: 'error', message: 'Kunde inte hämta FC-statements.' })
+      showError('Kunde inte hämta FC-statements.')
     } finally {
       setLoadingStatements(false)
     }
@@ -342,7 +457,7 @@ export default function ManualMatch() {
       lastFetchKeyRef.current = fetchKey
     } catch (err) {
       console.error('Failed to load FC items', err)
-      setBanner({ type: 'error', message: 'Kunde inte hämta FC-transaktioner.' })
+      showError('Kunde inte hämta FC-transaktioner.')
       setFcItems([])
     } finally {
       setLoadingLeft(false)
@@ -407,7 +522,7 @@ export default function ManualMatch() {
       setReceipts(filtered)
     } catch (err) {
       console.error('Failed to load receipts', err)
-      setBanner({ type: 'error', message: 'Kunde inte hämta kvitton.' })
+      showError('Kunde inte hämta kvitton.')
       setReceipts([])
     } finally {
       setLoadingRight(false)
@@ -421,7 +536,7 @@ export default function ManualMatch() {
     try {
       const item = fcItems.find((i) => i.id === selectedItemId)
       if (!item) {
-        setBanner({ type: 'error', message: 'Kunde inte hitta vald transaktion.' })
+        showError('Kunde inte hitta vald transaktion.')
         return
       }
 
@@ -440,17 +555,17 @@ export default function ManualMatch() {
       })
 
       if (res.ok) {
-        setBanner({ type: 'success', message: 'Matchning genomförd!' })
+        showSuccess('Matchning genomförd!')
         await Promise.all([loadFcItems({ force: true }), loadReceipts()])
         setSelectedItemId(null)
         setSelectedReceiptId(null)
       } else {
         const errorData = await res.json().catch(() => ({}))
-        setBanner({ type: 'error', message: errorData.error || 'Matchning misslyckades.' })
+        showError(errorData.error || 'Matchning misslyckades.')
       }
     } catch (err) {
       console.error('Match error', err)
-      setBanner({ type: 'error', message: 'Matchning misslyckades.' })
+      showError('Matchning misslyckades.')
     } finally {
       setMatching(false)
     }
@@ -461,16 +576,16 @@ export default function ManualMatch() {
     try {
       const res = await api.fetch(`/ai/api/receipts/${id}`, { method: 'DELETE' })
       if (res.ok) {
-        setBanner({ type: 'success', message: 'Kvitto raderat' })
+        showSuccess('Kvitto raderat')
         // Remove locally
         setReceipts(prev => prev.filter(r => r.id !== id))
         if (selectedReceiptId === id) setSelectedReceiptId(null)
       } else {
-        setBanner({ type: 'error', message: 'Kunde inte radera kvitto' })
+        showError('Kunde inte radera kvitto')
       }
     } catch (err) {
       console.error('Delete error', err)
-      setBanner({ type: 'error', message: 'Ett fel inträffade vid radering' })
+      showError('Ett fel inträffade vid radering')
     }
   }, [selectedReceiptId])
 
@@ -478,7 +593,7 @@ export default function ManualMatch() {
   const openReceiptModal = useCallback((receiptId) => {
     const target = receipts.find((r) => r.id === receiptId)
     if (!target) {
-      setBanner({ type: 'error', message: 'Kunde inte hitta kvittot.' })
+      showError('Kunde inte hitta kvittot.')
       return
     }
     setPreviewReceipt(target)
@@ -596,7 +711,7 @@ export default function ManualMatch() {
             {banner.type === 'error' ? <FiAlertTriangle /> : <FiCheckCircle />}
           </div>
           <div className="alert-message">{banner.message}</div>
-          <button type="button" className="alert-dismiss" onClick={() => setBanner(null)}>×</button>
+          <button type="button" className="alert-dismiss" onClick={dismissBanner}>×</button>
         </div>
       )}
 
@@ -678,6 +793,20 @@ export default function ManualMatch() {
             </div>
           </div>
 
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 pb-3 text-sm text-gray-300">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-gray-400">Visar {fcRangeLabel}</span>
+              <PageSizeSelector label="Per sida" value={linesPerPage} onChange={setLinesPerPage} />
+            </div>
+            <PaginationControls
+              page={linesPage}
+              totalPages={totalLinePages}
+              onPrev={goToPrevLinesPage}
+              onNext={goToNextLinesPage}
+              label={`Sida ${linesPage} av ${totalLinePages}`}
+            />
+          </div>
+
           <div className="overflow-hidden border border-gray-700 rounded-lg">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -726,7 +855,7 @@ export default function ManualMatch() {
                       </td>
                     </tr>
                   ) : (
-                    sortedFcItems.map((item) => {
+                    visibleFcItems.map((item) => {
                       const isMatched = item.matched !== 0
                       const checked = selectedItemId === item.id
                       const canSelect = !isMatched
@@ -778,6 +907,20 @@ export default function ManualMatch() {
             </div>
           </div>
 
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 pb-3 text-sm text-gray-300">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-gray-400">Visar {receiptRangeLabel}</span>
+              <PageSizeSelector label="Per sida" value={receiptsPerPage} onChange={setReceiptsPerPage} />
+            </div>
+            <PaginationControls
+              page={receiptsPage}
+              totalPages={totalReceiptPages}
+              onPrev={goToPrevReceiptsPage}
+              onNext={goToNextReceiptsPage}
+              label={`Sida ${receiptsPage} av ${totalReceiptPages}`}
+            />
+          </div>
+
           <div className="overflow-hidden border border-gray-700 rounded-lg">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -827,7 +970,7 @@ export default function ManualMatch() {
                       </td>
                     </tr>
                   ) : (
-                    sortedReceipts.map((r) => {
+                    visibleReceipts.map((r) => {
                       const checked = selectedReceiptId === r.id
                       const isMatched = matchedReceiptIds.has(r.id)
                       const selectable = !isMatched
