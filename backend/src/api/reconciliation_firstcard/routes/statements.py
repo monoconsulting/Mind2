@@ -21,7 +21,7 @@ from ..utils.db_helpers import (
     count_invoice_lines,
     write_invoice_metadata,
 )
-from ..services.workflow_coordinator import WorkflowCoordinator
+
 from services.tasks import (
     dispatch_workflow,
     log_import_event,
@@ -379,10 +379,25 @@ def resume_statement_workflow(sid: str) -> Any:
             workflow_run_id, status, current_stage = row
 
             # Update status to show it's processing again using transitions
-            coordinator = WorkflowCoordinator()
+            # Use FirstCardWorkflowCoordinator for workflow operations
+            from services.workflow_coordinator import FirstCardWorkflowCoordinator
+            fc_coordinator = FirstCardWorkflowCoordinator()
+            
             try:
                 # Transition to OCR_PENDING (resume processing)
-                coordinator.start_processing(sid)
+                transition_processing_status(
+                    sid,
+                    InvoiceProcessingStatus.OCR_PENDING,
+                    (
+                        InvoiceProcessingStatus.UPLOADED,
+                        InvoiceProcessingStatus.FAILED,
+                        InvoiceProcessingStatus.COMPLETED,
+                        InvoiceProcessingStatus.OCR_PENDING,
+                        InvoiceProcessingStatus.MATCHING_COMPLETED,
+                        InvoiceProcessingStatus.READY_FOR_MATCHING,
+                        InvoiceProcessingStatus.AI_PROCESSING,
+                    ),
+                )
                 # Transition document status to MATCHING
                 transition_document_status(
                     sid,
@@ -392,21 +407,28 @@ def resume_statement_workflow(sid: str) -> Any:
                         InvoiceDocumentStatus.MATCHING,
                         InvoiceDocumentStatus.FAILED,
                         InvoiceDocumentStatus.PARTIALLY_MATCHED,
+                        InvoiceDocumentStatus.MATCHED,
+                        InvoiceDocumentStatus.COMPLETED,
                     ),
                 )
             except Exception as e:
                 logger.warning(f"Failed to update status for resume {sid}: {e}")
 
             # Log resume stage to workflow_stage_runs so frontend sees immediate change
-            log_import_event(
+            fc_coordinator.begin_fc_import_stage(
                 workflow_run_id,
                 "resume_dispatch",
-                status="running",
                 message=f"Återupptar matchning (tidigare status: {status})",
+            )
+            fc_coordinator.complete_fc_import_stage(
+                workflow_run_id,
+                "resume_dispatch",
+                success=True,
+                message="Resume dispatched",
             )
 
             # Dispatch the workflow to resume
-            if dispatch_workflow(workflow_run_id):
+            if fc_coordinator.dispatch_fc_workflow(workflow_run_id):
                 log_event(
                     logger,
                     "invoice.workflow.resumed",
@@ -459,27 +481,33 @@ def restart_statement_workflow(sid: str) -> Any:
         return jsonify({"error": "lookup_failed", "details": str(e)}), 500
 
     # Create a new workflow run
-    coordinator = WorkflowCoordinator()
-    workflow_run_id = coordinator.create_workflow_run(
-        workflow_key="WF3_FIRSTCARD_INVOICE",
-        source_channel="kortmatchning_restart",
+    from services.workflow_coordinator import FirstCardWorkflowCoordinator
+    fc_coordinator = FirstCardWorkflowCoordinator()
+    
+    workflow_run_id = fc_coordinator.create_workflow_run_for_fc_document(
         file_id=sid,
-        content_hash=content_hash,
+        workflow_type="creditcard_invoice",
+        workflow_key="WF3_FIRSTCARD_INVOICE",
     )
 
     if not workflow_run_id:
         return jsonify({"error": "workflow_creation_failed"}), 500
 
     # Log restart stage to workflow_stage_runs so frontend sees immediate change
-    log_import_event(
+    fc_coordinator.begin_fc_import_stage(
         workflow_run_id,
         "restart_dispatch",
-        status="running",
         message="Omstartar fakturaimport från början",
+    )
+    fc_coordinator.complete_fc_import_stage(
+        workflow_run_id,
+        "restart_dispatch",
+        success=True,
+        message="Restart dispatched",
     )
 
     # Dispatch the new workflow
-    if dispatch_workflow(workflow_run_id):
+    if fc_coordinator.dispatch_fc_workflow(workflow_run_id):
         log_event(
             logger,
             "invoice.workflow.restarted",
@@ -519,6 +547,9 @@ def restart_statement_workflow(sid: str) -> Any:
                         InvoiceProcessingStatus.FAILED,
                         InvoiceProcessingStatus.COMPLETED,
                         InvoiceProcessingStatus.OCR_PENDING,
+                        InvoiceProcessingStatus.MATCHING_COMPLETED,
+                        InvoiceProcessingStatus.READY_FOR_MATCHING,
+                        InvoiceProcessingStatus.AI_PROCESSING,
                     ),
                 )
                 transition_document_status(
@@ -529,6 +560,8 @@ def restart_statement_workflow(sid: str) -> Any:
                         InvoiceDocumentStatus.COMPLETED,
                         InvoiceDocumentStatus.MATCHED,
                         InvoiceDocumentStatus.IMPORTED,
+                        InvoiceDocumentStatus.PARTIALLY_MATCHED,
+                        InvoiceDocumentStatus.MATCHING,
                     ),
                 )
         except Exception as e:

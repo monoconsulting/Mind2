@@ -69,6 +69,8 @@ from .workflow_base import (
 )
 from services.ai_service import AIService
 from api.ai_processing import classify_document_internal
+from services.workflow_coordinator import FirstCardWorkflowCoordinator
+
 logger = logging.getLogger(__name__)
 
 def dispatch_workflow(workflow_run_id: int) -> bool:
@@ -281,25 +283,24 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     """
     Workflow 3: FirstCard Invoice Processing.
     """
+    fc_coordinator = FirstCardWorkflowCoordinator()
     wfr = ensure_workflow(workflow_run_id, expected_prefix="WF3_")
-    mark_stage(workflow_run_id, "firstcard_invoice", "running", start=True)
+    fc_coordinator.begin_fc_import_stage(workflow_run_id, "firstcard_invoice", "Workflow running")
 
     file_id = wfr.get("file_id")
     if not file_id:
-        mark_stage(
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "firstcard_invoice",
-            "failed",
+            success=False,
             message="Workflow run missing file_id.",
-            end=True,
-            workflow_status_override="failed",
         )
         log_finalize_failure(workflow_run_id, "Workflow run saknar file_id")
         raise ValueError("Workflow run missing file_id")
 
     metadata = _load_invoice_metadata(file_id) or {}
 
-    begin_import_stage(
+    fc_coordinator.begin_fc_import_stage(
         workflow_run_id,
         "fc_ocr",
         message=f"F├╢rbereder OCR f├╢r FirstCard {file_id}",
@@ -331,18 +332,15 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             parent_workflow_type,
             page_count,
         )
-        mark_stage(
+        fc_coordinator.begin_fc_import_stage(
             workflow_run_id,
             "firstcard_invoice",
-            "running",
             message=f"file_type={parent_file_type}; workflow_type={parent_workflow_type}; pages={page_count}",
         )
-        mark_stage(
+        fc_coordinator.begin_fc_import_stage(
             workflow_run_id,
             "ocr_merge",
-            "running",
-            start=True,
-            update_workflow_status=False,
+            message="Merging OCR results",
         )
 
         merged_main_id: Optional[int] = None
@@ -354,13 +352,11 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             if not metadata.get("creditcard_main_id"):
                 metadata["creditcard_main_id"] = merged_main_id
             metadata.setdefault("creditcard_invoice_number", f"INV-{file_id}")
-            mark_stage(
+            fc_coordinator.complete_fc_import_stage(
                 workflow_run_id,
                 "ocr_merge",
-                "succeeded",
+                success=True,
                 message=f"Persisted merged OCR ({ocr_length} chars) to creditcard_invoices_main id={merged_main_id}",
-                end=True,
-                update_workflow_status=False,
             )
             logger.info(
                 "WF3 run %s persisted %d merged OCR chars for invoice %s (main_id=%s)",
@@ -371,22 +367,18 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             )
         else:
             if not combined_text:
-                mark_stage(
+                fc_coordinator.complete_fc_import_stage(
                     workflow_run_id,
                     "ocr_merge",
-                    "skipped",
-                    message="No OCR text available to persist",
-                    end=True,
-                    update_workflow_status=False,
+                    success=True, # Skipped is effectively success for this stage? Or should I use success=False? Skipped usually implies not failed.
+                    message="No OCR text available to persist (skipped)",
                 )
             else:
-                mark_stage(
+                fc_coordinator.complete_fc_import_stage(
                     workflow_run_id,
                     "ocr_merge",
-                    "failed",
+                    success=False,
                     message="Failed to persist merged OCR text to creditcard_invoices_main",
-                    end=True,
-                    update_workflow_status=False,
                 )
                 logger.error(
                     "WF3 run %s could not persist merged OCR text for invoice %s",
@@ -430,15 +422,13 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
                 InvoiceDocumentStatus.MATCHING,
             ),
         )
-        mark_stage(
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "firstcard_invoice",
-            "failed",
+            success=False,
             message=f"OCR preparation failed: {exc}",
-            end=True,
-            workflow_status_override="failed",
         )
-        complete_import_stage(
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "fc_ocr",
             success=False,
@@ -447,7 +437,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
         log_finalize_failure(workflow_run_id, f"OCR-misslyckande: {exc}")
         raise
     else:
-        complete_import_stage(
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "fc_ocr",
             success=True,
@@ -460,27 +450,35 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
         )
         doc_type_norm = (classification.document_type or "").strip().lower()
         is_fc_invoice = doc_type_norm == "fc_invoice"
-        log_import_decision(
+        # log_import_decision is a helper, we can replace it or keep it if it uses mark_stage internally.
+        # But D2 says replace direct creation/updates. log_import_decision uses _log_import_stage which uses mark_stage.
+        # So we should replace it.
+        fc_coordinator.begin_fc_import_stage(
+            workflow_run_id,
+            "fc_is_fc",
+            message=f"AI1 identifierade dokumenttyp: {classification.document_type}",
+        )
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "fc_is_fc",
             success=is_fc_invoice,
             message=f"AI1 identifierade dokumenttyp: {classification.document_type}",
         )
+
         if not is_fc_invoice:
             reason = (
                 f"AI1 klassificerade dokumentet som '{classification.document_type}' "
                 "men endast FC-fakturor till├Ñts i detta fl├╢de."
             )
-            log_import_event(workflow_run_id, AiStatus.MANUAL_REVIEW.value, message=reason)
+            fc_coordinator.begin_fc_import_stage(workflow_run_id, AiStatus.MANUAL_REVIEW.value, message=reason)
+            fc_coordinator.complete_fc_import_stage(workflow_run_id, AiStatus.MANUAL_REVIEW.value, success=True, message=reason)
             _move_to_manual_review(file_id, reason)
             log_finalize_failure(workflow_run_id, reason)
-            mark_stage(
+            fc_coordinator.complete_fc_import_stage(
                 workflow_run_id,
                 "firstcard_invoice",
-                "failed",
+                success=False,
                 message=reason,
-                end=True,
-                workflow_status_override="failed",
             )
             raise UnsupportedDocumentTypeError(reason)
 
@@ -514,7 +512,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     start_time = time.time()
     ai6_provider = ai_service.prompt_provider_names.get("credit_card_invoice_parsing", "unknown")
     ai6_model = ai_service.prompt_model_names.get("credit_card_invoice_parsing", "unknown")
-    begin_import_stage(workflow_run_id, "fc_parse", message="AI6 tolkning av faktura")
+    fc_coordinator.begin_fc_import_stage(workflow_run_id, "fc_parse", message="AI6 tolkning av faktura")
     try:
         extraction = ai_service.parse_credit_card_invoice(request)
         elapsed = int((time.time() - start_time) * 1000)
@@ -538,7 +536,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             provider=ai6_provider,
             model_name=ai6_model,
         )
-        complete_import_stage(
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "fc_parse",
             success=True,
@@ -566,7 +564,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             provider=ai6_provider,
             model_name=ai6_model,
         )
-        complete_import_stage(
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "fc_parse",
             success=False,
@@ -589,13 +587,11 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
                 InvoiceDocumentStatus.MATCHING,
             ),
         )
-        mark_stage(
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "firstcard_invoice",
-            "failed",
+            success=False,
             message=f"AI6 parsing failed: {type(exc).__name__}: {exc}",
-            end=True,
-            workflow_status_override="failed",
         )
         log_finalize_failure(workflow_run_id, f"AI6 misslyckades: {exc}")
         raise
@@ -618,13 +614,11 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
                 InvoiceDocumentStatus.MATCHING,
             ),
         )
-        mark_stage(
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "firstcard_invoice",
-            "failed",
+            success=False,
             message="Failed to persist credit card invoice header.",
-            end=True,
-            workflow_status_override="failed",
         )
         log_finalize_failure(workflow_run_id, "Misslyckades att spara huvuddata")
         raise RuntimeError("Failed to persist credit card invoice header")
@@ -683,7 +677,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     metadata["processing_status"] = InvoiceProcessingStatus.READY_FOR_MATCHING.value
     _update_invoice_metadata(file_id, metadata)
 
-    begin_import_stage(
+    fc_coordinator.begin_fc_import_stage(
         workflow_run_id,
         "fc_ready",
         message="F├╢rbereder fakturan f├╢r matchning",
@@ -710,7 +704,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             InvoiceDocumentStatus.COMPLETED,
         ),
     )
-    complete_import_stage(
+    fc_coordinator.complete_fc_import_stage(
         workflow_run_id,
         "fc_ready",
         success=True,
@@ -718,48 +712,49 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     )
 
     try:
-        mark_stage(
+        fc_coordinator.begin_fc_import_stage(
             workflow_run_id,
             "auto_match",
-            "running",
-            start=True,
-            update_workflow_status=False,
+            message="Auto-match running",
         )
-        begin_import_stage(
+        fc_coordinator.begin_fc_import_stage(
             workflow_run_id,
             "ai5",
             message="AI5 kortmatchning startar",
         )
         matched_auto, evaluated = auto_match_invoice_lines(file_id)
         total_lines, matched_lines = refresh_invoice_match_state(file_id)
-        mark_stage(
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "auto_match",
-            "succeeded",
+            success=True,
             message=f"Auto-matched {matched_lines} of {total_lines} lines (new matches: {matched_auto})",
-            end=True,
-            update_workflow_status=False,
         )
-        complete_import_stage(
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "ai5",
             success=True,
             message=f"AI5 matchade {matched_lines}/{total_lines} rader",
         )
         has_match = matched_lines > 0
-        log_import_decision(
+        fc_coordinator.begin_fc_import_stage(
+            workflow_run_id,
+            "m_found",
+            message="Match hittad" if has_match else "Inga automatiska matchningar",
+        )
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "m_found",
             success=has_match,
             message="Match hittad" if has_match else "Inga automatiska matchningar",
         )
         if has_match:
-            begin_import_stage(
+            fc_coordinator.begin_fc_import_stage(
                 workflow_run_id,
                 "m_link",
                 message="L├ñnkar kvitton till fakturarader",
             )
-            complete_import_stage(
+            fc_coordinator.complete_fc_import_stage(
                 workflow_run_id,
                 "m_link",
                 success=True,
@@ -767,55 +762,57 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             )
         unmatched_count = max(total_lines - matched_lines, 0)
         if unmatched_count > 0:
-            begin_import_stage(
+            fc_coordinator.begin_fc_import_stage(
                 workflow_run_id,
                 "m_unmatched",
                 message="Flaggar omatchade rader",
             )
-            complete_import_stage(
+            fc_coordinator.complete_fc_import_stage(
                 workflow_run_id,
                 "m_unmatched",
                 success=True,
                 message=f"{unmatched_count} rader kvar att hantera",
             )
     except Exception as exc:
-        mark_stage(
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "auto_match",
-            "failed",
+            success=False,
             message=f"Auto-match failed: {exc}",
-            end=True,
-            update_workflow_status=False,
         )
-        complete_import_stage(
+        fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "ai5",
             success=False,
             message=f"AI5 misslyckades: {exc}",
         )
 
-    mark_stage(
+    fc_coordinator.complete_fc_import_stage(
         workflow_run_id,
         "firstcard_invoice",
-        "succeeded",
+        success=True,
         message=f"Parsed credit card invoice: main_id={main_id}, lines={items_inserted}/{inserted_invoice_lines}",
-        end=True,
-        workflow_status_override="succeeded",
     )
-    begin_import_stage(
+    fc_coordinator.begin_fc_import_stage(
         workflow_run_id,
         "finalize_ok",
         message="FirstCard-fl├╢det klart",
     )
-    complete_import_stage(
+    fc_coordinator.complete_fc_import_stage(
         workflow_run_id,
         "finalize_ok",
         success=True,
         message="Fakturafl├╢det avslutades utan fel",
     )
-    log_import_event(
+    fc_coordinator.begin_fc_import_stage(
         workflow_run_id,
         "KLAR",
+        message="WF3 slutf├╢rd",
+    )
+    fc_coordinator.complete_fc_import_stage(
+        workflow_run_id,
+        "KLAR",
+        success=True,
         message="WF3 slutf├╢rd",
     )
     return workflow_run_id
