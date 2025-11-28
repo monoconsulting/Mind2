@@ -38,6 +38,7 @@ from .workflow_base import (
 )
 logger = logging.getLogger(__name__)
 
+# TASK_INVENTORY: ACTIVE (2025-11-28). WF1 OCR stage for receipt workflow.
 @celery_app.task(name="wf1_run_ocr")
 def wf1_run_ocr(workflow_run_id: int) -> int:
     """
@@ -56,9 +57,15 @@ def wf1_run_ocr(workflow_run_id: int) -> int:
         mark_stage(workflow_run_id, "ocr", "failed", message="File ID missing in workflow run.")
         raise ValueError("File ID is missing.")
 
-    begin_import_stage(workflow_run_id, "r_ocr", message=f"OCR startar f├╢r fil {file_id}")
+    begin_import_stage(workflow_run_id, "r_ocr", message=f"OCR startar för fil {file_id}")
     mark_stage(workflow_run_id, "ocr", "running", start=True)
     start_time = time.time()
+    log_event(
+        logger,
+        "wf1.ocr.start",
+        workflow_run_id=workflow_run_id,
+        file_id=file_id,
+    )
 
     result: dict[str, Any] | None = None
     error_msg: str | None = None
@@ -68,6 +75,13 @@ def wf1_run_ocr(workflow_run_id: int) -> int:
     except Exception as exc:
         result = None
         error_msg = f"{type(exc).__name__}: {str(exc)}"
+        log_event(
+            logger,
+            "wf1.ocr.error",
+            workflow_run_id=workflow_run_id,
+            file_id=file_id,
+            error=error_msg,
+        )
 
     elapsed = int((time.time() - start_time) * 1000)
 
@@ -77,15 +91,32 @@ def wf1_run_ocr(workflow_run_id: int) -> int:
         message = f"OCR succeeded, extracted {text_len} chars in {elapsed}ms."
         mark_stage(workflow_run_id, "ocr", "succeeded", message=message, end=True)
         complete_import_stage(workflow_run_id, "r_ocr", success=True, message=message)
+        log_event(
+            logger,
+            "wf1.ocr.succeeded",
+            workflow_run_id=workflow_run_id,
+            file_id=file_id,
+            duration_ms=elapsed,
+            characters=text_len,
+        )
     else:
         message = f"OCR failed: {error_msg or 'OCR returned no results'}"
         mark_stage(workflow_run_id, "ocr", "failed", message=message, end=True)
         complete_import_stage(workflow_run_id, "r_ocr", success=False, message=message)
         # Do not raise an exception, allow the workflow to be inspected.
         # A failed stage will already halt the workflow chain by default.
+        log_event(
+            logger,
+            "wf1.ocr.failed",
+            workflow_run_id=workflow_run_id,
+            file_id=file_id,
+            error=error_msg or "no_text",
+            duration_ms=elapsed,
+        )
 
     return workflow_run_id
 
+# TASK_INVENTORY: ACTIVE (2025-11-28). WF2 PDF splitter that schedules per-page OCR.
 @celery_app.task(name="wf2_prepare_pdf_pages")
 def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
     """
@@ -326,6 +357,7 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
 
     return workflow_run_id
 
+# TASK_INVENTORY: ACTIVE (2025-11-28). WF2 per-page OCR execution.
 @celery_app.task(name="wf2_run_page_ocr")
 def wf2_run_page_ocr(workflow_run_id: int, page_file_id: str) -> tuple[int, str, str]:
     """
@@ -341,6 +373,13 @@ def wf2_run_page_ocr(workflow_run_id: int, page_file_id: str) -> tuple[int, str,
 
     mark_stage(workflow_run_id, stage_key, "running", start=True)
     start_time = time.time()
+    log_event(
+        logger,
+        "wf2.page_ocr.start",
+        workflow_run_id=workflow_run_id,
+        page_file_id=page_file_id,
+        page_number=page_number,
+    )
 
     result: dict[str, Any] | None = None
     error_msg: str | None = None
@@ -351,6 +390,14 @@ def wf2_run_page_ocr(workflow_run_id: int, page_file_id: str) -> tuple[int, str,
     except Exception as exc:
         result = None
         error_msg = f"{type(exc).__name__}: {str(exc)}"
+        log_event(
+            logger,
+            "wf2.page_ocr.error",
+            workflow_run_id=workflow_run_id,
+            page_file_id=page_file_id,
+            page_number=page_number,
+            error=error_msg,
+        )
 
     elapsed = int((time.time() - start_time) * 1000)
 
@@ -359,12 +406,31 @@ def wf2_run_page_ocr(workflow_run_id: int, page_file_id: str) -> tuple[int, str,
         _update_file_fields(page_file_id, ocr_raw=text)
         message = f"OCR succeeded for page {page_number}, extracted {len(text)} chars in {elapsed}ms."
         mark_stage(workflow_run_id, stage_key, "succeeded", message=message, end=True)
+        log_event(
+            logger,
+            "wf2.page_ocr.succeeded",
+            workflow_run_id=workflow_run_id,
+            page_file_id=page_file_id,
+            page_number=page_number,
+            duration_ms=elapsed,
+            characters=len(text),
+        )
     else:
         message = f"OCR failed for page {page_number}: {error_msg or 'OCR returned no results'}"
         mark_stage(workflow_run_id, stage_key, "failed", message=message, end=True)
+        log_event(
+            logger,
+            "wf2.page_ocr.failed",
+            workflow_run_id=workflow_run_id,
+            page_file_id=page_file_id,
+            page_number=page_number,
+            error=error_msg or 'no_text',
+            duration_ms=elapsed,
+        )
 
     return (workflow_run_id, page_file_id, text)
 
+# TASK_INVENTORY: ACTIVE (2025-11-28). WF2 fan-in to merge OCR results and continue workflow.
 @celery_app.task(name="wf2_merge_ocr_results")
 def wf2_merge_ocr_results(results: list[tuple[int, str, str]], workflow_run_id: int):
     """
@@ -420,6 +486,7 @@ def wf2_merge_ocr_results(results: list[tuple[int, str, str]], workflow_run_id: 
 
     return workflow_run_id
 
+# TASK_INVENTORY: ACTIVE (2025-11-28). WF2 invoice analysis stage (parses merged OCR).
 @celery_app.task(name="wf2_run_invoice_analysis")
 def wf2_run_invoice_analysis(workflow_run_id: int) -> int:
     """
@@ -434,6 +501,12 @@ def wf2_run_invoice_analysis(workflow_run_id: int) -> int:
         raise ValueError("File ID is missing.")
 
     mark_stage(workflow_run_id, "invoice_analysis", "running", start=True)
+    log_event(
+        logger,
+        "wf2.invoice_analysis.start",
+        workflow_run_id=workflow_run_id,
+        file_id=file_id,
+    )
 
     parent_info = _load_unified_file_info(file_id) or {}
 
@@ -454,12 +527,26 @@ def wf2_run_invoice_analysis(workflow_run_id: int) -> int:
 
         message = f"Invoice analysis complete. Inserted {inserted} lines."
         mark_stage(workflow_run_id, "invoice_analysis", "succeeded", message=message, end=True)
+        log_event(
+            logger,
+            "wf2.invoice_analysis.succeeded",
+            workflow_run_id=workflow_run_id,
+            file_id=file_id,
+            inserted=inserted,
+        )
 
         # Trigger finalization
         wf2_finalize.s(workflow_run_id).apply_async()
 
     except Exception as e:
         mark_stage(workflow_run_id, "invoice_analysis", "failed", message=str(e), end=True)
+        log_event(
+            logger,
+            "wf2.invoice_analysis.failed",
+            workflow_run_id=workflow_run_id,
+            file_id=file_id,
+            error=str(e),
+        )
         raise
 
     return workflow_run_id
