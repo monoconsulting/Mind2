@@ -23,7 +23,6 @@ class FirstCardWorkflowCoordinator:
     def create_workflow_run_for_fc_document(
         self,
         file_id: str,
-        workflow_type: str = "creditcard_invoice",
         workflow_key: str = "WF3_FIRSTCARD_INVOICE",
     ) -> int:
         """
@@ -31,7 +30,6 @@ class FirstCardWorkflowCoordinator:
 
         Args:
             file_id: The unified_file_id (or invoice_document_id).
-            workflow_type: The type of workflow (default: "creditcard_invoice").
             workflow_key: The specific workflow key (default: "WF3_FIRSTCARD_INVOICE").
 
         Returns:
@@ -45,26 +43,22 @@ class FirstCardWorkflowCoordinator:
                 """
                 INSERT INTO workflow_runs (
                     file_id,
-                    workflow_type,
                     workflow_key,
                     status,
                     created_at,
                     updated_at
-                ) VALUES (%s, %s, %s, 'pending', NOW(), NOW())
-                RETURNING id
+                ) VALUES (%s, %s, 'queued', NOW(), NOW())
                 """,
-                (file_id, workflow_type, workflow_key),
+                (file_id, workflow_key),
             )
-            result = cur.fetchone()
-            if not result:
+            workflow_run_id = cur.lastrowid
+            if not workflow_run_id:
                 raise RuntimeError("Failed to create workflow_run")
-            workflow_run_id = result[0]
 
         logger.info(
-            "Created workflow_run %s for file %s (type=%s, key=%s)",
+            "Created workflow_run %s for file %s (key=%s)",
             workflow_run_id,
             file_id,
-            workflow_type,
             workflow_key,
         )
         return workflow_run_id
@@ -94,7 +88,7 @@ class FirstCardWorkflowCoordinator:
             cur.execute(
                 """
                 SELECT id FROM workflow_stage_runs
-                WHERE workflow_run_id = %s AND stage_name = %s
+                WHERE workflow_run_id = %s AND stage_key = %s
                 """,
                 (workflow_run_id, stage_name),
             )
@@ -106,10 +100,9 @@ class FirstCardWorkflowCoordinator:
                     """
                     UPDATE workflow_stage_runs
                     SET status = 'running',
-                        start_time = NOW(),
-                        end_time = NULL,
-                        message = %s,
-                        updated_at = NOW()
+                        started_at = NOW(),
+                        finished_at = NULL,
+                        message = %s
                     WHERE id = %s
                     """,
                     (message, stage_id),
@@ -119,21 +112,17 @@ class FirstCardWorkflowCoordinator:
                     """
                     INSERT INTO workflow_stage_runs (
                         workflow_run_id,
-                        stage_name,
+                        stage_key,
                         status,
-                        start_time,
-                        message,
-                        created_at,
-                        updated_at
-                    ) VALUES (%s, %s, 'running', NOW(), %s, NOW(), NOW())
-                    RETURNING id
+                        started_at,
+                        message
+                    ) VALUES (%s, %s, 'running', NOW(), %s)
                     """,
                     (workflow_run_id, stage_name, message),
                 )
-                result = cur.fetchone()
-                if not result:
+                stage_id = cur.lastrowid
+                if not stage_id:
                     raise RuntimeError(f"Failed to create stage run for {stage_name}")
-                stage_id = result[0]
 
         logger.info(
             "Started stage '%s' for workflow_run %s (msg=%s)",
@@ -185,10 +174,9 @@ class FirstCardWorkflowCoordinator:
                 """
                 UPDATE workflow_stage_runs
                 SET status = %s,
-                    end_time = NOW(),
-                    message = %s,
-                    updated_at = NOW()
-                WHERE workflow_run_id = %s AND stage_name = %s
+                    finished_at = NOW(),
+                    message = %s
+                WHERE workflow_run_id = %s AND stage_key = %s
                 """,
                 (status, message, workflow_run_id, stage_name),
             )
@@ -198,13 +186,11 @@ class FirstCardWorkflowCoordinator:
                     """
                     INSERT INTO workflow_stage_runs (
                         workflow_run_id,
-                        stage_name,
+                        stage_key,
                         status,
-                        end_time,
-                        message,
-                        created_at,
-                        updated_at
-                    ) VALUES (%s, %s, %s, NOW(), %s, NOW(), NOW())
+                        finished_at,
+                        message
+                    ) VALUES (%s, %s, %s, NOW(), %s)
                     """,
                     (workflow_run_id, stage_name, status, message),
                 )
