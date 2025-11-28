@@ -73,6 +73,7 @@ from services.workflow_coordinator import FirstCardWorkflowCoordinator
 
 logger = logging.getLogger(__name__)
 
+# TASK_INVENTORY: ACTIVE (2025-11-28). Dispatches workflow_run records to WF1/WF2/WF3 Celery chains.
 def dispatch_workflow(workflow_run_id: int) -> bool:
     """Dispatch workflow based on workflow_key.
 
@@ -96,23 +97,40 @@ def dispatch_workflow(workflow_run_id: int) -> bool:
         mark_stage(workflow_run_id, "dispatch", "failed", message="Workflow key is missing.")
         return False
 
+    logger.info(
+        "dispatch_workflow_start",
+        extra={"workflow_run_id": workflow_run_id, "workflow_key": workflow_key},
+    )
+
     try:
         if workflow_key == "WF1_RECEIPT":
             # WF1: Build the new, separated task chain
             mark_stage(workflow_run_id, "dispatch", "succeeded", message="WF1 dispatched to new wf1.* chain.")
             (wf1_run_ocr.s(workflow_run_id) | wf1_run_ai_pipeline.s() | wf1_finalize.s()).apply_async()
+            logger.info(
+                "dispatch_workflow_enqueued",
+                extra={"workflow_run_id": workflow_run_id, "workflow_key": workflow_key, "target": "wf1"},
+            )
             return True
 
         elif workflow_key == "WF2_PDF_SPLIT":
             # WF2: Start the PDF processing chain
             mark_stage(workflow_run_id, "dispatch", "succeeded", message="WF2 dispatched to new wf2.* chain.")
             wf2_prepare_pdf_pages.s(workflow_run_id).apply_async()
+            logger.info(
+                "dispatch_workflow_enqueued",
+                extra={"workflow_run_id": workflow_run_id, "workflow_key": workflow_key, "target": "wf2"},
+            )
             return True
 
         elif workflow_key == "WF3_FIRSTCARD_INVOICE":
             # WF3: Start the FirstCard invoice processing chain
             mark_stage(workflow_run_id, "dispatch", "succeeded", message="WF3 dispatched to new wf3.* chain.")
             wf3_firstcard_invoice.s(workflow_run_id).apply_async()
+            logger.info(
+                "dispatch_workflow_enqueued",
+                extra={"workflow_run_id": workflow_run_id, "workflow_key": workflow_key, "target": "wf3"},
+            )
             return True
 
         else:
@@ -123,12 +141,21 @@ def dispatch_workflow(workflow_run_id: int) -> bool:
                 "failed",
                 message=f"Unknown workflow_key: {workflow_key}",
             )
+            logger.warning(
+                "dispatch_workflow_unknown_key",
+                extra={"workflow_run_id": workflow_run_id, "workflow_key": workflow_key},
+            )
             return False
 
     except Exception as e:
+        logger.exception(
+            "dispatch_workflow_failed",
+            extra={"workflow_run_id": workflow_run_id, "workflow_key": workflow_key},
+        )
         mark_stage(workflow_run_id, "dispatch", "failed", message=f"Dispatch exception: {e}")
         return False
 
+# TASK_INVENTORY: ACTIVE (2025-11-28). WF1 receipt AI1–AI4 pipeline executor.
 @celery_app.task(name="wf1_run_ai_pipeline")
 def wf1_run_ai_pipeline(workflow_run_id: int) -> int:
     """
@@ -155,21 +182,35 @@ def wf1_run_ai_pipeline(workflow_run_id: int) -> int:
 
     mark_stage(workflow_run_id, "ai_pipeline", "running", start=True)
     start_time = time.time()
+    logger.info(
+        "wf1_run_ai_pipeline_start",
+        extra={"workflow_run_id": workflow_run_id, "file_id": file_id},
+    )
 
     try:
         steps = _run_ai_pipeline(file_id, workflow_run_id)
         elapsed = int((time.time() - start_time) * 1000)
         message = f"AI pipeline completed {len(steps)} stages in {elapsed}ms: {', '.join(steps)}"
         mark_stage(workflow_run_id, "ai_pipeline", "succeeded", message=message, end=True)
+        logger.info(
+            "wf1_run_ai_pipeline_succeeded",
+            extra={"workflow_run_id": workflow_run_id, "file_id": file_id, "steps": steps, "duration_ms": elapsed},
+        )
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
         error_msg = f"{type(exc).__name__}: {str(exc)}"
         message = f"AI pipeline failed after {elapsed}ms: {error_msg}"
         mark_stage(workflow_run_id, "ai_pipeline", "failed", message=message, end=True)
+        logger.error(
+            "wf1_run_ai_pipeline_failed",
+            exc_info=True,
+            extra={"workflow_run_id": workflow_run_id, "file_id": file_id, "duration_ms": elapsed},
+        )
         # Do not re-raise, let the workflow system handle the failed state.
 
     return workflow_run_id
 
+# TASK_INVENTORY: ACTIVE (2025-11-28). WF1 finalization stage updating workflow status.
 @celery_app.task(name="wf1_finalize")
 def wf1_finalize(workflow_run_id: int) -> int:
     """
@@ -184,6 +225,10 @@ def wf1_finalize(workflow_run_id: int) -> int:
     wfr = ensure_workflow(workflow_run_id, expected_prefix="WF1_")
 
     mark_stage(workflow_run_id, "finalize", "running", start=True)
+    logger.info(
+        "wf1_finalize_start",
+        extra={"workflow_run_id": workflow_run_id, "file_id": wfr.get("file_id")},
+    )
 
     # Check status of the AI pipeline stage
     ai_stage = get_workflow_stage(workflow_run_id, "ai_pipeline")
@@ -206,6 +251,11 @@ def wf1_finalize(workflow_run_id: int) -> int:
         except Exception as e:
             message = f"Finalize failed to update workflow status: {e}"
             final_status = "failed"
+            logger.error(
+                "wf1_finalize_db_update_failed",
+                exc_info=True,
+                extra={"workflow_run_id": workflow_run_id, "file_id": wfr.get("file_id")},
+            )
 
 
     mark_stage(
@@ -237,8 +287,13 @@ def wf1_finalize(workflow_run_id: int) -> int:
     else:
         log_finalize_failure(workflow_run_id, message or "WF1 misslyckades")
 
+    logger.info(
+        "wf1_finalize_complete",
+        extra={"workflow_run_id": workflow_run_id, "file_id": wfr.get("file_id"), "status": final_status},
+    )
     return workflow_run_id
 
+# TASK_INVENTORY: ACTIVE (2025-11-28). WF2 finalization stage updating workflow status.
 @celery_app.task(name="wf2_finalize")
 def wf2_finalize(workflow_run_id: int) -> int:
     """
@@ -246,6 +301,10 @@ def wf2_finalize(workflow_run_id: int) -> int:
     """
     wfr = ensure_workflow(workflow_run_id, expected_prefix="WF2_")
     mark_stage(workflow_run_id, "finalize", "running", start=True)
+    logger.info(
+        "wf2_finalize_start",
+        extra={"workflow_run_id": workflow_run_id, "file_id": wfr.get("file_id")},
+    )
 
     analysis_stage = get_workflow_stage(workflow_run_id, "invoice_analysis")
     
@@ -266,6 +325,11 @@ def wf2_finalize(workflow_run_id: int) -> int:
         except Exception as e:
             message = f"Finalize failed to update workflow status: {e}"
             final_status = "failed"
+            logger.error(
+                "wf2_finalize_db_update_failed",
+                exc_info=True,
+                extra={"workflow_run_id": workflow_run_id, "file_id": wfr.get("file_id")},
+            )
 
     mark_stage(
         workflow_run_id,
@@ -276,8 +340,13 @@ def wf2_finalize(workflow_run_id: int) -> int:
         workflow_status_override=final_status,
     )
 
+    logger.info(
+        "wf2_finalize_complete",
+        extra={"workflow_run_id": workflow_run_id, "file_id": wfr.get("file_id"), "status": final_status},
+    )
     return workflow_run_id
 
+# TASK_INVENTORY: ACTIVE (2025-11-28). WF3 FirstCard invoice orchestration (OCR → AI6 → AI5 match).
 @celery_app.task(name="wf3_firstcard_invoice")
 def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     """
@@ -315,7 +384,11 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             ),
         )
     except Exception:
-        pass
+        logger.debug(
+            "wf3_firstcard_invoice_ocr_pending_transition_failed",
+            exc_info=True,
+            extra={"workflow_run_id": workflow_run_id, "file_id": file_id},
+        )
 
     parent_info = _load_unified_file_info(file_id) or {}
 
@@ -495,7 +568,11 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             ),
         )
     except Exception:
-        pass
+        logger.debug(
+            "wf3_firstcard_invoice_ai_processing_transition_failed",
+            exc_info=True,
+            extra={"workflow_run_id": workflow_run_id, "file_id": file_id},
+        )
 
     page_ids = [page.get("file_id") for page in (other_data.get("pages") or []) if page.get("file_id")]
 
@@ -785,6 +862,11 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             "ai5",
             success=False,
             message=f"AI5 misslyckades: {exc}",
+        )
+        logger.error(
+            "wf3_firstcard_invoice_auto_match_failed",
+            exc_info=True,
+            extra={"workflow_run_id": workflow_run_id, "file_id": file_id},
         )
 
     fc_coordinator.complete_fc_import_stage(

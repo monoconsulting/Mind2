@@ -60,6 +60,7 @@ def _tasks_attr(name: str, fallback):
     return fallback
 
 
+# TASK_INVENTORY: LEGACY (2025-11-28). Legacy OCR/router used by fetcher API and scripts; bypasses workflow_run dispatcher.
 @celery_app.task(name="process_ocr")
 @track_task("process_ocr")
 def process_ocr(file_id: str) -> dict[str, Any]:
@@ -155,6 +156,7 @@ def process_ocr(file_id: str) -> dict[str, Any]:
     return {"file_id": file_id, "status": AiStatus.OCR_DONE.value, "ok": ok, "real": bool(result)}
 
 
+# TASK_INVENTORY: LEGACY (2025-11-28). Legacy document classification stage kept for backward compatibility.
 @celery_app.task(name="process_classification")
 @track_task("process_classification")
 def process_classification(file_id: str) -> dict[str, Any]:
@@ -244,6 +246,7 @@ def process_classification(file_id: str) -> dict[str, Any]:
     }
 
 
+# TASK_INVENTORY: LEGACY (2025-11-28). Legacy receipt validation stage invoked from legacy classification flow.
 @celery_app.task(name="process_validation")
 @track_task("process_validation")
 def process_validation(file_id: str) -> dict[str, Any]:
@@ -282,6 +285,7 @@ def process_validation(file_id: str) -> dict[str, Any]:
     return {"file_id": file_id, "status": new_status, "ok": ok, "messages": messages}
 
 
+# TASK_INVENTORY: LEGACY (2025-11-28). Legacy accounting proposal generator for receipt flow.
 @celery_app.task(name="process_accounting_proposal")
 @track_task("process_accounting_proposal")
 def process_accounting_proposal(file_id: str) -> dict[str, Any]:
@@ -300,6 +304,7 @@ def process_accounting_proposal(file_id: str) -> dict[str, Any]:
     return {"file_id": file_id, "entries": len(entries), "ok": saved}
 
 
+# TASK_INVENTORY: LEGACY (2025-11-28). Legacy AI1–AI4 pipeline entry; superseded by WF1 chain.
 @celery_app.task(name="process_ai_pipeline")
 @track_task("process_ai_pipeline")
 def process_ai_pipeline(file_id: str) -> dict[str, Any]:
@@ -307,6 +312,7 @@ def process_ai_pipeline(file_id: str) -> dict[str, Any]:
     return {"file_id": file_id, "steps": steps, "ok": True}
 
 
+# TASK_INVENTORY: LEGACY (2025-11-28). Legacy invoice OCR aggregation; replaced by WF2/WF3.
 @celery_app.task(name="process_invoice_ai_extraction")
 @track_task("process_invoice_ai_extraction")
 def process_invoice_ai_extraction(invoice_id: str) -> dict[str, Any]:
@@ -331,6 +337,7 @@ def _enqueue_invoice_ai_extraction(invoice_id: str) -> None:
         logger.warning("Failed to enqueue invoice AI extraction for %s: %s", invoice_id, exc)
 
 
+# TASK_INVENTORY: UNCERTAIN (2025-11-28). Legacy credit-card matching stub; only tests reference it today.
 @celery_app.task(name="process_matching")
 @track_task("process_matching")
 def process_matching(statement_id: str) -> dict[str, Any]:
@@ -349,7 +356,11 @@ def process_matching(statement_id: str) -> dict[str, Any]:
     return {"statement_id": statement_id, "file_id": file_id, "matched": matched}
 
 
+# TASK_INVENTORY: UNUSED (2025-11-28). Debug utility; no production references.
 @celery_app.task(name="hello")
 def hello(name):  # pragma: no cover - utility task
-    print(f"Hello, {name}!")
-    return f"Hello, {name}!"
+    # RETIRED_TASK (2025-11-28):
+    # This task is classified as UNUSED in docs/SYSTEM_DOCS/TASK_INVENTORY.md.
+    # Original implementation printed and returned a greeting; retained for history.
+    # print(f"Hello, {name}!")
+    pass
