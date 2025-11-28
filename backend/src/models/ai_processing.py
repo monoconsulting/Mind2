@@ -1,13 +1,36 @@
 """Pydantic models for AI processing of receipts and documents."""
 from datetime import datetime, date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional, List, Literal
 
-from pydantic import BaseModel, Field, condecimal
+from pydantic import BaseModel, Field, condecimal, validator
 
 
 Decimal18_2 = condecimal(max_digits=18, decimal_places=2)
 Decimal12_6 = condecimal(max_digits=12, decimal_places=6)
+
+_DECIMAL_TWO_PLACES = Decimal("0.01")
+_DECIMAL_SIX_PLACES = Decimal("0.000001")
+
+
+def _empty_to_none(value: Optional[str]) -> Optional[str]:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return value
+
+
+def _normalize_decimal(value, *, quantum: Decimal) -> Optional[Decimal]:
+    if value in (None, "", "null"):
+        return None
+    try:
+        dec_value = Decimal(str(value).replace(",", "."))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError(f"Invalid decimal value: {value!r}") from exc
+    try:
+        return dec_value.quantize(quantum, rounding=ROUND_HALF_UP)
+    except InvalidOperation as exc:
+        raise ValueError(f"Decimal quantization failed for value {value!r}") from exc
 
 
 class UnifiedFileBase(BaseModel):
@@ -52,6 +75,55 @@ class UnifiedFileBase(BaseModel):
     credit_card_token: Optional[str] = Field(None, max_length=64)
     credit_card_entering_mode: Optional[str] = Field(None, max_length=32)
 
+    @validator(
+        "orgnr",
+        "payment_type",
+        "receipt_number",
+        "mime_type",
+        "other_data",
+        "credit_card_number",
+        "credit_card_brand_full",
+        "credit_card_brand_short",
+        "credit_card_payment_variant",
+        "credit_card_type",
+        "credit_card_token",
+        "credit_card_entering_mode",
+        pre=True,
+    )
+    def _strip_optional(cls, value):
+        return _empty_to_none(value)
+
+    @validator("currency", pre=True)
+    def _normalize_currency(cls, value):
+        value = _empty_to_none(value)
+        return value.upper() if isinstance(value, str) else value
+
+    @validator(
+        "gross_amount_original",
+        "net_amount_original",
+        "gross_amount_sek",
+        "net_amount_sek",
+        pre=True,
+    )
+    def _normalize_amounts(cls, value):
+        return _normalize_decimal(value, quantum=_DECIMAL_TWO_PLACES)
+
+    @validator("exchange_rate", pre=True)
+    def _normalize_exchange_rate(cls, value):
+        return _normalize_decimal(value, quantum=_DECIMAL_SIX_PLACES)
+
+    @validator("credit_card_last_4_digits", pre=True)
+    def _normalize_last4(cls, value):
+        if value in (None, "", False):
+            return None
+        try:
+            digits = int(str(value))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("credit_card_last_4_digits must be numeric") from exc
+        if digits < 0:
+            raise ValueError("credit_card_last_4_digits must be non-negative")
+        return digits
+
 
 class UnifiedFileAIStatus(BaseModel):
     """AI processing status for unified files."""
@@ -74,6 +146,56 @@ class ReceiptItem(BaseModel):
     currency: str = Field(default="SEK", max_length=11)
     vat: Optional[Decimal18_2] = None
     vat_percentage: Optional[Decimal12_6] = None
+
+    @validator("name")
+    def _require_name(cls, value: str) -> str:
+        if not value or not str(value).strip():
+            raise ValueError("name is required for receipt item")
+        return str(value).strip()
+
+    @validator("main_id")
+    def _require_main_id(cls, value: str) -> str:
+        if not value or not str(value).strip():
+            raise ValueError("main_id is required for receipt item")
+        return str(value)
+
+    @validator("article_id", pre=True)
+    def _default_article(cls, value: Optional[str]) -> str:
+        if value is None:
+            return ""
+        return str(value)
+
+    @validator("number", pre=True)
+    def _normalize_number(cls, value) -> int:
+        if value in (None, "", False):
+            return 1
+        try:
+            number = int(round(float(value)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("number must be numeric") from exc
+        if number <= 0:
+            raise ValueError("number must be greater than zero")
+        return number
+
+    @validator(
+        "item_price_ex_vat",
+        "item_price_inc_vat",
+        "item_total_price_ex_vat",
+        "item_total_price_inc_vat",
+        "vat",
+        pre=True,
+    )
+    def _normalize_two_decimal_fields(cls, value):
+        return _normalize_decimal(value, quantum=_DECIMAL_TWO_PLACES)
+
+    @validator("vat_percentage", pre=True)
+    def _normalize_vat_percentage(cls, value):
+        return _normalize_decimal(value, quantum=_DECIMAL_SIX_PLACES)
+
+    @validator("currency", pre=True)
+    def _normalize_currency(cls, value):
+        value = _empty_to_none(value)
+        return (value.upper() if isinstance(value, str) else value) or "SEK"
 
 
 class Company(BaseModel):
@@ -167,6 +289,35 @@ class CreditCardInvoiceHeader(BaseModel):
     next_invoice: Optional[date] = None
     notes: Optional[List[str]] = None
 
+    @validator("currency", pre=True)
+    def _normalize_currency(cls, value):
+        value = _empty_to_none(value)
+        return value.upper() if isinstance(value, str) else value
+
+    @validator("billing_address", pre=True)
+    def _clean_billing_address(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, list):
+            cleaned = [str(v).strip() for v in value if str(v).strip()]
+            return cleaned or None
+        cleaned = str(value).strip()
+        return [cleaned] if cleaned else None
+
+    @validator(
+        "invoice_total",
+        "card_total",
+        "amount_to_pay",
+        "reported_vat",
+        "vat_25",
+        "vat_12",
+        "vat_6",
+        "vat_0",
+        pre=True,
+    )
+    def _normalize_header_amounts(cls, value):
+        return _normalize_decimal(value, quantum=_DECIMAL_TWO_PLACES)
+
 
 class CreditCardInvoiceLine(BaseModel):
     """Structured line item extracted from a credit card invoice."""
@@ -192,6 +343,38 @@ class CreditCardInvoiceLine(BaseModel):
     project_code: Optional[str] = Field(None, max_length=100)
     confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     source_text: Optional[str] = None
+
+    @validator(
+        "merchant_name",
+        "merchant_city",
+        "merchant_country",
+        "description",
+        "source_text",
+        pre=True,
+    )
+    def _strip_text_fields(cls, value):
+        return _empty_to_none(value)
+
+    @validator("currency_original", pre=True)
+    def _normalize_currency(cls, value):
+        value = _empty_to_none(value)
+        return value.upper() if isinstance(value, str) else value
+
+    @validator(
+        "amount_original",
+        "amount_sek",
+        "vat_rate",
+        "vat_amount",
+        "net_amount",
+        "gross_amount",
+        pre=True,
+    )
+    def _normalize_line_amounts(cls, value):
+        return _normalize_decimal(value, quantum=_DECIMAL_TWO_PLACES)
+
+    @validator("exchange_rate", pre=True)
+    def _normalize_line_exchange_rate(cls, value):
+        return _normalize_decimal(value, quantum=_DECIMAL_SIX_PLACES)
 
 
 class CreditCardInvoiceExtractionRequest(BaseModel):
@@ -227,6 +410,18 @@ class DocumentClassificationResponse(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: Optional[str] = None
 
+    @validator("document_type", pre=True)
+    def _normalize_document_type(cls, value: str) -> str:
+        if value is None:
+            raise ValueError("document_type is required")
+        text = str(value).strip()
+        lowered = text.lower()
+        if lowered in {"manual review", "manual_review"}:
+            return "Manual Review"
+        if lowered in {"receipt", "invoice", "fc_invoice", "other"}:
+            return "fc_invoice" if lowered == "fc_invoice" else lowered
+        raise ValueError(f"Unsupported document_type '{value}'")
+
 
 class ExpenseClassificationRequest(BaseModel):
     """Request for AI2 - Expense Type Classification."""
@@ -242,6 +437,15 @@ class ExpenseClassificationResponse(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     card_identifier: Optional[str] = None
     reasoning: Optional[str] = None
+
+    @validator("expense_type", pre=True)
+    def _normalize_expense_type(cls, value: str) -> str:
+        if value is None:
+            raise ValueError("expense_type is required")
+        lowered = str(value).strip().lower()
+        if lowered in {"personal", "corporate"}:
+            return lowered
+        raise ValueError(f"Unsupported expense_type '{value}'")
 
 
 class DataExtractionRequest(BaseModel):
@@ -271,6 +475,12 @@ class AccountingProposal(BaseModel):
     vat_rate: Optional[Decimal18_2] = None
     notes: Optional[str] = Field(None, max_length=255)
     item_id: Optional[int] = Field(None, description="Reference to receipt_items.id")
+
+    @validator("account_code")
+    def _strip_account_code(cls, value: str) -> str:
+        if not value or not str(value).strip():
+            raise ValueError("account_code is required")
+        return str(value).strip()
 
 
 class AccountingClassificationRequest(BaseModel):

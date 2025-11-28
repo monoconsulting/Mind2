@@ -1,13 +1,6 @@
 from __future__ import annotations
 
-from .common import db_cursor
-
-INSERT_HISTORY_SQL = """
-    INSERT INTO ai_processing_history
-    (file_id, job_type, status, ai_stage_name, log_text, error_message,
-     confidence, processing_time_ms, provider, model_name)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-"""
+from services.ai_logging import INSERT_HISTORY_SQL, log_ai_call
 
 
 def _history(
@@ -22,29 +15,19 @@ def _history(
     provider: str | None = None,
     model_name: str | None = None,
 ) -> None:
-    """Log processing history with detailed information."""
-    if db_cursor is None:
-        return
-    try:
-        with db_cursor() as cur:
-            cur.execute(
-                INSERT_HISTORY_SQL,
-                (
-                    file_id,
-                    job,
-                    status,
-                    ai_stage_name,
-                    log_text,
-                    error_message,
-                    confidence,
-                    processing_time_ms,
-                    provider,
-                    model_name,
-                ),
-            )
-    except Exception:
-        # best-effort history
-        pass
+    """Thin wrapper for backward compatibility; uses unified log_ai_call helper."""
+    log_ai_call(
+        file_id=file_id,
+        job=job,
+        status=status,
+        ai_stage_name=ai_stage_name,
+        log_text=log_text,
+        error_message=error_message,
+        confidence=confidence,
+        processing_time_ms=processing_time_ms,
+        provider=provider,
+        model_name=model_name,
+    )
 
 
-__all__ = ["INSERT_HISTORY_SQL", "_history"]
+__all__ = ["INSERT_HISTORY_SQL", "_history", "log_ai_call"]

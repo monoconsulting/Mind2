@@ -5,8 +5,6 @@ import json
 import logging
 import os
 import re
-import requests
-from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -33,286 +31,20 @@ from models.ai_processing import (
     Company,
     AccountingProposal,
 )
+from services.ai.providers import (
+    BaseLLMProvider,
+    ProviderResponse,
+    OpenAIProvider,
+    ResponsesApiOpenAIProvider,
+    AzureOpenAIProvider,
+    OllamaProvider,
+)
+from services.ai_logging import log_ai_call
 from services.db.connection import db_cursor
 from services.invoice_parser import parse_credit_card_statement
 
 
-@dataclass
-class ProviderResponse:
-    """Structured response from an LLM provider."""
-
-    raw: str
-    parsed: Optional[Dict[str, Any]]
-
-
-class BaseLLMProvider:
-    """Minimal interface used by the AI service for LLM integrations."""
-
-    def __init__(self, model_name: str | None = None) -> None:
-        self.model_name = model_name
-
-    @property
-    def provider_name(self) -> str:
-        return self.__class__.__name__.replace("Provider", "").lower()
-
-    def generate(self, prompt: str, payload: Dict[str, Any]) -> ProviderResponse:
-        raise NotImplementedError
-
-
-class OpenAIProvider(BaseLLMProvider):
-    """Adapter for OpenAI's Chat Completions API."""
-
-    def __init__(self, model_name: Optional[str], api_key: Optional[str] = None):
-        super().__init__(model_name)
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-
-    def generate(self, prompt: str, payload: Dict[str, Any]) -> ProviderResponse:
-        if not self.api_key:
-            raise RuntimeError("OPENAI_API_KEY is not configured")
-
-        if not self.model_name:
-            raise RuntimeError("OpenAI model name is not configured")
-
-        url = "https://api.openai.com/v1/chat/completions"
-
-        messages = [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ]
-
-        request_payload = {
-            "model": self.model_name,
-            "messages": messages,
-            "response_format": {"type": "json_object"},
-        }
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-
-        try:
-            timeout_seconds = int(os.getenv("OPENAI_TIMEOUT", "600"))
-            response = requests.post(url, json=request_payload, headers=headers, timeout=timeout_seconds)
-            response.raise_for_status()
-
-            result = response.json()
-            content = result["choices"][0]["message"]["content"]
-
-            if not content:
-                return ProviderResponse(raw="", parsed=None)
-
-            # Try to parse as JSON
-            try:
-                # Clean up markdown code blocks if present
-                cleaned = content.strip()
-                if cleaned.startswith("```json"):
-                    cleaned = cleaned[7:]
-                if cleaned.startswith("```"):
-                    cleaned = cleaned[3:]
-                if cleaned.endswith("```"):
-                    cleaned = cleaned[:-3]
-                cleaned = cleaned.strip()
-
-                parsed = json.loads(cleaned)
-                return ProviderResponse(raw=content, parsed=parsed)
-            except json.JSONDecodeError as exc:
-                logger.debug(f"Response is text, not JSON: {content[:100]}")
-                return ProviderResponse(raw=content, parsed=None)
-
-        except requests.exceptions.RequestException as exc:
-            error_detail = str(exc)
-            try:
-                if hasattr(exc, 'response') and exc.response is not None:
-                    error_body = exc.response.json()
-                    error_detail = f"{exc} - Response: {error_body}"
-            except:
-                pass
-            logger.error(f"OpenAI API error: {error_detail}")
-            raise RuntimeError(f"OpenAI API call failed: {exc}")
-
-
-class ResponsesApiOpenAIProvider(OpenAIProvider):
-    """Adapter for OpenAI's new /v1/responses API."""
-
-    def generate(self, prompt: str, payload: Dict[str, Any]) -> ProviderResponse:
-        if not self.api_key:
-            raise RuntimeError("OPENAI_API_KEY is not configured")
-
-        if not self.model_name:
-            raise RuntimeError("OpenAI model name is not configured")
-
-        url = "https://api.openai.com/v1/responses"
-
-        input_messages = [
-            {
-                "role": "system",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": prompt,
-                    }
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": json.dumps(payload, ensure_ascii=False),
-                    }
-                ],
-            },
-        ]
-
-        request_payload = {
-            "model": self.model_name,
-            "input": input_messages,
-            "text": {
-                "format": { "type": "json_object" }
-            },
-        }
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-
-        try:
-            timeout_seconds = int(os.getenv("OPENAI_TIMEOUT", "600"))
-            response = requests.post(url, json=request_payload, headers=headers, timeout=timeout_seconds)
-            response.raise_for_status()
-
-            result = response.json()
-            content = ""
-
-            # Prefer Responses API `output` field
-            output_blocks = result.get("output") or []
-            if output_blocks:
-                first_block = output_blocks[0] or {}
-                if first_block.get("type") == "message":
-                    parts = first_block.get("content") or []
-                    text_parts = [
-                        part.get("text", "")
-                        for part in parts
-                        if isinstance(part, dict) and part.get("type") in ("output_text", "text")
-                    ]
-                    content = "\n".join(part for part in text_parts if part)
-
-            if not content:
-                ot = result.get("output_text")
-                if isinstance(ot, str):
-                    content = ot
-                elif isinstance(ot, list):
-                    content = "\n".join(part for part in ot if part)
-
-            if not content:
-                choices = result.get("choices", [])
-                if choices:
-                    content = choices[0].get("message", {}).get("content", "")
-
-            if not content:
-                return ProviderResponse(raw="", parsed=None)
-
-            try:
-                cleaned = content.strip()
-                if cleaned.startswith("```json"):
-                    cleaned = cleaned[7:]
-                if cleaned.startswith("```"):
-                    cleaned = cleaned[3:]
-                if cleaned.endswith("```"):
-                    cleaned = cleaned[:-3]
-                cleaned = cleaned.strip()
-
-                parsed = json.loads(cleaned)
-                return ProviderResponse(raw=content, parsed=parsed)
-            except json.JSONDecodeError as exc:
-                logger.debug(f"Response is text, not JSON: {content[:100]}")
-                return ProviderResponse(raw=content, parsed=None)
-
-        except requests.exceptions.RequestException as exc:
-            error_detail = str(exc)
-            try:
-                if hasattr(exc, 'response') and exc.response is not None:
-                    error_body = exc.response.json()
-                    error_detail = f"{exc} - Response: {error_body}"
-            except:
-                pass
-            logger.error(f"OpenAI API error: {error_detail}")
-            raise RuntimeError(f"OpenAI API call failed: {exc}")
-
-
-class AzureOpenAIProvider(BaseLLMProvider):
-    """Adapter for Azure-hosted OpenAI deployments."""
-
-    def __init__(self, model_name: Optional[str], api_key: Optional[str] = None, endpoint: Optional[str] = None):
-        super().__init__(model_name)
-        self.api_key = api_key or os.getenv("AZURE_OPENAI_API_KEY")
-        self.endpoint = endpoint or os.getenv("AZURE_OPENAI_ENDPOINT")
-
-    def generate(self, prompt: str, payload: Dict[str, Any]) -> ProviderResponse:
-        if not self.api_key or not self.endpoint:
-            raise RuntimeError("Azure OpenAI credentials are not configured")
-        logger.warning("AzureOpenAIProvider invoked without concrete implementation")
-        return ProviderResponse(raw="", parsed=None)
-
-
-class OllamaProvider(BaseLLMProvider):
-    """Adapter for Ollama's native API (gpt-oss:20b)."""
-
-    def __init__(self, model_name: Optional[str], endpoint: Optional[str] = None):
-        super().__init__(model_name)
-        self.endpoint = endpoint or os.getenv("OLLAMA_HOST", "http://localhost:11435")
-
-    def generate(self, prompt: str, payload: Dict[str, Any]) -> ProviderResponse:
-        if not self.model_name:
-            raise RuntimeError("Ollama model name is not configured")
-
-        # Ollama uses /api/generate endpoint
-        url = f"{self.endpoint}/api/generate"
-
-        # Combine system prompt and payload into a single prompt
-        full_prompt = f"{prompt}\n\nData to analyze:\n{json.dumps(payload, ensure_ascii=False)}\n\nProvide your response in JSON format:"
-
-        request_payload = {
-            "model": self.model_name,
-            "prompt": full_prompt,
-            "stream": False,
-        }
-
-        try:
-            response = requests.post(url, json=request_payload, timeout=120)
-            response.raise_for_status()
-
-            result = response.json()
-            content = result.get("response", "")
-
-            if not content:
-                return ProviderResponse(raw="", parsed=None)
-
-            # Try to parse as JSON
-            try:
-                # Clean up markdown code blocks if present
-                cleaned = content.strip()
-                if cleaned.startswith("```json"):
-                    cleaned = cleaned[7:]
-                if cleaned.startswith("```"):
-                    cleaned = cleaned[3:]
-                if cleaned.endswith("```"):
-                    cleaned = cleaned[:-3]
-                cleaned = cleaned.strip()
-
-                parsed = json.loads(cleaned)
-                return ProviderResponse(raw=content, parsed=parsed)
-            except json.JSONDecodeError as exc:
-                # Log detailed error for debugging
-                logger.error(f"Ollama JSON parse failed: {str(exc)[:100]}... Content length: {len(content)}, First 200 chars: {content[:200]}...")
-                return ProviderResponse(raw=content, parsed=None)
-
-        except requests.exceptions.RequestException as exc:
-            raise RuntimeError(f"Ollama API call failed: {exc}")
-
-
+# Provider implementations moved to services.ai.providers to keep ai_service orchestration-only.
 logger = logging.getLogger(__name__)
 
 ACCOUNT_CODE_KEYS = ("account_code", "account", "accountCode", "account_number")
@@ -590,7 +322,7 @@ DATE_PATTERNS = [
 
 def _normalize_amount(token: str) -> Optional[Decimal]:
     cleaned = token.strip().replace(" ", "")
-    cleaned = cleaned.replace(" ", "").replace("'", "")
+    cleaned = cleaned.replace("â€¯", "").replace("'", "")
     cleaned = cleaned.replace(",", ".")
     if cleaned.count(".") > 1:
         # assume thousands separators
@@ -751,12 +483,18 @@ class AIService:
         return None, resolved_provider_name, resolved_model_name
 
     def _provider_generate(
-        self, stage_key: str, payload: Dict[str, Any]
+        self, stage_key: str, payload: Dict[str, Any], *, file_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         # ONLY use the prompt-specific provider - NO fallback
         provider = self.prompt_providers.get(stage_key)
         provider_name = self.prompt_provider_names.get(stage_key, "unknown")
         model_name = self.prompt_model_names.get(stage_key, "unknown")
+        target_file_id = file_id or str(
+            payload.get("file_id")
+            or payload.get("invoice_id")
+            or payload.get("receipt_id")
+            or ""
+        )
 
         if not provider:
             logger.error(
@@ -764,6 +502,16 @@ class AIService:
                 f"Provider: {provider_name}, Model: {model_name}. "
                 f"Please select a model for this prompt in the database."
             )
+            if target_file_id:
+                log_ai_call(
+                    file_id=target_file_id,
+                    job=stage_key,
+                    status="error",
+                    ai_stage_name=stage_key,
+                    error_message="provider_not_configured",
+                    provider=provider_name,
+                    model_name=model_name,
+                )
             return None
 
         prompt = self.prompts.get(stage_key, "")
@@ -780,34 +528,91 @@ class AIService:
                     model_name,
                     json.dumps(response.parsed, ensure_ascii=False)[:300] if response.parsed else "None",
                     response.raw[:300] if response.raw else "None"
-                )
+            )
 
             if not response.raw and response.parsed is None:
                 logger.warning(f"Provider {provider_name}/{model_name} returned empty response for {stage_key}")
+                if target_file_id:
+                    log_ai_call(
+                        file_id=target_file_id,
+                        job=stage_key,
+                        status="error",
+                        ai_stage_name=stage_key,
+                        error_message="empty_response",
+                        provider=provider_name,
+                        model_name=model_name,
+                    )
                 return None
             if response.parsed is not None:
+                if target_file_id:
+                    log_ai_call(
+                        file_id=target_file_id,
+                        job=stage_key,
+                        status="success",
+                        ai_stage_name=stage_key,
+                        provider=provider_name,
+                        model_name=model_name,
+                    )
                 return response.parsed
 
             # Handle raw text responses (wrap simple text in JSON for AI1/AI2)
             try:
-                return json.loads(response.raw)
+                parsed_raw = json.loads(response.raw)
+                if target_file_id:
+                    log_ai_call(
+                        file_id=target_file_id,
+                        job=stage_key,
+                        status="success",
+                        ai_stage_name=stage_key,
+                        provider=provider_name,
+                        model_name=model_name,
+                    )
+                return parsed_raw
             except json.JSONDecodeError:
                 raw_text = response.raw.strip()
                 if stage_key == "document_analysis":
+                    if target_file_id:
+                        log_ai_call(
+                            file_id=target_file_id,
+                            job=stage_key,
+                            status="success",
+                            ai_stage_name=stage_key,
+                            provider=provider_name,
+                            model_name=model_name,
+                        )
                     return {"document_type": raw_text, "confidence": 0.8}
                 elif stage_key == "expense_classification":
+                    if target_file_id:
+                        log_ai_call(
+                            file_id=target_file_id,
+                            job=stage_key,
+                            status="success",
+                            ai_stage_name=stage_key,
+                            provider=provider_name,
+                            model_name=model_name,
+                        )
                     return {"expense_type": raw_text, "confidence": 0.8}
                 else:
                     logger.warning(f"Provider {provider_name}/{model_name} returned raw text for {stage_key}, expected JSON: {raw_text[:100]}")
                     return None
         except Exception as exc:  # pragma: no cover - network/parse errors
             logger.error("Provider call for %s failed (provider=%s, model=%s): %s", stage_key, provider_name, model_name, exc, exc_info=True)
+            if target_file_id:
+                log_ai_call(
+                    file_id=target_file_id,
+                    job=stage_key,
+                    status="error",
+                    ai_stage_name=stage_key,
+                    error_message=str(exc),
+                    provider=provider_name,
+                    model_name=model_name,
+                )
             return None
 
     # ------------------------------------------------------------------
     # AI1 - Document classification
     # ------------------------------------------------------------------
-    def classify_document(self, request: DocumentClassificationRequest) -> DocumentClassificationResponse:
+    def run_ai1_document_classification(self, request: DocumentClassificationRequest) -> DocumentClassificationResponse:
         text = (request.ocr_text or "").lower()
         logger.info("Classifying document %s", request.file_id)
 
@@ -816,7 +621,7 @@ class AIService:
         reasoning_parts: List[str] = []
 
         receipt_tokens = ["kvitto", "receipt", "summa", "moms", "butik", "kundens kvitto"]
-        invoice_tokens = ["invoice", "faktura", "förfallodatum", "ocr", "betalning"]
+        invoice_tokens = ["invoice", "faktura", "fÃ¶rfallodatum", "ocr", "betalning"]
         fc_tokens = ["firstcard", "first card", "kortmatchning", "kontoutdrag", "firstcard company", "kortfaktura"]
 
         receipt_hits = sum(token in text for token in receipt_tokens)
@@ -824,7 +629,7 @@ class AIService:
         fc_hits = sum(token in text for token in fc_tokens)
 
         llm_result = self._provider_generate(
-            "document_analysis", {"ocr_text": request.ocr_text or ""}
+            "document_analysis", {"ocr_text": request.ocr_text or ""}, file_id=request.file_id
         )
         if llm_result:
             doc_type = llm_result.get("document_type", doc_type)
@@ -859,14 +664,18 @@ class AIService:
             reasoning="; ".join(reasoning_parts) or None,
         )
 
+    def classify_document(self, request: DocumentClassificationRequest) -> DocumentClassificationResponse:
+        """Backward-compatible wrapper. Prefer run_ai1_document_classification."""
+        return self.run_ai1_document_classification(request)
+
     # ------------------------------------------------------------------
     # AI2 - Expense classification
     # ------------------------------------------------------------------
-    def classify_expense(self, request: ExpenseClassificationRequest) -> ExpenseClassificationResponse:
+    def run_ai2_expense_classification(self, request: ExpenseClassificationRequest) -> ExpenseClassificationResponse:
         text = (request.ocr_text or "").lower()
         logger.info("Classifying expense for %s", request.file_id)
 
-        card_patterns = ["visa", "mastercard", "first card", "corporate", "företagskort", "card number"]
+        card_patterns = ["visa", "mastercard", "first card", "corporate", "fÃ¶retagskort", "card number"]
         cash_patterns = ["kontant", "cash"]
 
         expense_type = "personal"
@@ -885,6 +694,7 @@ class AIService:
         llm_result = self._provider_generate(
             "expense_classification",
             {"ocr_text": request.ocr_text or "", "document_type": request.document_type},
+            file_id=request.file_id,
         )
         if llm_result:
             expense_type = llm_result.get("expense_type", expense_type)
@@ -913,10 +723,14 @@ class AIService:
             reasoning="; ".join(reasoning_parts) or None,
         )
 
+    def classify_expense(self, request: ExpenseClassificationRequest) -> ExpenseClassificationResponse:
+        """Backward-compatible wrapper. Prefer run_ai2_expense_classification."""
+        return self.run_ai2_expense_classification(request)
+
     # ------------------------------------------------------------------
     # AI3 - Data extraction
     # ------------------------------------------------------------------
-    def extract_data(self, request: DataExtractionRequest) -> DataExtractionResponse:
+    def run_ai3_data_extraction(self, request: DataExtractionRequest) -> DataExtractionResponse:
         """
         AI3 - Extract ALL business data from OCR text using LLM.
         NO rule-based extraction allowed - only LLM extracts business data!
@@ -928,10 +742,12 @@ class AIService:
         llm_result = self._provider_generate(
             "data_extraction",
             {
+                "file_id": request.file_id,
                 "ocr_text": ocr_text,
                 "document_type": request.document_type,
                 "expense_type": request.expense_type,
             },
+            file_id=request.file_id,
         )
 
         if not llm_result:
@@ -1016,85 +832,46 @@ class AIService:
         llm_items_raw = llm_result.get("receipt_items")
 
         if llm_items_raw:
+            if not isinstance(llm_items_raw, list):
+                raise ValueError("LLM receipt_items must be provided as a list of objects")
             logger.info(
                 "AI3 LLM returned %d raw receipt_items for file_id=%s",
-                len(llm_items_raw) if isinstance(llm_items_raw, list) else 0,
+                len(llm_items_raw),
                 request.file_id
             )
-            try:
-                for idx, item_dict in enumerate(llm_items_raw, 1):
-                    try:
-                        # Validate and fix main_id
-                        item_main_id = item_dict.get("main_id")
-                        if not item_main_id or item_main_id != request.file_id:
-                            if item_main_id:
-                                logger.warning(
-                                    "AI3 receipt_items[%d] has main_id='%s' but file_id='%s' - correcting",
-                                    idx, item_main_id, request.file_id
-                                )
-                            item_dict["main_id"] = request.file_id
-
-                        # Convert None to empty string for article_id
-                        if item_dict.get("article_id") is None:
-                            item_dict["article_id"] = ""
-
-                        # Validate name is not None - SKIP items without name (no mock data allowed!)
-                        if not item_dict.get("name"):
-                            logger.error(
-                                "AI3 receipt_items[%d] has empty/null name - SKIPPING this item (no mock data allowed)",
-                                idx
-                            )
-                            continue
-
-                        # Ensure number has a default
-                        if not item_dict.get("number"):
-                            item_dict["number"] = 1
-
-                        # Fix AI3 validation errors: convert number to integer
-                        if "number" in item_dict:
-                            try:
-                                # Convert float to int (e.g., 25.35 -> 25)
-                                item_dict["number"] = int(round(float(item_dict["number"])))
-                            except (TypeError, ValueError):
-                                logger.warning(
-                                    "AI3 receipt_items[%d] has invalid number field, defaulting to 1",
-                                    idx
-                                )
-                                item_dict["number"] = 1
-
-                        # Fix AI3 validation errors: round decimal fields to 2 decimal places
-                        decimal_fields = [
-                            "item_price_ex_vat", "item_price_inc_vat",
-                            "item_total_price_ex_vat", "item_total_price_inc_vat",
-                            "vat", "vat_percentage"
-                        ]
-                        for field in decimal_fields:
-                            if field in item_dict and item_dict[field] is not None:
-                                try:
-                                    # Round to 2 decimal places (e.g., 12.392 -> 12.39)
-                                    item_dict[field] = round(float(item_dict[field]), 2)
-                                except (TypeError, ValueError):
-                                    # If conversion fails, leave as None
-                                    item_dict[field] = None
-
-                        parsed_item = ReceiptItem(**item_dict)
-                        receipt_items.append(parsed_item)
-                        logger.debug(
-                            "AI3 parsed receipt_items[%d]: name='%s', qty=%d, article_id='%s', total_inc_vat=%s",
-                            idx, parsed_item.name, parsed_item.number,
-                            parsed_item.article_id or 'N/A', parsed_item.item_total_price_inc_vat
+            for idx, raw_item in enumerate(llm_items_raw, 1):
+                item_payload = dict(raw_item or {})
+                item_main_id = item_payload.get("main_id")
+                if not item_main_id or item_main_id != request.file_id:
+                    if item_main_id:
+                        logger.warning(
+                            "AI3 receipt_items[%d] has main_id='%s' but file_id='%s' - correcting",
+                            idx, item_main_id, request.file_id
                         )
-                    except Exception as item_exc:
-                        logger.error(
-                            "AI3 failed to parse receipt_items[%d] for file_id=%s: %s. Raw data: %s",
-                            idx, request.file_id, item_exc, item_dict
-                        )
-            except Exception as exc:
-                logger.error(
-                    "AI3 failed to parse LLM receipt_items for file_id=%s: %s. Full raw data: %s",
-                    request.file_id, exc, llm_items_raw
+                    item_payload["main_id"] = request.file_id
+
+                if item_payload.get("article_id") is None:
+                    item_payload["article_id"] = ""
+                if "number" not in item_payload:
+                    item_payload["number"] = 1
+
+                try:
+                    parsed_item = ReceiptItem(**item_payload)
+                except ValidationError as exc:
+                    logger.error(
+                        "AI3 receipt_items[%d] invalid for file_id=%s: %s",
+                        idx,
+                        request.file_id,
+                        exc,
+                    )
+                    raise ValueError(f"Invalid receipt_items[{idx}] payload") from exc
+
+                receipt_items.append(parsed_item)
+                logger.debug(
+                    "AI3 parsed receipt_items[%d]: name='%s', qty=%d, article_id='%s', total_inc_vat=%s",
+                    idx, parsed_item.name, parsed_item.number,
+                    parsed_item.article_id or 'N/A', parsed_item.item_total_price_inc_vat
                 )
-                # Continue with empty items rather than failing completely
         else:
             logger.warning(
                 "AI3 LLM returned NO receipt_items for file_id=%s (this may be legitimate for some documents)",
@@ -1118,10 +895,14 @@ class AIService:
             confidence=confidence,
         )
 
+    def extract_data(self, request: DataExtractionRequest) -> DataExtractionResponse:
+        """Backward-compatible wrapper. Prefer run_ai3_data_extraction."""
+        return self.run_ai3_data_extraction(request)
+
     # ------------------------------------------------------------------
     # AI4 - Accounting classification
     # ------------------------------------------------------------------
-    def classify_accounting(
+    def run_ai4_accounting_classification(
         self,
         request: AccountingClassificationRequest,
         chart_of_accounts: List[Tuple[Any, ...]],
@@ -1170,6 +951,7 @@ class AIService:
                 "document_type": request.document_type,
                 "expense_type": request.expense_type,
             },
+            file_id=request.file_id,
         )
 
         # Detailed logging for debugging
@@ -1206,10 +988,18 @@ class AIService:
             based_on_bas2025=True,
         )
 
+    def classify_accounting(
+        self,
+        request: AccountingClassificationRequest,
+        chart_of_accounts: List[Tuple[Any, ...]],
+    ) -> AccountingClassificationResponse:
+        """Backward-compatible wrapper. Prefer run_ai4_accounting_classification."""
+        return self.run_ai4_accounting_classification(request, chart_of_accounts)
+
     # ------------------------------------------------------------------
     # AI5 - Credit card matching
     # ------------------------------------------------------------------
-    def match_credit_card(
+    def run_ai5_credit_card_match(
         self,
         request: CreditCardMatchRequest,
         potential_matches: List[Tuple[Any, ...]],
@@ -1244,6 +1034,7 @@ class AIService:
                         "amount": float(best_match[2]) if best_match[2] is not None else None,
                     },
                 },
+                file_id=request.file_id,
             )
             confidence_override: Optional[float] = None
             if llm_result:
@@ -1270,10 +1061,18 @@ class AIService:
             match_details={"reason": "No transaction met the criteria"},
         )
 
+    def match_credit_card(
+        self,
+        request: CreditCardMatchRequest,
+        potential_matches: List[Tuple[Any, ...]],
+    ) -> CreditCardMatchResponse:
+        """Backward-compatible wrapper. Prefer run_ai5_credit_card_match."""
+        return self.run_ai5_credit_card_match(request, potential_matches)
+
     # ------------------------------------------------------------------
     # AI6 - Credit card invoice parsing
     # ------------------------------------------------------------------
-    def parse_credit_card_invoice(
+    def run_ai6_credit_card_invoice_parsing(
         self, request: CreditCardInvoiceExtractionRequest
     ) -> CreditCardInvoiceExtractionResponse:
         """Parse OCR text for a credit card invoice into structured data."""
@@ -1284,7 +1083,11 @@ class AIService:
             "page_ids": request.page_ids,
         }
 
-        llm_result = self._provider_generate("credit_card_invoice_parsing", payload)
+        llm_result = self._provider_generate(
+            "credit_card_invoice_parsing",
+            payload,
+            file_id=request.invoice_id,
+        )
         if llm_result:
             try:
                 header_payload = llm_result.get("header") or {}
@@ -1372,6 +1175,12 @@ class AIService:
             lines=lines,
             overall_confidence=overall_confidence,
         )
+
+    def parse_credit_card_invoice(
+        self, request: CreditCardInvoiceExtractionRequest
+    ) -> CreditCardInvoiceExtractionResponse:
+        """Backward-compatible wrapper. Prefer run_ai6_credit_card_invoice_parsing."""
+        return self.run_ai6_credit_card_invoice_parsing(request)
 
     @staticmethod
     def _safe_parse_date(value: Any) -> Optional[date]:
