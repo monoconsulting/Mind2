@@ -12,12 +12,12 @@ except Exception:  # pragma: no cover
 try:
     from services.db.files import (
         DuplicateFileError,
-        insert_unified_file,
+        create_unified_file,
         set_ai_status,
         update_other_data,
     )
 except ImportError:  # pragma: no cover
-    insert_unified_file = lambda **kwargs: None  # type: ignore
+    create_unified_file = lambda **kwargs: None  # type: ignore
     update_other_data = lambda **kwargs: None  # type: ignore
 
     class DuplicateFileError(Exception):
@@ -100,7 +100,7 @@ __all__ = [
     "chord",
     "enrich_receipt",
     "extract_data_internal",
-    "insert_unified_file",
+    "create_unified_file",
     "log_event",
     "parse_credit_card_statement",
     "pdf_to_png_pages",

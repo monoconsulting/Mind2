@@ -27,7 +27,7 @@ from ..utils.db_helpers import (
 from ..services.workflow_coordinator import WorkflowCoordinator
 from services.file_detection import detect_file
 from services.storage import FileStorage
-from services.db.files import insert_unified_file, DuplicateFileError
+from services.db.files import create_unified_file, DuplicateFileError
 from services.invoice_status import (
     InvoiceDocumentStatus,
     InvoiceLineMatchStatus,
@@ -84,21 +84,24 @@ def upload_invoice() -> Any:
     fs = _storage()
 
     try:
-        insert_unified_file(
+        unified_file = create_unified_file(
             file_id=invoice_id,
             file_type=unified_file_type,
-            workflow_type="creditcard_invoice",
+            workflow_type="WF3_FIRSTCARD_INVOICE",
             content_hash=file_hash,
             submitted_by=submitted_by,
+            source="kortmatchning_upload",
             original_filename=safe_name,
-            ai_status="uploaded",
+            initial_ai_status="uploaded",
+            initial_process_status=InvoiceProcessingStatus.UPLOADED.value,
             mime_type=mime_type,
             file_suffix=file_suffix,
             original_file_id=invoice_id,
             original_file_name=safe_name,
             original_file_size=len(data),
-            other_data=other_data,
+            extra_metadata=other_data,
         )
+        workflow_run_id = unified_file.workflow_run_id
     except DuplicateFileError:
         existing_id = find_file_id_by_hash(file_hash)
         return (
@@ -138,13 +141,7 @@ def upload_invoice() -> Any:
     )
 
     coordinator = WorkflowCoordinator()
-    workflow_run_id = coordinator.create_workflow_run(
-        workflow_key="WF3_FIRSTCARD_INVOICE",
-        source_channel="kortmatchning_upload",
-        file_id=invoice_id,
-        content_hash=file_hash,
-    )
-
+    
     if workflow_run_id:
         coordinator.begin_import_stage(
             workflow_run_id,

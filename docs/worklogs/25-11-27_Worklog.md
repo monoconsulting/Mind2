@@ -59,12 +59,114 @@
 
 | Time | Title | Change Type | Scope | Tickets | Commits | Files Touched |
 |---|---|---|---|---|---|---|
+| 19:45 | Phase C Completion: Migration of remaining ingestion paths | refactor | `services, api` | PHASE-C | - | `fetch_ftp_*.py, upload.py, ocr_tasks.py, creditcard_tasks.py, db/files.py` |
+| 18:30 | Phase C: Unified FTP Service & Ingestion Refactoring | feat, refactor | `services, api` | PHASE-C | - | `ftp_service.py, fetch_ftp.py, db/files.py, ingest.py` |
 | 17:15 | Phase B: Central status definitions & constant replacement | refactor | `services, api, docs` | PHASE-B | `bb8118c` | `status_constants.py, invoice_status.py, tasks/*, api/*, docs/*` |
 | 15:42 | Cleanup deprecated suffixes and reorganize docs | chore | `migrations, docs` | N/A | `a7f9d05` | `database/migrations/*, docs/features/*` |
 
 ### Entry Template (copy & paste below; newest entry goes **above** older ones)
 
 > Place your first real entry **here** (and keep placing new ones above the previous):
+
+#### [20:45] Fix: Phase C - Restore Corrupt Legacy Files
+- **Change type:** fix
+- **Scope (component/module):** `services/fetch_ftp_enhanced.py`, `services/fetch_ftp_updated.py`
+- **Tickets/PRs:** PHASE-C-FIXES
+- **Branch:** `dev`
+- **Commit(s):** -
+- **Environment:** N/A
+- **Commands run:**
+  ```bash
+  python -m py_compile backend/src/services/fetch_ftp_enhanced.py backend/src/services/fetch_ftp_updated.py
+  ```
+- **Result summary:** Restored `fetch_ftp_enhanced.py` and `fetch_ftp_updated.py` to valid state after accidental corruption during deprecation. They now contain valid function definitions and deprecation warnings.
+- **Files changed (exact):**
+  - `backend/src/services/fetch_ftp_enhanced.py` — Restored content and added deprecation warnings.
+  - `backend/src/services/fetch_ftp_updated.py` — Restored content and added deprecation warnings.
+- **Unified diff (minimal, per file or consolidated):** (Omitted)
+- **Tests executed:** Syntax check via `py_compile`.
+- **System documentation updated:** N/A
+- **Artifacts:** N/A
+- **Next action:** Final verification.
+
+#### [20:30] Fix: Phase C - Critical Fixes for Fetch FTP
+- **Change type:** fix, refactor
+- **Scope (component/module):** `services/fetch_ftp.py`, `services/fetch_ftp_enhanced.py`, `services/fetch_ftp_updated.py`, `services/db/files.py`
+- **Tickets/PRs:** PHASE-C-FIXES
+- **Branch:** `dev`
+- **Commit(s):** -
+- **Environment:** N/A
+- **Commands run:**
+  ```bash
+  python -m pytest backend/tests/unit/test_ftp_service.py
+  ```
+- **Result summary:** Completely rewrote `fetch_ftp.py` to fix critical issues (duplicates, undefined variables, race conditions). Added missing `fs.save()` call in `fetch_from_ftp`. Added deprecation warnings to legacy files.
+- **Files changed (exact):**
+  - `backend/src/services/fetch_ftp.py` — Rewritten to use `ftp_service` and `create_unified_file` correctly. Fixed race condition and missing save.
+  - `backend/src/services/fetch_ftp_enhanced.py` — Added deprecation warnings.
+  - `backend/src/services/fetch_ftp_updated.py` — Added deprecation warnings.
+  - `backend/src/services/db/files.py` — Added deprecation warning to `insert_unified_file`.
+- **Unified diff (minimal, per file or consolidated):** (Omitted)
+- **Tests executed:** Unit tests for `ftp_service` verified.
+- **System documentation updated:** N/A
+- **Artifacts:** N/A
+- **Next action:** Monitor production stability.
+
+#### [19:45] Refactor: Phase C Completion - Migration of remaining ingestion paths
+- **Change type:** refactor
+- **Scope (component/module):** `services/fetch_ftp_enhanced`, `services/fetch_ftp_updated`, `api/reconciliation_firstcard`, `services/tasks/ocr_tasks`, `services/tasks/creditcard_tasks`, `services/db/files`
+- **Tickets/PRs:** PHASE-C
+- **Branch:** `dev`
+- **Commit(s):** -
+- **Environment:** N/A
+- **Commands run:**
+  ```bash
+  python -m pytest backend/tests/unit/test_db_files_unified_files.py
+  ```
+- **Result summary:** Completed migration of all remaining ingestion paths to use `create_unified_file`. Updated `fetch_ftp_enhanced.py` and `fetch_ftp_updated.py` to use `create_unified_file`. Updated `upload.py` to use `create_unified_file` and leverage its workflow creation. Updated `ocr_tasks.py` and `creditcard_tasks.py` to use `create_unified_file` with `create_workflow=False` for pages. Added `create_workflow` parameter to `create_unified_file` to support suppression of workflow creation.
+- **Files changed (exact):**
+  - `backend/src/services/fetch_ftp_enhanced.py` — Migrated to `create_unified_file`.
+  - `backend/src/services/fetch_ftp_updated.py` — Migrated to `create_unified_file`.
+  - `backend/src/api/reconciliation_firstcard/routes/upload.py` — Migrated to `create_unified_file`.
+  - `backend/src/services/tasks/ocr_tasks.py` — Migrated to `create_unified_file` (no workflow).
+  - `backend/src/services/tasks/creditcard_tasks.py` — Migrated to `create_unified_file` (no workflow).
+  - `backend/src/services/db/files.py` — Added `create_workflow` parameter to `create_unified_file`.
+  - `backend/src/services/tasks/common.py` — Exported `create_unified_file`.
+- **Unified diff (minimal, per file or consolidated):**
+  (Omitted for brevity)
+- **Tests executed:** Unit tests for `create_unified_file` verified.
+- **System documentation updated:** N/A
+- **Artifacts:** N/A
+- **Next action:** Full system integration test.
+
+#### [18:30] Feat/Refactor: Phase C - Unified FTP Service and Ingestion Refactoring
+- **Change type:** feat, refactor
+- **Scope (component/module):** `services/ftp_service`, `services/fetch_ftp`, `services/db/files`, `api/ingest`
+- **Tickets/PRs:** PHASE-C
+- **Branch:** `dev`
+- **Commit(s):** -
+- **Environment:** N/A
+- **Commands run:**
+  ```bash
+  python -m pytest backend/tests/unit/test_ftp_service.py
+  python -m pytest backend/tests/unit/test_fetch_ftp_refactored.py
+  python -m pytest backend/tests/unit/test_db_files_unified_files.py
+  ```
+- **Result summary:** Implemented Phase C tasks C1-C5. Created `ftp_service.py` for unified FTP handling. Refactored `fetch_ftp.py` to use `ftp_service` and `create_unified_file`. Implemented `create_unified_file` in `db/files.py` as canonical ingestion point, handling `unified_files` insertion and workflow run creation. Updated `api/ingest.py` to use `create_unified_file`.
+- **Files changed (exact):**
+  - `backend/src/services/ftp_service.py` — **NEW** — Unified FTP service module.
+  - `backend/src/services/fetch_ftp.py` — Refactored to use `ftp_service` and `create_unified_file`. Removed direct `ftplib` usage and `_dispatch_receipt_workflow`.
+  - `backend/src/services/db/files.py` — Added `UnifiedFile` dataclass, `create_unified_file` function. Added `workflow_run_id` to `UnifiedFile`.
+  - `backend/src/api/ingest.py` — Updated to use `create_unified_file` and remove direct `create_workflow_run`.
+  - `backend/tests/unit/test_ftp_service.py` — **NEW** — Unit tests for `ftp_service`.
+  - `backend/tests/unit/test_fetch_ftp_refactored.py` — **NEW** — Unit tests for refactored `fetch_ftp`.
+  - `backend/tests/unit/test_db_files_unified_files.py` — **NEW** — Unit tests for `create_unified_file`.
+- **Unified diff (minimal, per file or consolidated):**
+  (Omitted for brevity, see file changes)
+- **Tests executed:** All new unit tests passed.
+- **System documentation updated:** N/A
+- **Artifacts:** N/A
+- **Next action:** Verify integration in dev environment.
 
 #### [17:15] Refactor: Phase B - Central status definitions and constant replacement
 - **Change type:** refactor

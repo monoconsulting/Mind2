@@ -19,7 +19,7 @@ from .common import (
     AiStatus,
     _persist_credit_card_match,
     db_cursor,
-    insert_unified_file,
+    create_unified_file,
     log_event,
     parse_credit_card_statement,
     pdf_to_png_pages,
@@ -160,23 +160,24 @@ def _ensure_creditcard_pages_and_ocr(
                 page_id = str(uuid.uuid4())
                 page_hash = hashlib.sha256(page.bytes).hexdigest()
                 try:
-                    insert_unified_file(
+                    create_unified_file(
                         file_id=page_id,
                         file_type="cc_image",
-                        workflow_type="creditcard_invoice",
+                        create_workflow=False,
                         content_hash=page_hash,
                         submitted_by="workflow",
                         original_filename=f"{safe_filename}-page-{page_number:04d}.png",
-                        ai_status=AiStatus.UPLOADED.value,
+                        initial_ai_status=AiStatus.UPLOADED.value,
                         mime_type="image/png",
                         file_suffix=".png",
                         original_file_id=file_id,
                         original_file_name=safe_filename,
                         original_file_size=len(page.bytes),
-                        other_data={
+                        extra_metadata={
                             "detected_kind": "invoice_page",
                             "page_number": page_number,
                             "source_pdf": file_id,
+                            "workflow_type": "creditcard_invoice",
                         },
                     )
                 except DuplicateFileError:
