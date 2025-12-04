@@ -4,9 +4,9 @@ setlocal enabledelayedexpansion
 REM ========================================
 REM Configuration - Set your paths here
 REM ========================================
-set PROJECT_PATH=E:\projects\Mind2
-set SOURCE_PATH=E:\projects\Mind2
-set TARGET_PATH=E:\projects\Mind2\.codebasebackup
+set PROJECT_PATH=E:\projects\CRM
+set SOURCE_PATH=E:\projects\CRM
+set TARGET_PATH=E:\projects\CRM\.codebasebackup
 
 REM ========================================
 REM Exclusion Lists
@@ -14,32 +14,26 @@ REM ========================================
 REM Directories to exclude (full paths or relative to SOURCE_PATH)
 REM Add more directories by appending to the EXCLUDE_DIRS variable
 REM Example: set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\another_folder"
-set EXCLUDE_DIRS="%SOURCE_PATH%\.dbbackup"
+set EXCLUDE_DIRS="%SOURCE_PATH%\crm-app\storage"
+set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\.dbbackup"
 set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\.codebasebackup"
-set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\main-system\app-frontend\node_modules"
-set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\web\node_modules"
-set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\web\test-results"
-set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\backend\__pycache__"
-set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\.pytest_cache"
-set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\venv"
-set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\.venv"
-set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\storage"
-set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\logs"
+set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\crm-app\node_modules"
+set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\scraping\json"
+set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\node_modules"
+REM set EXCLUDE_DIRS=%EXCLUDE_DIRS% "%SOURCE_PATH%\logs"
 
 REM Files to exclude (wildcard patterns supported)
 REM Add more patterns by appending to the EXCLUDE_FILES variable
 REM Example: set EXCLUDE_FILES=%EXCLUDE_FILES% *.bak
 set EXCLUDE_FILES=codebase.zip
 set EXCLUDE_FILES=%EXCLUDE_FILES% *.tmp
+set EXCLUDE_FILES=%EXCLUDE_FILES% "%SOURCE_PATH%\crm-app\node_modules\@next\swc-win32-x64-msvc\next-swc.win32-x64-msvc.node"
 set EXCLUDE_FILES=%EXCLUDE_FILES% *.log
-set EXCLUDE_FILES=%EXCLUDE_FILES% *.pyc
-set EXCLUDE_FILES=%EXCLUDE_FILES% .coverage
-set EXCLUDE_FILES=%EXCLUDE_FILES% *.trace
-REM set EXCLUDE_FILES=%EXCLUDE_FILES% .env
 REM set EXCLUDE_FILES=%EXCLUDE_FILES% secret.env
+REM set EXCLUDE_FILES=%EXCLUDE_FILES% credentials.json
 
 echo ========================================
-echo Mind2 Codebase Backup Script
+echo CRM Codebase Backup Script
 echo ========================================
 echo Project Path: %PROJECT_PATH%
 echo Source Path: %SOURCE_PATH%
@@ -103,12 +97,13 @@ mkdir "%TEMP_DIR%"
 REM Copy all project files to temp directory, excluding specific folders and files
 echo Copying project files (this may take a moment)...
 robocopy "%SOURCE_PATH%" "%TEMP_DIR%" /E /NFL /NDL /NJH /NJS ^
-    /XD node_modules .next .git out dist build __pycache__ .pytest_cache ^
-    "%SOURCE_PATH%\web\test-results" ^
-    "%SOURCE_PATH%\storage" ^
-    "%SOURCE_PATH%\logs" ^
+    /XD node_modules .next .git out dist build ^
+    "%SOURCE_PATH%\crm-app\storage\prod\mysql" ^
+    "%SOURCE_PATH%\crm-app\storage\dev\mysql" ^
+    "%SOURCE_PATH%\storage\prod\mysql" ^
+    "%SOURCE_PATH%\storage\dev\mysql" ^
     %EXCLUDE_DIRS% ^
-    /XF *.sock *.lock *.pid *.pyc *.trace %EXCLUDE_FILES%
+    /XF *.sock *.lock *.pid %EXCLUDE_FILES%
 
 if errorlevel 8 (
     echo ERROR: Failed to copy files!

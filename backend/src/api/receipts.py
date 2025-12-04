@@ -880,7 +880,15 @@ def _load_boxes(rid: str) -> list[dict[str, Any]]:
 @receipts_bp.get("/receipts")
 def list_receipts() -> Any:
     # Optional filters
+    # ai_status is the canonical parameter for filtering unified_files.ai_status
+    # status is kept as alias for backwards compatibility
+    q_ai_status = request.args.get("ai_status")
     q_status = request.args.get("status")
+    # Workflow stage filtering
+    q_workflow_stage_key = request.args.get("workflow_stage_key") or request.args.get("workflow_stage")
+    q_workflow_stage_status = request.args.get("workflow_stage_status")
+    # Match status filtering (e.g., 'unmatched')
+    q_match_status = request.args.get("match_status")
     q_merchant = request.args.get("merchant")
     q_orgnr = request.args.get("orgnr")
     q_tags = request.args.get("tags")
@@ -901,17 +909,47 @@ def list_receipts() -> Any:
     page_size = max(1, min(page_size, 100))
     offset = (page - 1) * page_size
 
+    # Sorting - whitelist allowed columns to prevent SQL injection
+    SORT_COLUMNS = {
+        "created_at": "u.created_at",
+        "uploaded_at": "u.created_at",  # alias
+        "purchase_datetime": "u.purchase_datetime",
+        "company": "c.name",
+        "merchant": "c.name",
+        "gross_amount": "u.gross_amount_sek",
+        "net_amount": "u.net_amount_sek",
+        "status": "u.ai_status",
+        "file_type": "u.file_type",
+        "expense_type": "u.expense_type",
+        "payment_type": "u.payment_type",
+    }
+    sort_by = request.args.get("sort_by", "created_at")
+    sort_order = request.args.get("sort_order", "desc").lower()
+
+    # Validate and sanitize
+    sort_column_sql = SORT_COLUMNS.get(sort_by, "u.created_at")
+    sort_direction_sql = "ASC" if sort_order == "asc" else "DESC"
+
     items: list[dict[str, Any]] = []
     total = 0
     meta = {"page": page, "page_size": page_size}
 
     if db_cursor is not None:
         try:
-            where: list[str] = ["u.deleted_at IS NULL", "u.file_type != 'pdf'"]
+            where: list[str] = ["u.deleted_at IS NULL"]
             params: list[Any] = []
-            if q_status:
-                where.append("ai_status = %s")
-                params.append(q_status)
+
+            # AiStatus filtering (canonical or via alias)
+            # Valid AiStatus values: uploaded, processing, ocr_done, ocr_failed, manual_review, completed, failed
+            effective_ai_status = q_ai_status or q_status
+            if effective_ai_status:
+                # Handle negation (e.g., '!completed' means ai_status <> 'completed')
+                if effective_ai_status.startswith("!"):
+                    where.append("u.ai_status <> %s")
+                    params.append(effective_ai_status[1:])
+                else:
+                    where.append("u.ai_status = %s")
+                    params.append(effective_ai_status)
             if q_merchant:
                 where.append("c.name LIKE %s")
                 params.append(f"%{q_merchant}%")
@@ -939,9 +977,51 @@ def list_receipts() -> Any:
                     )
                     params.extend(tag_list)
 
+            # Workflow stage filtering
+            if q_workflow_stage_key:
+                # Filter by latest workflow stage key
+                where.append(
+                    """u.id IN (
+                        SELECT wr.file_id FROM workflow_runs wr
+                        JOIN workflow_stage_runs wsr ON wsr.workflow_run_id = wr.id
+                        WHERE wsr.stage_key = %s
+                        AND wsr.id = (
+                            SELECT MAX(wsr2.id) FROM workflow_stage_runs wsr2
+                            WHERE wsr2.workflow_run_id = wr.id
+                        )
+                    )"""
+                )
+                params.append(q_workflow_stage_key)
+
+            if q_workflow_stage_status:
+                # Filter by workflow stage status (queued, running, succeeded, failed, skipped)
+                where.append(
+                    """u.id IN (
+                        SELECT wr.file_id FROM workflow_runs wr
+                        JOIN workflow_stage_runs wsr ON wsr.workflow_run_id = wr.id
+                        WHERE wsr.status = %s
+                        AND wsr.id = (
+                            SELECT MAX(wsr2.id) FROM workflow_stage_runs wsr2
+                            WHERE wsr2.workflow_run_id = wr.id
+                        )
+                    )"""
+                )
+                params.append(q_workflow_stage_status)
+
+            # Match status filtering (for unmatched receipts)
+            if q_match_status == "unmatched":
+                # Receipts that are not matched to any credit card invoice line
+                where.append(
+                    """u.id NOT IN (
+                        SELECT DISTINCT il.receipt_id
+                        FROM invoice_lines il
+                        WHERE il.receipt_id IS NOT NULL
+                    )"""
+                )
+
             if not include_credit:
-                # Exclude credit card statements by default
-                where.append("(u.workflow_type IS NULL OR u.workflow_type='' OR u.workflow_type='receipt')")
+                # Exclude credit card statements by default, but include PDF processing workflows
+                where.append("(u.workflow_type IS NULL OR u.workflow_type='' OR u.workflow_type='receipt' OR u.workflow_type='WF1_RECEIPT' OR u.workflow_type='WF2_PDF_SPLIT')")
                 where.append(
                     "(u.file_type IS NULL OR (LOWER(u.file_type) NOT LIKE 'cc_%' AND LOWER(u.file_type) <> 'credit_card'))"
                 )
@@ -961,7 +1041,7 @@ def list_receipts() -> Any:
                 query = (
                     "SELECT u.id, u.original_filename, c.name as company_name, u.purchase_datetime, "
                     "u.net_amount_sek, u.gross_amount_sek, u.ai_status, u.file_type, u.workflow_type, "
-                    "u.submitted_by, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, "
+                    "u.submitted_by, u.file_creation_timestamp, u.created_at, fl.lat, fl.lon, fl.acc, "
                     "u.expense_type, u.credit_card_last_4_digits, u.credit_card_type, u.payment_type, "
                     "COALESCE(GROUP_CONCAT(t.tag), '') as tags, "
                     # Get latest workflow stage status
@@ -975,9 +1055,9 @@ def list_receipts() -> Any:
                     "LEFT JOIN file_tags t ON t.file_id=u.id "
                     "LEFT JOIN file_locations fl ON fl.file_id=u.id "
                     f"{where_sql} "
-                    "GROUP BY u.id, u.file_creation_timestamp, fl.lat, fl.lon, fl.acc, c.name, u.workflow_type, "
+                    "GROUP BY u.id, u.file_creation_timestamp, u.created_at, fl.lat, fl.lon, fl.acc, c.name, u.workflow_type, "
                     "u.expense_type, u.credit_card_last_4_digits, u.credit_card_type, u.payment_type "
-                    "ORDER BY u.created_at DESC LIMIT %s OFFSET %s"
+                    f"ORDER BY {sort_column_sql} {sort_direction_sql} LIMIT %s OFFSET %s"
                 )
                 cur.execute(query, tuple(params + [page_size, offset]))
                 results = cur.fetchall()
@@ -994,6 +1074,7 @@ def list_receipts() -> Any:
                     workflow_type,
                     submitted_by,
                     file_creation_ts,
+                    created_at,
                     lat,
                     lon,
                     acc,
@@ -1031,6 +1112,14 @@ def list_receipts() -> Any:
                         elif isinstance(file_creation_ts, str):
                             file_creation_iso = file_creation_ts
 
+                    # Format created_at (upload timestamp)
+                    created_at_iso = None
+                    if created_at:
+                        if hasattr(created_at, "isoformat"):
+                            created_at_iso = created_at.isoformat()
+                        elif isinstance(created_at, str):
+                            created_at_iso = created_at
+
                     # Build location object if coordinates exist
                     location = None
                     if lat is not None and lon is not None:
@@ -1055,6 +1144,7 @@ def list_receipts() -> Any:
                             "purchase_datetime": purchase_iso,
                             "purchase_date": purchase_date,
                             "file_creation_timestamp": file_creation_iso,
+                            "created_at": created_at_iso,
                             "location": location,
                             "net_amount": net_value,
                             "gross_amount": gross_value,
