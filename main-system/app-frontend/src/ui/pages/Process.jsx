@@ -104,44 +104,16 @@ const legacyStatusOptions = Object.entries(LEGACY_STATUS_DEFINITIONS)
   }))
   .sort((a, b) => a.label.localeCompare(b.label, 'sv'))
 
+// Build statusOptions dynamically from STAGE_DEFINITIONS and LEGACY_STATUS_DEFINITIONS
 const statusOptions = [
   { value: '', label: 'Alla statusar' },
-  // Meta filters
+  // Meta filters (these are special filters, not status values)
   { value: 'status:completed', label: 'Slutförda (KLAR)' },
   { value: 'status:!completed', label: 'Ej slutförda' },
   { value: 'match_status:unmatched', label: 'Ej matchade' },
   { value: 'status:manual_review', label: 'Manuell hantering' },
-
-  // Workflow Stages from MIND_STATUS_DEFINITIONS.md
-  { value: 'stage:src_portal', label: 'Portal' },
-  { value: 'stage:src_ftp', label: 'FTP' },
-  { value: 'stage:src_fc', label: 'FC-uppladdning' },
-  { value: 'stage:ingest_store', label: 'Lagrar fil' },
-  { value: 'stage:ingest_wf1', label: 'Startar kvittoflöde' },
-
-  { value: 'stage:detect_type', label: 'Dokumentklassning' },
-  { value: 'stage:r_ocr', label: 'OCR' },
-  { value: 'stage:r_ai3', label: 'Dataextraktion' },
-  { value: 'stage:r_ai4', label: 'Normalisering' },
-  { value: 'stage:r_persist', label: 'Sparar data' },
-  { value: 'stage:r_queue_match', label: 'Köar matchning' },
-
-  { value: 'stage:fc_create', label: 'Skapar FC-faktura' },
-  { value: 'stage:fc_ocr', label: 'FC OCR' },
-  { value: 'stage:fc_parse', label: 'FC-parsing' },
-  { value: 'stage:fc_ready', label: 'FC redo för matchning' },
-
-  { value: 'stage:ai5', label: 'Kortmatchning' },
-  { value: 'stage:m_link', label: 'Länka kvitto' },
-  { value: 'stage:m_unmatched', label: 'Omatchad' },
-
-  { value: 'stage:resume_dispatch', label: 'Återupptar' },
-  { value: 'stage:restart_dispatch', label: 'Omstartar' },
-
-  { value: 'stage:finalize_ok', label: 'Slutför' },
-  { value: 'stage:finalize_fail', label: 'Slutför (fel)' },
-  { value: 'stage:manual_review', label: 'Manuell granskning' },
-  { value: 'stage:KLAR', label: 'KLAR' }
+  // Stage options generated from status_definitions.json
+  ...stageOptions
 ]
 
 const uploadStageOptions = [
@@ -227,60 +199,18 @@ function formatStageStatusLabel(stageStatus) {
 
 function translateStatus(status, stageKey = null, stageStatus = null) {
   if (stageKey || stageStatus) {
-    const label = formatStageLabel(stageKey)
-    const statusLabel = formatStageStatusLabel(stageStatus)
+    // Use STAGE_DEFINITIONS from status_definitions.json for stage labels
+    const stageLabel = STAGE_DEFINITIONS?.[stageKey]?.label || stageKey || ''
 
-    const stageMap = {
-      'src_portal': 'Portal',
-      'src_portal_start': 'Portal start',
-      'src_portal_end': 'Portal klar',
-      'src_ftp': 'FTP',
-      'src_ftp_start': 'FTP start',
-      'src_ftp_end': 'FTP klar',
-      'src_fc': 'FC-uppladdning',
-      'src_fc_start': 'FC start',
-      'src_fc_end': 'FC klar',
-      'ingest_store': 'Lagrar fil',
-      'ingest_store_start': 'Lagrar fil start',
-      'ingest_store_end': 'Lagrar fil klar',
-      'ingest_wf1': 'Startar kvittoflöde',
-      'fc_create': 'Skapar FC-faktura',
-      'fc_ocr': 'FC OCR',
-      'fc_parse': 'FC-parsing',
-      'fc_ready': 'FC redo för matchning',
-      'detect_type': 'Dokumentklassning',
-      'r_ocr': 'OCR',
-      'r_ai3': 'Dataextraktion',
-      'r_ai4': 'Normalisering',
-      'r_persist': 'Sparar data',
-      'r_queue_match': 'Köar matchning',
-      'ai5': 'Kortmatchning',
-      'm_link': 'Länka kvitto',
-      'm_unmatched': 'Omatchad',
-      'resume_dispatch': 'Återupptar',
-      'restart_dispatch': 'Omstartar',
-      'finalize_ok': 'Slutför',
-      'finalize_fail': 'Slutför (fel)',
-      'manual_review': 'Manuell granskning',
-      'KLAR': 'KLAR'
+    // Use STATUS_LABEL_MAP from status_definitions.json for status labels
+    const statusLabelTranslated = stageStatus
+      ? (STATUS_LABEL_MAP?.[stageStatus.toLowerCase()] || stageStatus)
+      : ''
+
+    if (stageLabel && statusLabelTranslated) {
+      return `${stageLabel} - ${statusLabelTranslated}`
     }
-
-    const customLabel = stageMap[stageKey] || label
-
-    const statusMap = {
-      'running': 'pågående',
-      'succeeded': 'klar',
-      'failed': 'misslyckades',
-      'queued': 'i kö',
-      'skipped': 'hoppades över'
-    }
-
-    const statusLabelTranslated = stageStatus ? (statusMap[stageStatus.toLowerCase()] || statusLabel) : ''
-
-    if (customLabel && statusLabelTranslated) {
-      return `${customLabel} - ${statusLabelTranslated}`
-    }
-    return customLabel || statusLabelTranslated || ''
+    return stageLabel || statusLabelTranslated || ''
   }
 
   if (!status) {
@@ -296,21 +226,21 @@ function translateStatus(status, stageKey = null, stageStatus = null) {
   }
 
   const normalized = statusStr.toLowerCase()
+
+  // First check LEGACY_STATUS_DEFINITIONS from status_definitions.json
   const legacyLabel = LEGACY_STATUS_DEFINITIONS?.[normalized]?.label
   if (legacyLabel) {
     return legacyLabel
   }
 
-  const fallbackMap = {
-    ftp_fetched: 'FTP - Fil hämtad',
-    ocr_done: 'OCR - Text extraherad',
-    ai1_completed: 'AI1 - Dokumentklassificering klar',
-    ai2_completed: 'AI2 - Utgiftsklassificering klar',
-    ai3_completed: 'AI3 - Dataextraktion klar',
-    ai4_completed: 'AI4 - Bokföringsförslag klart',
-    proc_completed: 'Bearbetning klar'
+  // Then check if it's a stage key in STAGE_DEFINITIONS
+  const stageDefLabel = STAGE_DEFINITIONS?.[normalized]?.label
+  if (stageDefLabel) {
+    return stageDefLabel
   }
-  return fallbackMap[normalized] || status
+
+  // Fallback to original status string
+  return status
 }
 
 function StatusBadge({ status, stageKey = null, stageStatus = null }) {
@@ -1328,7 +1258,7 @@ export default function Receipts() {
   const previewCache = React.useRef(new Map())
   const [refreshTick, setRefreshTick] = React.useState(0)
   const resumePending = React.useRef(new Set())
-  const [sortColumn, setSortColumn] = React.useState('purchase_datetime')
+  const [sortColumn, setSortColumn] = React.useState('created_at')
   const [sortDirection, setSortDirection] = React.useState('desc')
   const [logState, setLogState] = React.useState(INITIAL_LOG_STATE)
   const [logActionState, setLogActionState] = React.useState({ clearing: false, error: '', success: '' })
@@ -1439,19 +1369,26 @@ export default function Receipts() {
     }
     if (filters.status) {
       if (filters.status.startsWith('stage:')) {
-        params.set('workflow_stage', filters.status.replace('stage:', ''))
+        // Workflow stage filtering - use workflow_stage_key param
+        params.set('workflow_stage_key', filters.status.replace('stage:', ''))
       } else if (filters.status.startsWith('legacy:')) {
-        params.set('status', filters.status.replace('legacy:', ''))
+        // Legacy statuses map to ai_status
+        params.set('ai_status', filters.status.replace('legacy:', ''))
       } else if (filters.status === 'status:completed') {
-        params.set('status', 'passed')
+        // AiStatus value 'completed' (not 'passed')
+        params.set('ai_status', 'completed')
       } else if (filters.status === 'status:!completed') {
-        params.set('status', '!passed')
+        // Negation: ai_status != 'completed'
+        params.set('ai_status', '!completed')
       } else if (filters.status === 'match_status:unmatched') {
-        params.set('ai_status', 'unmatched')
+        // Match status filter for unmatched receipts
+        params.set('match_status', 'unmatched')
       } else if (filters.status === 'status:manual_review') {
-        params.set('status', 'manual_review')
+        // AiStatus value 'manual_review'
+        params.set('ai_status', 'manual_review')
       } else {
-        params.set('status', filters.status)
+        // Default: treat as ai_status value
+        params.set('ai_status', filters.status)
       }
     }
     if (filters.orgnr) params.set('orgnr', filters.orgnr)
