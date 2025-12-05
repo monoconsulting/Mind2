@@ -304,6 +304,22 @@ def resume_processing(file_id: str) -> Any:
 
         set_ai_status(file_id, "queued")
 
+    # Ensure workflow_run status/current_stage reflect the resume action so polling UI sees progress
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                UPDATE workflow_runs
+                   SET status='queued',
+                       current_stage='resume_dispatch',
+                       updated_at=NOW()
+                 WHERE id=%s
+                """,
+                (workflow_run_id,),
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to bump workflow_run status on resume (id=%s): %s", workflow_run_id, exc)
+
     # Log resume stage to workflow_stage_runs so frontend sees immediate change
     log_import_event(
         workflow_run_id,
@@ -323,6 +339,13 @@ def resume_processing(file_id: str) -> Any:
     dispatched = False
     try:
         dispatched = dispatch_workflow(workflow_run_id)
+        # Mark workflow_runs as running immediately if dispatch was accepted
+        if dispatched:
+            with db_cursor() as cur:
+                cur.execute(
+                    "UPDATE workflow_runs SET status='running', current_stage='dispatch', updated_at=NOW() WHERE id=%s",
+                    (workflow_run_id,),
+                )
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.exception("Dispatch raised for workflow_run %s: %s", workflow_run_id, exc)
         dispatched = False

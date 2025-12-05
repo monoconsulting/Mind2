@@ -889,6 +889,8 @@ def list_receipts() -> Any:
     q_workflow_stage_status = request.args.get("workflow_stage_status")
     # Match status filtering (e.g., 'unmatched')
     q_match_status = request.args.get("match_status")
+    q_upload_stage = request.args.get("upload_stage")
+    q_search = request.args.get("search")
     q_merchant = request.args.get("merchant")
     q_orgnr = request.args.get("orgnr")
     q_tags = request.args.get("tags")
@@ -906,7 +908,8 @@ def list_receipts() -> Any:
         page_size = int(request.args.get("page_size", 50))
     except Exception:
         page_size = 50
-    page_size = max(1, min(page_size, 100))
+    # Allow large exports while keeping a sane upper bound
+    page_size = max(1, min(page_size, 1000))
     offset = (page - 1) * page_size
 
     # Sorting - whitelist allowed columns to prevent SQL injection
@@ -950,7 +953,14 @@ def list_receipts() -> Any:
                 else:
                     where.append("u.ai_status = %s")
                     params.append(effective_ai_status)
-            if q_merchant:
+            if q_search:
+                # Broad search across merchant, filename, id and AI status
+                like_term = f"%{q_search}%"
+                where.append(
+                    "(c.name LIKE %s OR u.original_filename LIKE %s OR u.id LIKE %s OR u.ai_status LIKE %s)"
+                )
+                params.extend([like_term, like_term, like_term, like_term])
+            if q_merchant and not q_search:
                 where.append("c.name LIKE %s")
                 params.append(f"%{q_merchant}%")
             if q_orgnr:
@@ -1026,6 +1036,23 @@ def list_receipts() -> Any:
                     "(u.file_type IS NULL OR (LOWER(u.file_type) NOT LIKE 'cc_%' AND LOWER(u.file_type) <> 'credit_card'))"
                 )
 
+            if q_upload_stage:
+                # Treat upload stage as source channel or initial stage key (src_portal, src_ftp, etc.)
+                where.append(
+                    """u.id IN (
+                        SELECT wr.file_id
+                        FROM workflow_runs wr
+                        WHERE wr.source_channel LIKE %s
+                        UNION
+                        SELECT wr2.file_id
+                        FROM workflow_runs wr2
+                        JOIN workflow_stage_runs wsr2 ON wsr2.workflow_run_id = wr2.id
+                        WHERE wsr2.stage_key LIKE %s
+                    )"""
+                )
+                like_stage = f"{q_upload_stage}%"
+                params.extend([like_stage, like_stage])
+
             where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
             # Count (needs same joins as main query)
@@ -1044,12 +1071,23 @@ def list_receipts() -> Any:
                     "u.submitted_by, u.file_creation_timestamp, u.created_at, fl.lat, fl.lon, fl.acc, "
                     "u.expense_type, u.credit_card_last_4_digits, u.credit_card_type, u.payment_type, "
                     "COALESCE(GROUP_CONCAT(t.tag), '') as tags, "
-                    # Get latest workflow stage status
+                    # Get latest workflow stage status + key/state separately
                     "(SELECT CONCAT(wsr.stage_key, ' ', wsr.status) "
                     " FROM workflow_runs wr "
                     " JOIN workflow_stage_runs wsr ON wsr.workflow_run_id = wr.id "
                     " WHERE wr.file_id = u.id "
-                    " ORDER BY wsr.started_at DESC LIMIT 1) as workflow_stage_status "
+                    " ORDER BY wsr.started_at DESC LIMIT 1) as workflow_stage_status, "
+                    "(SELECT wsr.stage_key FROM workflow_runs wr "
+                    " JOIN workflow_stage_runs wsr ON wsr.workflow_run_id = wr.id "
+                    " WHERE wr.file_id = u.id "
+                    " ORDER BY wsr.started_at DESC LIMIT 1) as workflow_stage_key, "
+                    "(SELECT wsr.status FROM workflow_runs wr "
+                    " JOIN workflow_stage_runs wsr ON wsr.workflow_run_id = wr.id "
+                    " WHERE wr.file_id = u.id "
+                    " ORDER BY wsr.started_at DESC LIMIT 1) as workflow_stage_state, "
+                    "(SELECT wr.source_channel FROM workflow_runs wr "
+                    " WHERE wr.file_id = u.id "
+                    " ORDER BY wr.created_at DESC LIMIT 1) as workflow_source_channel "
                     "FROM unified_files u "
                     "LEFT JOIN companies c ON c.id = u.company_id "
                     "LEFT JOIN file_tags t ON t.file_id=u.id "
@@ -1084,6 +1122,9 @@ def list_receipts() -> Any:
                     payment_type,
                     tag_csv,
                     workflow_stage_status,
+                    workflow_stage_key,
+                    workflow_stage_state,
+                    workflow_source_channel,
                 ) in results:
                     wf_type = (workflow_type or "").lower()
                     file_type_lower = (str(file_type or "")).lower()
@@ -1136,6 +1177,14 @@ def list_receipts() -> Any:
                     if include_credit:
                         if wf_type == "creditcard_invoice" or file_type_lower.startswith("cc_") or file_type_lower == "credit_card":
                             document_type = "Credit Card"
+
+                    upload_stage = None
+                    if workflow_stage_key and str(workflow_stage_key).lower().startswith("src_"):
+                        upload_stage = {
+                            "stage_key": workflow_stage_key,
+                            "status": workflow_stage_state,
+                        }
+
                     items.append(
                         {
                             "id": rid,
@@ -1151,6 +1200,10 @@ def list_receipts() -> Any:
                             "status": status,
                             "ai_status": status,  # Add ai_status field so frontend deps can detect changes
                             "workflow_stage_status": workflow_stage_status,  # Current workflow stage
+                            "workflow_stage_key": workflow_stage_key,
+                            "workflow_stage_state": workflow_stage_state,
+                            "workflow_source_channel": workflow_source_channel,
+                            "upload_stage": upload_stage,
                             "file_type": file_type,
                             "workflow_type": workflow_type,
                             "submitted_by": submitted_by,

@@ -36,23 +36,31 @@ const INITIAL_LOG_STATE = {
 
 
 const statusClassMap = {
-  // Legacy statuses
+  // AI Status (source of truth: docs/source_of_truth/30_STATUS_MODEL.md)
+  uploaded: 'status-queued',
   processing: 'status-processing',
-  queued: 'status-queued',
-  failed: 'status-failed',
-  passed: 'status-passed',
-  completed: 'status-passed',
-  manual_review: 'status-manual_review',
-  needs_review: 'status-manual_review',
-
-  // AI Pipeline stages - progressive colors (blue -> green)
-  ftp_fetched: 'status-processing',
   ocr_done: 'status-processing',
+  ocr_failed: 'status-failed',
+  manual_review: 'status-manual_review',
+  completed: 'status-passed',
+  failed: 'status-failed',
+
+  // Legacy / pipeline aliases
+  queued: 'status-queued',
+  passed: 'status-passed',
+  needs_review: 'status-manual_review',
+  ftp_fetched: 'status-processing',
   ai1_completed: 'status-processing',
   ai2_completed: 'status-processing',
   ai3_completed: 'status-processing',
   ai4_completed: 'status-queued',
-  proc_completed: 'status-passed'
+  proc_completed: 'status-passed',
+
+  // Workflow stage status (queued/running/succeeded/failed/skipped)
+  running: 'status-processing',
+  succeeded: 'status-passed',
+  skipped: 'status-queued',
+  canceled: 'status-failed'
 }
 
 const CATEGORY_ORDER = ['upload', 'workflow', 'matching', 'resume', 'outcome']
@@ -2429,15 +2437,11 @@ export default function Receipts() {
                     </td>
                     <td>
                       {(() => {
-                        // First priority: Check upload_stage (workflow based)
+                        // 1) Explicit upload stage (src_*)
                         if (receipt.upload_stage) {
                           const key = (receipt.upload_stage.stage_key || '').toLowerCase()
-                          if (key.startsWith('src_portal')) {
-                            return <span className="text-sm">Manuellt</span>
-                          }
-                          if (key.startsWith('src_ftp')) {
-                            return <span className="text-sm">FTP</span>
-                          }
+                          if (key.startsWith('src_portal')) return <span className="text-sm">Manuellt</span>
+                          if (key.startsWith('src_ftp')) return <span className="text-sm">FTP</span>
                           return (
                             <StatusBadge
                               status={`${receipt.upload_stage.stage_key || ''} ${receipt.upload_stage.status || ''}`.trim()}
@@ -2447,16 +2451,12 @@ export default function Receipts() {
                           )
                         }
 
-                        // Second priority: Check ingest_source_channel (file metadata based)
-                        const source = (receipt.ingest_source_channel || '').toLowerCase()
-                        if (source.includes('ftp')) {
-                          return <span className="text-sm">FTP</span>
-                        }
-                        if (source.includes('portal') || source.includes('manual')) {
-                          return <span className="text-sm">Manuellt</span>
-                        }
+                        // 2) Workflow source_channel from workflow_runs
+                        const sourceChannel = (receipt.workflow_source_channel || '').toLowerCase()
+                        if (sourceChannel.includes('ftp')) return <span className="text-sm">FTP</span>
+                        if (sourceChannel.includes('portal') || sourceChannel.includes('manual')) return <span className="text-sm">Manuellt</span>
 
-                        // Fallback
+                        // 3) Fallback
                         return <div className="text-sm text-gray-400">-</div>
                       })()}
                     </td>
