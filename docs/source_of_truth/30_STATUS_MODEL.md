@@ -3,98 +3,323 @@
 # Mind – Status Model (Source of Truth)
 
 > This file defines **all** status fields and allowed values used in Mind. If a status value appears in code or database but is not described here, it must be added or removed.
+>
+> Version: 2025-12-04
+> Source: `backend/src/services/status_constants.py`, `backend/src/services/invoice_status.py`, migration `0042_create_workflow_tracking.sql`
 
 ## 1. Overview
 
-Mind uses multiple status dimensions to track processing and workflow, including (names may correspond to DB columns):
+Mind uses multiple status dimensions to track processing and workflow:
 
-- **Processing status** – technical pipeline progress for a unified file/receipt/invoice.
-- **Document status** – business/UX state for a document as seen by users.
-- **Match status** – matching state between receipts and card transactions.
-- **AI step statuses** – per AI stage (AI1–AI7 and similar) success/error markers.
+| Status Type | Column/Table | Purpose |
+|-------------|--------------|---------|
+| AI Status | `unified_files.ai_status` | Overall document processing state |
+| Workflow Run Status | `workflow_runs.status` | Workflow execution state |
+| Workflow Stage Status | `workflow_stage_runs.status` | Individual stage state |
+| Invoice Processing Status | `invoice_documents.processing_status` | Invoice pipeline state |
+| Invoice Document Status | `invoice_documents.status` | Business-level invoice state |
+| Invoice Line Match Status | `invoice_lines.match_status` | Receipt-to-transaction match state |
 
-This section will be incrementally aligned with the actual database schema and code. Until then, existing status docs (e.g. `docs/MIND_STATUS_DEFINITIONS.md`, `docs/MIND_STATUS_TRANSITIONS.md`, `docs/RECEIPT_STATUS_FLOW.md`) are treated as **legacy** and must be reconciled into this file.
+## 2. AI Status (`unified_files.ai_status`)
 
-## 2. Processing Status
+Overall processing state for a document.
 
-### 2.1 Field
+**Source:** `backend/src/services/status_constants.py` (AiStatus enum)
 
-- Working name: `processing_status` (exact column names per table are listed in `40_DATA_MODEL.md`).
+| Value | Description | Writers |
+|-------|-------------|---------|
+| `uploaded` | File created, awaiting processing | `create_unified_file` default |
+| `processing` | Active pipeline step running | `begin_import_stage` when source stage starts |
+| `ocr_done` | OCR text persisted | OCR tasks |
+| `ocr_failed` | OCR failed | OCR error handlers |
+| `manual_review` | Sent to manual review queue | `_move_to_manual_review` in AI pipeline |
+| `completed` | Workflow finished successfully | `complete_import_stage` when `finalize_ok` |
+| `failed` | Fatal error | Error handlers, `finalize_fail` |
 
-### 2.2 Allowed Values (Technical Pipeline)
+### State Diagram
 
-Illustrative model – must be validated and aligned with actual DB and code during consolidation:
+```mermaid
+stateDiagram-v2
+    [*] --> uploaded
+    uploaded --> processing
+    processing --> ocr_done
+    processing --> ocr_failed
+    processing --> manual_review
+    processing --> completed
+    processing --> failed
+    ocr_done --> processing
+    ocr_done --> manual_review
+    ocr_done --> completed
+    ocr_failed --> manual_review
+    ocr_failed --> failed
+    manual_review --> processing
+    manual_review --> completed
+    completed --> [*]
+    failed --> [*]
+```
 
-- `imported` – File is stored but not yet processed.
-- `queued_for_ocr` – Waiting for OCR/transcription.
-- `ocr_in_progress` – OCR/transcription running.
-- `ocr_failed` – OCR/transcription failed; requires manual attention or retry.
-- `extracted` – Text extracted successfully.
-- `ai_classified` – Document type determined.
-- `ai_extracted` – Structured data (amounts, dates, merchant, etc.) extracted.
-- `ai_proposed` – Accounting proposal created.
-- `ready_for_review` – Pipeline done; awaiting human review.
-- `exported` – Document included in an export.
-- `archived` – Final state, no further processing.
+## 3. Workflow Run Status (`workflow_runs.status`)
 
-> TODO: Fill in exact values and mapping per entity (Unified File, Receipt, Invoice, Card Transaction) based on current DB and code.
+Execution state for a workflow instance.
 
-## 3. Document Status
+**Source:** Migration `0042_create_workflow_tracking.sql`
 
-Represents business-level state visible in the UI.
+| Value | Description |
+|-------|-------------|
+| `queued` | Waiting to start |
+| `running` | Currently executing |
+| `succeeded` | Completed successfully |
+| `failed` | Execution failed |
+| `canceled` | Manually canceled |
 
-Typical values (to be cross-checked against actual implementation):
+### State Diagram
 
-- `new` – Newly created/ingested, not yet opened.
-- `in_review` – User is working on this document.
-- `awaiting_information` – Missing data, user needs to provide details.
-- `approved` – Approved for export.
-- `rejected` – Rejected or invalid.
+```mermaid
+stateDiagram-v2
+    [*] --> queued
+    queued --> running
+    running --> succeeded
+    running --> failed
+    running --> canceled
+    succeeded --> [*]
+    failed --> [*]
+    canceled --> [*]
+```
 
-> TODO: Confirm actual values and exact column names (e.g., `document_status`, `review_status`) and reconcile with historical docs.
+## 4. Workflow Stage Status (`workflow_stage_runs.status`)
 
-## 4. Match Status
+State for individual stages within a workflow.
 
-Describes the status of matching between a Receipt and a Card Transaction.
+**Source:** Migration `0042_create_workflow_tracking.sql`
 
-Possible values (to be aligned with DB):
+| Value | Description |
+|-------|-------------|
+| `queued` | Stage waiting to execute |
+| `running` | Stage currently executing |
+| `succeeded` | Stage completed successfully |
+| `failed` | Stage execution failed |
+| `skipped` | Stage was skipped |
 
-- `unmatched` – No candidate match.
-- `candidate_found` – System has proposed one or more potential matches.
-- `matched_auto` – System automatically matched with high confidence.
-- `matched_manual` – User manually confirmed the match.
-- `mismatch` – Match attempt failed or was explicitly rejected.
+### State Diagram
 
-## 5. AI Step Statuses
+```mermaid
+stateDiagram-v2
+    [*] --> queued
+    queued --> running
+    running --> succeeded
+    running --> failed
+    running --> skipped
+    succeeded --> [*]
+    failed --> [*]
+    skipped --> [*]
+```
 
-Each AI step (AI1–AI7 etc.) should have a clear status flag and, where applicable, an error model.
+## 5. Workflow Stage Keys
 
-Examples:
+Stage identifiers used in `workflow_stage_runs.stage_key`.
 
-- `ai1_status`: `pending`, `running`, `success`, `error`.
-- `ai2_status`: same pattern.
+### 5.1 Source Stages (All Workflows)
 
-Error details should be stored in a structured way (e.g., error code, message, raw response snippet) to support debugging and analytics.
+| Stage Key | Description | Trigger |
+|-----------|-------------|---------|
+| `src_portal` | Portal upload source | Process.jsx upload |
+| `src_portal_start` | Portal upload started | Auto |
+| `src_portal_end` | Portal upload completed | Auto |
+| `src_ftp` | FTP fetch source | FTP import |
+| `src_ftp_start` | FTP fetch started | Auto |
+| `src_ftp_end` | FTP fetch completed | Auto |
+| `src_fc` | FirstCard upload source | CompanyCard.jsx upload |
+| `src_fc_start` | FC upload started | Auto |
+| `src_fc_end` | FC upload completed | Auto |
+| `ingest_store` | File storage | Auto after upload |
+| `ingest_store_start` | Storage started | Auto |
+| `ingest_store_end` | Storage completed | Auto |
 
-## 6. State Transition Rules
+### 5.2 WF1_RECEIPT Stages
 
-For each status dimension, state transitions **must** be documented as state diagrams or tables.
+| Stage Key | Description | AI Model |
+|-----------|-------------|----------|
+| `ingest_wf1` | Create receipt workflow | - |
+| `detect_type` | Document classification | AI1 |
+| `r_ocr` | OCR text extraction | PaddleOCR |
+| `r_ai3` | Data extraction | AI3 |
+| `r_ai4` | Accounting classification | AI4 |
+| `r_persist` | Save extracted data | - |
+| `r_queue_match` | Queue for matching | - |
 
-> TODO: Import and consolidate existing diagrams from:
->
-> - `docs/MIND_PROCESS_IMPORT_STATUS_DIAGRAM.md`
-> - `docs/PROCESS_IMPORT_STATUS_DIAGRAM.md`
-> - `docs/RECEIPT_STATUS_FLOW.md`
-> - `docs/MIND_STATUS_TRANSITIONS.md`
+### 5.3 WF3_FIRSTCARD_INVOICE Stages
 
-When fully consolidated, this section will contain one diagram per main entity:
+| Stage Key | Description | AI Model |
+|-----------|-------------|----------|
+| `fc_create` | Create invoice document | - |
+| `fc_ocr` | OCR + page extraction | PaddleOCR |
+| `fc_parse` | Parse invoice structure | AI6 |
+| `fc_is_fc` | Validate FC invoice | Decision |
+| `fc_ready` | Ready for matching | - |
+| `ai5` | Credit card matching | AI5 |
+| `m_found` | Match found decision | Decision |
+| `m_link` | Link receipt to line | - |
+| `m_unmatched` | Mark as unmatched | - |
 
-- Unified File
-- Receipt
-- Invoice
-- Card Transaction
+### 5.4 Common Final Stages
 
-## 7. Governance
+| Stage Key | Description |
+|-----------|-------------|
+| `finalize_ok` | Workflow completed successfully |
+| `finalize_fail` | Workflow failed |
+| `manual_review` | Requires manual review |
+| `resume_dispatch` | Resuming paused workflow |
+| `restart_dispatch` | Restarting workflow from beginning |
+| `KLAR` | Workflow completely finished |
+
+## 6. Invoice Processing Status (`invoice_documents.processing_status`)
+
+Pipeline state for invoice documents.
+
+**Source:** `backend/src/services/invoice_status.py`
+
+| Value | Description |
+|-------|-------------|
+| `uploaded` | Document uploaded |
+| `ocr_pending` | Waiting for OCR |
+| `ocr_done` | OCR completed |
+| `ai_processing` | AI analysis running |
+| `ready_for_matching` | Ready to match transactions |
+| `matching_completed` | Matching finished |
+| `completed` | Processing finished |
+| `failed` | Processing failed |
+
+### State Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> uploaded
+    uploaded --> ocr_pending
+    uploaded --> ready_for_matching
+    uploaded --> failed
+    ocr_pending --> ocr_done
+    ocr_pending --> failed
+    ocr_done --> ai_processing
+    ocr_done --> ready_for_matching
+    ocr_done --> failed
+    ai_processing --> ready_for_matching
+    ai_processing --> failed
+    ready_for_matching --> matching_completed
+    ready_for_matching --> failed
+    matching_completed --> completed
+    completed --> [*]
+    failed --> [*]
+```
+
+## 7. Invoice Document Status (`invoice_documents.status`)
+
+Business-level state for invoice documents.
+
+| Value | Description |
+|-------|-------------|
+| `imported` | Document imported |
+| `processing` | Being processed |
+| `matching` | Matching in progress |
+| `matched` | All lines matched |
+| `partially_matched` | Some lines matched |
+| `completed` | Processing complete |
+| `failed` | Processing failed |
+
+### State Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> imported
+    imported --> matching
+    imported --> matched
+    imported --> partially_matched
+    imported --> failed
+    matching --> matched
+    matching --> partially_matched
+    matching --> failed
+    matched --> completed
+    matched --> partially_matched
+    partially_matched --> matched
+    partially_matched --> completed
+    partially_matched --> failed
+    processing --> matching
+    processing --> failed
+    completed --> [*]
+    failed --> [*]
+```
+
+## 8. Invoice Line Match Status (`invoice_lines.match_status`)
+
+Match state for individual invoice lines.
+
+| Value | Description |
+|-------|-------------|
+| `pending` | Not yet matched |
+| `auto` | Automatically matched |
+| `manual` | Manually matched |
+| `confirmed` | Match confirmed by user |
+| `unmatched` | No match found |
+| `ignored` | Intentionally skipped |
+
+### State Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending
+    pending --> auto
+    pending --> manual
+    pending --> unmatched
+    pending --> ignored
+    auto --> manual
+    auto --> confirmed
+    auto --> unmatched
+    manual --> confirmed
+    manual --> unmatched
+    unmatched --> manual
+    ignored --> manual
+    confirmed --> [*]
+```
+
+## 9. Frontend Status Display
+
+The UI displays status via `workflow_stage_status` field.
+
+**Query (in receipts.py):**
+```sql
+SELECT CONCAT(wsr.stage_key, ' ', wsr.status)
+FROM workflow_runs wr
+JOIN workflow_stage_runs wsr ON wsr.workflow_run_id = wr.id
+WHERE wr.file_id = u.id
+ORDER BY wsr.started_at DESC LIMIT 1
+```
+
+**Display Priority:**
+1. `workflow_stage_status` (from workflow_stage_runs)
+2. `status` (unified_files.ai_status)
+3. `ai_status` (fallback)
+
+### Swedish Translations (Frontend)
+
+| Backend | Swedish |
+|---------|---------|
+| `src_portal` | Portal |
+| `src_ftp` | FTP |
+| `src_fc` | FC-uppladdning |
+| `detect_type` | Dokumentklassning |
+| `r_ocr` | OCR |
+| `r_ai3` | Dataextraktion |
+| `r_ai4` | Normalisering |
+| `fc_parse` | FC-parsing |
+| `ai5` | Kortmatchning |
+| `manual_review` | Manuell granskning |
+| `finalize_ok` | Slutfor |
+| `KLAR` | KLAR |
+| `running` | pagaende |
+| `succeeded` | klar |
+| `failed` | misslyckades |
+
+## 10. Governance
 
 - New status values may not be introduced in code or database without updating this file.
 - Deprecated values must be explicitly noted with migration plan.
+- All status transitions must be validated by state machine helpers in `invoice_status.py`.
