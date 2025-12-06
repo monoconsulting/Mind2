@@ -27,6 +27,36 @@ class UnifiedFile:
     workflow_run_id: int | None = None
 
 
+def get_unified_file_by_hash(content_hash: str) -> Optional[UnifiedFile]:
+    """Return a unified_file row matching the given content hash, if any."""
+    if db_cursor is None:
+        return None
+
+    with db_cursor() as cur:
+        cur.execute(
+            (
+                "SELECT id, file_type, original_filename, content_hash, submitted_by, "
+                "ai_status, company_id, workflow_type, file_category "
+                "FROM unified_files WHERE content_hash=%s LIMIT 1"
+            ),
+            (content_hash,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+
+        return UnifiedFile(
+            id=row[0],
+            file_type=row[1],
+            original_filename=row[2],
+            content_hash=row[3],
+            submitted_by=row[4],
+            ai_status=row[5],
+            company_id=row[6],
+            workflow_type=row[7],
+            file_category=row[8],
+        )
+
 
 def set_ai_status(file_id: str, status: str) -> bool:
     with db_cursor() as cur:

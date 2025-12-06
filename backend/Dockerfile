@@ -44,8 +44,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the entrypoint script and make it executable
-COPY backend/entrypoint.sh .
-RUN sed -i 's/\r$//' ./entrypoint.sh && chmod +x ./entrypoint.sh
+# Note: We copy to /entrypoint.sh (not /app) because /app is overwritten by volume mount in dev mode
+COPY backend/entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 # Copy the rest of the backend source code
 COPY backend/src/ .
@@ -57,4 +58,4 @@ COPY database/migrations/ /app/database/migrations/
 EXPOSE 5000
 
 # Run the entrypoint script
-ENTRYPOINT ["./entrypoint.sh"]
+ENTRYPOINT ["/entrypoint.sh"]

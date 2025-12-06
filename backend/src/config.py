@@ -23,6 +23,9 @@ class Config:
     AZURE_OPENAI_ENDPOINT: str | None = os.getenv("AZURE_OPENAI_ENDPOINT")
     OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", "http://localhost:11435")
 
+    # Queue/monitoring
+    QUEUE_STALL_THRESHOLD_SECONDS: int = int(os.getenv("QUEUE_STALL_THRESHOLD_SECONDS", "43200"))  # 12h
+
     # Feature Flags
     AI_PROCESSING_ENABLED: bool = os.getenv("AI_PROCESSING_ENABLED", "true").lower() == "true"
     ENABLE_REAL_OCR: bool = os.getenv("ENABLE_REAL_OCR", "true").lower() == "true"

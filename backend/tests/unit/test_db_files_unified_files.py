@@ -1,6 +1,11 @@
 import unittest
 from unittest.mock import MagicMock, patch
-from services.db.files import create_unified_file, DuplicateFileError, UnifiedFile
+from services.db.files import (
+    create_unified_file,
+    DuplicateFileError,
+    UnifiedFile,
+    get_unified_file_by_hash,
+)
 
 class TestDbFilesUnifiedFiles(unittest.TestCase):
     
@@ -53,6 +58,38 @@ class TestDbFilesUnifiedFiles(unittest.TestCase):
                 source="web",
                 initial_ai_status="new"
             )
+
+    @patch("services.db.files.db_cursor")
+    def test_get_unified_file_by_hash_found(self, mock_db_cursor):
+        mock_cursor = MagicMock()
+        mock_db_cursor.return_value.__enter__.return_value = mock_cursor
+        mock_cursor.fetchone.return_value = (
+            "abc123",
+            "pdf_page",
+            "orig.pdf",
+            "hash123",
+            "workflow",
+            "uploaded",
+            7,
+            "WF2_PDF_SPLIT",
+            None,
+        )
+
+        result = get_unified_file_by_hash("hash123")
+
+        self.assertIsInstance(result, UnifiedFile)
+        self.assertEqual(result.id, "abc123")
+        self.assertEqual(result.content_hash, "hash123")
+        mock_cursor.execute.assert_called_once()
+
+    @patch("services.db.files.db_cursor")
+    def test_get_unified_file_by_hash_none(self, mock_db_cursor):
+        mock_cursor = MagicMock()
+        mock_db_cursor.return_value.__enter__.return_value = mock_cursor
+        mock_cursor.fetchone.return_value = None
+
+        result = get_unified_file_by_hash("missing")
+        self.assertIsNone(result)
 
 if __name__ == "__main__":
     unittest.main()

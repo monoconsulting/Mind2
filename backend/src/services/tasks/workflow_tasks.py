@@ -106,6 +106,7 @@ def dispatch_workflow(workflow_run_id: int) -> bool:
         if workflow_key == "WF1_RECEIPT":
             # WF1: Build the new, separated task chain
             mark_stage(workflow_run_id, "dispatch", "succeeded", message="WF1 dispatched to new wf1.* chain.")
+            logger.info("Dispatching WF1 chain for run %s", workflow_run_id)
             (wf1_run_ocr.s(workflow_run_id) | wf1_run_ai_pipeline.s() | wf1_finalize.s()).apply_async()
             logger.info(
                 "dispatch_workflow_enqueued",
@@ -116,7 +117,8 @@ def dispatch_workflow(workflow_run_id: int) -> bool:
         elif workflow_key == "WF2_PDF_SPLIT":
             # WF2: Start the PDF processing chain
             mark_stage(workflow_run_id, "dispatch", "succeeded", message="WF2 dispatched to new wf2.* chain.")
-            wf2_prepare_pdf_pages.s(workflow_run_id).apply_async()
+            logger.info("Dispatching WF2 chain for run %s", workflow_run_id)
+            wf2_prepare_pdf_pages.s(workflow_run_id).set(queue="wf2").apply_async()
             logger.info(
                 "dispatch_workflow_enqueued",
                 extra={"workflow_run_id": workflow_run_id, "workflow_key": workflow_key, "target": "wf2"},
@@ -126,6 +128,7 @@ def dispatch_workflow(workflow_run_id: int) -> bool:
         elif workflow_key == "WF3_FIRSTCARD_INVOICE":
             # WF3: Start the FirstCard invoice processing chain
             mark_stage(workflow_run_id, "dispatch", "succeeded", message="WF3 dispatched to new wf3.* chain.")
+            logger.info("Dispatching WF3 chain for run %s", workflow_run_id)
             wf3_firstcard_invoice.s(workflow_run_id).apply_async()
             logger.info(
                 "dispatch_workflow_enqueued",
@@ -294,7 +297,7 @@ def wf1_finalize(workflow_run_id: int) -> int:
     return workflow_run_id
 
 # TASK_INVENTORY: ACTIVE (2025-11-28). WF2 finalization stage updating workflow status.
-@celery_app.task(name="wf2_finalize")
+@celery_app.task(name="wf2_finalize", queue="wf2")
 def wf2_finalize(workflow_run_id: int) -> int:
     """
     Workflow 2: Finalize Task.
@@ -339,6 +342,26 @@ def wf2_finalize(workflow_run_id: int) -> int:
         end=True,
         workflow_status_override=final_status,
     )
+
+    if final_status == "succeeded":
+        begin_import_stage(
+            workflow_run_id,
+            "finalize_ok",
+            message="WF2 slutförd",
+        )
+        complete_import_stage(
+            workflow_run_id,
+            "finalize_ok",
+            success=True,
+            message="PDF-split-flödet avslutat utan fel",
+        )
+        log_import_event(
+            workflow_run_id,
+            "KLAR",
+            message="WF2 slutförd",
+        )
+    else:
+        log_finalize_failure(workflow_run_id, message or "WF2 misslyckades")
 
     logger.info(
         "wf2_finalize_complete",

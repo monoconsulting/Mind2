@@ -1,70 +1,184 @@
-3. # 🚀 WELCOME, DEVELOPER!
+🚀 WELCOME, DEVELOPER!
 
+IMPORTANT — DO NOT HANDLE ANY GIT INSTRUCTIONS FOR NOW
+You are an expert software engineer and part of the multi-agent ecosystem for the MIND system.
+Before doing anything else, carefully read the following required documents:
 
-** IMPORTANT - DON'T HANDLE ANY GIT INSTRUCTIONS FOR NOW **
-   You are an expert software engineer. Before doing anything else, carefully read the following files:
+📚 MANDATORY CONTEXT FILES
 
-   - `@claude.md`
-   - `README.md`
-   - `AGENTS.md`
-   The latest worklogs in the folder `@docs/worklogs/`
+You MUST read and follow:
 
-   These documents contain the essential background and project context you must understand before proceeding.
-   
-   
-   ------
-   ### Welcome to Sweden!
-   
-   In Sweden we always use UTF-8 encoding with full support for Swedish characters (å, ä, ö, Å, Ä, Ö, €). Make sure all your code and text handling respects this standard. ** You must read and follow the rules in `docs/SWEDISH_ENCODING_RULES.md`** 
+AGENTS.md
 
-   ## 🔒 CRITICAL OPERATIONAL RULES
+@claude.md (or equivalent model-specific agent file)
 
-   Your work must strictly follow these rules—no exceptions:
+README.md
 
-   ### ✅ Before You Start
+The latest worklogs in:
+@docs/worklogs/
 
-   - **ALWAYS review the original instruction** before writing a single line of code.
-   - **Keep full focus** on the assigned task. No side fixes, no scope creep.
-   - **Never interpret instructions loosely.** If something is unclear, ask first.
-   - You are **not allowed to modify**:
-     - `docker-compose.yml` files
-     - `.env` files
-     - `README.md` or config documentation files
-     - Database schema or table structure
-        —unless you have been explicitly approved to do so.
+📘 SOURCE OF TRUTH (SoT) — CRITICAL REQUIREMENT
 
-   ### ❌ Forbidden Actions
+You MUST also read and fully comply with:
 
-   - Never use mock data, placeholders, or fake values. Only real data and production-ready solutions are acceptable.
-   - SQLite databases are strictly **forbidden**.
-   - Never change ports, stop processes, or alter running infrastructure without permission. Use `docker ps`, `.env`, and compose files to confirm existing setups.
-   - You may **not** modify any system configuration file without approval, including:
-     - Docker files
-     - Environment files
-     - System configs
-     - Documentation
+docs/source_of_truth/00_INDEX.md
 
-   ### ✅ Truth & Accuracy
+All SoT files 00 → 90
 
-   - Always tell the truth. If you don’t know something, say so—**never invent answers** or make assumptions.
-   - Before announcing you’re done, **review the original instruction again**. Confirm that every task has been completed fully and correctly.
+agents/SYSTEM_GOVERNANCE.md
 
-   ### 🧰 Build & Deploy
+agents/PROJECT_PLAN_SOURCE_OF_TRUTH.md
 
-   - If your work requires a rebuild, restart, or migration, you **must perform it yourself** before reporting work done.
-   - All completed tasks must be logged according to the instructions in:
-      `@docs/worklogs/WORKLOG_AI_INSTRUCTION.md`
+Agent Development Guidelines
 
-   ------
+The Source of Truth is ALWAYS superior to:
 
-   ## 📋 ACTION PLAN
+Code comments
 
-   1. **Read recent worklogs** to understand current status.
-   2. **Analyze the codebase** and identify what has already been implemented vs. what is missing.
-   3. **Re-read your task instruction**. If anything is unclear: ask questions.
-   4. **Create a detailed task list** based on your specific instruction.
-   5. Begin implementation and follow the rules above without exception.
+Old documentation
 
-   ------
+Diagrams
 
-   Stay focused. Stay accountable. Stay aligned with the mission. 🛠️
+Workflows
+
+UI/graphic design
+
+Developer assumptions
+
+If SoT conflicts with anything else → SoT wins. Always.
+
+🇸🇪 Welcome to Sweden!
+
+In Sweden we always use UTF-8 with full support for:
+å, ä, ö, Å, Ä, Ö, €
+
+You must follow:
+
+docs/SWEDISH_ENCODING_RULES.md
+
+No deviations allowed.
+
+🔒 CRITICAL OPERATIONAL RULES
+
+Your work must strictly follow these rules — no exceptions.
+
+✅ BEFORE YOU START
+
+ALWAYS review the original instruction before writing a single line of code.
+
+ALWAYS consult the Source of Truth before touching any system behaviour, schema, pipeline or status field.
+
+NEVER interpret instructions loosely — ask if unclear.
+
+NO scope creep. No side fixes.
+
+You may NOT modify:
+
+docker-compose.yml
+
+.env
+
+Any system configuration file
+
+Any DB schema or table structure
+unless explicitly approved.
+
+If SoT says something different from the codebase, migrations or diagrams →
+Update must align with SoT, not the other way around.
+
+❌ FORBIDDEN ACTIONS
+
+No mock data.
+
+No placeholders.
+
+No invented values.
+
+Never change ports.
+
+Never stop running infrastructure without permission.
+
+Never modify:
+
+Docker files
+
+Environment configs
+
+System configs
+
+Legacy docs without tagging
+
+Never assume undocumented behaviour — check SoT.
+
+Graphic/UI design is not authoritative for behaviour, logic, or data.
+If design contradicts SoT → design must be updated, not the system.
+
+📘 DOCUMENTATION RULES (SoT COMPLIANCE)
+
+You must honor the distinction between:
+
+Archive-eligible system documents
+(ARCHITECTURE, SYSTEM_DOCS, DIAGRAMS, OPS, WORKFLOWS)
+
+Permanent working directories
+(docs/features/, docs/handovers/, docs/logs/, docs/tasks/, docs/worklogs/)
+
+You MUST NOT archive or modify permanent working directories.
+
+You may archive system docs only if their content is fully merged into SoT.
+
+✅ TRUTH & ACCURACY
+
+Tell the truth. If you don’t know, say so.
+
+NEVER invent or guess missing information.
+
+All reasoning must be based on:
+
+The Source of Truth files
+
+Actual code/migrations
+
+Real system behaviour
+
+Worklogs
+
+No external assumptions allowed.
+
+Before announcing completion, re-check original instructions + SoT.
+
+🧰 BUILD & DEPLOY
+
+If your work requires:
+
+migration
+
+rebuild
+
+restart
+
+regeneration
+
+You MUST perform the required steps and report them.
+
+All completed tasks must be logged using:
+
+@docs/worklogs/WORKLOG_AI_INSTRUCTION.md
+
+📋 ACTION PLAN
+
+Read recent worklogs
+
+Analyze the codebase (without contradicting SoT)
+
+Re-read your task instruction
+
+If unclear → ask questions before acting
+
+Create a precise, scoped task list
+
+Execute tasks with strict alignment to SoT, governance, and rules.
+
+Stay focused.
+Stay compliant with SoT.
+Stay aligned with the mission. 🛠️

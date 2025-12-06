@@ -3,6 +3,9 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
+import hashlib
+from pathlib import Path
 from typing import Any
 
 from .common import (
@@ -13,10 +16,15 @@ from .common import (
     celery_app,
     db_cursor,
     create_unified_file,
+    get_unified_file_by_hash,
     log_event,
     pdf_to_png_pages,
     run_ocr,
     update_other_data,
+    DuplicateFileError,
+    group,
+    chord,
+    parse_credit_card_statement,
 )
 from .creditcard_tasks import _ensure_creditcard_pages_and_ocr
 from .file_management_tasks import (
@@ -117,7 +125,7 @@ def wf1_run_ocr(workflow_run_id: int) -> int:
     return workflow_run_id
 
 # TASK_INVENTORY: ACTIVE (2025-11-28). WF2 PDF splitter that schedules per-page OCR.
-@celery_app.task(name="wf2_prepare_pdf_pages")
+@celery_app.task(name="wf2_prepare_pdf_pages", queue="wf2")
 def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
     """
     Workflow 2: Prepare PDF Pages Task.
@@ -212,35 +220,62 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
         if not pages:
             raise RuntimeError("PDF conversion resulted in no pages.")
 
-        page_refs = []
+        page_refs: list[dict[str, Any]] = []
+        duplicate_page_ids: list[str] = []
         for page in pages:
             page_number = page.index + 1
             page_id = str(uuid.uuid4())
             page_hash = hashlib.sha256(page.bytes).hexdigest()
 
-            create_unified_file(
-                file_id=page_id,
-                file_type="pdf_page",
-                content_hash=page_hash,
-                submitted_by="workflow",
-                original_filename=f"{safe_filename}-page-{page_number:04d}.png",
-                initial_ai_status=AiStatus.UPLOADED.value,
-                mime_type="image/png",
-                file_suffix=".png",
-                original_file_id=file_id,
-                original_file_name=safe_filename,
-                original_file_size=len(page.bytes),
-                extra_metadata={
-                    "detected_kind": "pdf_page",
-                    "page_number": page_number,
-                    "source_pdf": file_id,
-                },
-                create_workflow=False,
-            )
+            target_file_id = page_id
+            duplicate = False
+
+            try:
+                create_unified_file(
+                    file_id=page_id,
+                    file_type="pdf_page",
+                    content_hash=page_hash,
+                    submitted_by="workflow",
+                    source="wf2_split",
+                    original_filename=f"{safe_filename}-page-{page_number:04d}.png",
+                    initial_ai_status=AiStatus.UPLOADED.value,
+                    mime_type="image/png",
+                    file_suffix=".png",
+                    original_file_id=file_id,
+                    original_file_name=safe_filename,
+                    original_file_size=len(page.bytes),
+                    extra_metadata={
+                        "detected_kind": "pdf_page",
+                        "page_number": page_number,
+                        "source_pdf": file_id,
+                    },
+                    create_workflow=False,
+                )
+            except DuplicateFileError:
+                existing = get_unified_file_by_hash(page_hash)
+                if not existing:
+                    raise
+                target_file_id = existing.id
+                duplicate = True
+                duplicate_page_ids.append(target_file_id)
+                log_event(
+                    logger,
+                    "convert.wf2.duplicate_page_reused",
+                    workflow_run_id=workflow_run_id,
+                    file_id=file_id,
+                    page_number=page_number,
+                    reused_file_id=target_file_id,
+                )
 
             stored_page_name = f"page-{page_number:04d}.png"
-            fs.adopt(page_id, stored_page_name, page.path)
-            page_refs.append({"file_id": page_id, "page_number": page_number})
+            fs.adopt(target_file_id, stored_page_name, page.path)
+            page_refs.append(
+                {
+                    "file_id": target_file_id,
+                    "page_number": page_number,
+                    "duplicate": duplicate,
+                }
+            )
 
         duration_ms = int((time.perf_counter() - conversion_started) * 1000) if conversion_started else None
         converted_page_ids = [page["file_id"] for page in page_refs]
@@ -250,6 +285,7 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
             workflow_run_id=workflow_run_id,
             file_id=file_id,
             page_count=len(page_refs),
+            duplicate_reused=len(duplicate_page_ids),
             duration_ms=duration_ms,
             page_ids=converted_page_ids,
         )
@@ -260,7 +296,7 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
             ai_stage_name="PDF-Conversion",
             log_text=(
                 f"WF2 converted PDF into {len(page_refs)} page(s): page_ids={converted_page_ids}; "
-                f"workflow_run_id={workflow_run_id}"
+                f"workflow_run_id={workflow_run_id}; duplicate_pages_reused={len(duplicate_page_ids)}"
             ),
             processing_time_ms=duration_ms,
             provider="pymupdf",
@@ -270,13 +306,18 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
         # Update the parent PDF unified_file with page info
         other_data = dict(parent_info.get("other_data", {}) or {})
         other_data.update({"page_count": len(page_refs), "pages": page_refs})
+        if duplicate_page_ids:
+            other_data["duplicate_page_ids"] = duplicate_page_ids
         update_other_data(file_id, other_data)
 
         mark_stage(
             workflow_run_id,
             "prepare_pages",
             "succeeded",
-            message=f"Split PDF into {len(page_refs)} pages.",
+            message=(
+                f"Split PDF into {len(page_refs)} pages."
+                + (f" Reused {len(duplicate_page_ids)} duplicate page(s)." if duplicate_page_ids else "")
+            ),
             end=True,
         )
         log_event(
@@ -285,14 +326,16 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
             workflow_run_id=workflow_run_id,
             file_id=file_id,
             page_count=len(page_refs),
+            duplicate_reused=len(duplicate_page_ids),
         )
 
         # Now, trigger the parallel OCR
         if page_refs:
             ocr_tasks = group(
-                wf2_run_page_ocr.s(workflow_run_id, page["file_id"]) for page in page_refs
+                wf2_run_page_ocr.s(workflow_run_id, page["file_id"], page["page_number"]).set(queue="wf2")
+                for page in page_refs
             )
-            callback = wf2_merge_ocr_results.s(workflow_run_id)
+            callback = wf2_merge_ocr_results.s(workflow_run_id).set(queue="wf2")
             chord(ocr_tasks)(callback)
             log_event(
                 logger,
@@ -301,36 +344,6 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
                 file_id=file_id,
                 page_count=len(page_refs),
             )
-
-    except DuplicateFileError as dup_exc:
-        duration_ms = int((time.perf_counter() - conversion_started) * 1000) if conversion_started else None
-        log_event(
-            logger,
-            "convert.wf2.conversion_failed",
-            workflow_run_id=workflow_run_id,
-            file_id=file_id,
-            error=f"Duplicate page detected: {dup_exc}",
-            duration_ms=duration_ms,
-        )
-        _history(
-            file_id,
-            "pdf_convert",
-            "error",
-            ai_stage_name="PDF-Conversion",
-            log_text="Duplicate page detected during WF2 PDF conversion.",
-            error_message=str(dup_exc),
-            processing_time_ms=duration_ms,
-            provider="pymupdf",
-            model_name="fitz-dpi-300",
-        )
-        mark_stage(
-            workflow_run_id,
-            "prepare_pages",
-            "failed",
-            message=f"Duplicate page detected: {dup_exc}",
-            end=True,
-        )
-        raise
     except Exception as e:
         duration_ms = int((time.perf_counter() - conversion_started) * 1000) if conversion_started else None
         log_event(
@@ -358,8 +371,10 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
     return workflow_run_id
 
 # TASK_INVENTORY: ACTIVE (2025-11-28). WF2 per-page OCR execution.
-@celery_app.task(name="wf2_run_page_ocr")
-def wf2_run_page_ocr(workflow_run_id: int, page_file_id: str) -> tuple[int, str, str]:
+@celery_app.task(name="wf2_run_page_ocr", queue="wf2")
+def wf2_run_page_ocr(
+    workflow_run_id: int, page_file_id: str, page_number: int | str | None = None
+) -> tuple[int, str, str]:
     """
     Workflow 2: OCR Task for a single page.
     - Runs OCR and returns the text.
@@ -368,8 +383,12 @@ def wf2_run_page_ocr(workflow_run_id: int, page_file_id: str) -> tuple[int, str,
     ensure_workflow(workflow_run_id, expected_prefix="WF2_")
 
     page_info = _load_unified_file_info(page_file_id)
-    page_number = page_info.get("other_data", {}).get("page_number", "unknown") if page_info else "unknown"
-    stage_key = f"ocr_page_{page_number}"
+    effective_page_number = (
+        page_number
+        if page_number is not None
+        else (page_info.get("other_data", {}).get("page_number", "unknown") if page_info else "unknown")
+    )
+    stage_key = f"ocr_page_{effective_page_number}"
 
     mark_stage(workflow_run_id, stage_key, "running", start=True)
     start_time = time.time()
@@ -378,7 +397,7 @@ def wf2_run_page_ocr(workflow_run_id: int, page_file_id: str) -> tuple[int, str,
         "wf2.page_ocr.start",
         workflow_run_id=workflow_run_id,
         page_file_id=page_file_id,
-        page_number=page_number,
+        page_number=effective_page_number,
     )
 
     result: dict[str, Any] | None = None
@@ -395,7 +414,7 @@ def wf2_run_page_ocr(workflow_run_id: int, page_file_id: str) -> tuple[int, str,
             "wf2.page_ocr.error",
             workflow_run_id=workflow_run_id,
             page_file_id=page_file_id,
-            page_number=page_number,
+            page_number=effective_page_number,
             error=error_msg,
         )
 
@@ -404,26 +423,26 @@ def wf2_run_page_ocr(workflow_run_id: int, page_file_id: str) -> tuple[int, str,
     if result:
         text = result.get("text", "")
         _update_file_fields(page_file_id, ocr_raw=text)
-        message = f"OCR succeeded for page {page_number}, extracted {len(text)} chars in {elapsed}ms."
+        message = f"OCR succeeded for page {effective_page_number}, extracted {len(text)} chars in {elapsed}ms."
         mark_stage(workflow_run_id, stage_key, "succeeded", message=message, end=True)
         log_event(
             logger,
             "wf2.page_ocr.succeeded",
             workflow_run_id=workflow_run_id,
             page_file_id=page_file_id,
-            page_number=page_number,
+            page_number=effective_page_number,
             duration_ms=elapsed,
             characters=len(text),
         )
     else:
-        message = f"OCR failed for page {page_number}: {error_msg or 'OCR returned no results'}"
+        message = f"OCR failed for page {effective_page_number}: {error_msg or 'OCR returned no results'}"
         mark_stage(workflow_run_id, stage_key, "failed", message=message, end=True)
         log_event(
             logger,
             "wf2.page_ocr.failed",
             workflow_run_id=workflow_run_id,
             page_file_id=page_file_id,
-            page_number=page_number,
+            page_number=effective_page_number,
             error=error_msg or 'no_text',
             duration_ms=elapsed,
         )
@@ -431,7 +450,7 @@ def wf2_run_page_ocr(workflow_run_id: int, page_file_id: str) -> tuple[int, str,
     return (workflow_run_id, page_file_id, text)
 
 # TASK_INVENTORY: ACTIVE (2025-11-28). WF2 fan-in to merge OCR results and continue workflow.
-@celery_app.task(name="wf2_merge_ocr_results")
+@celery_app.task(name="wf2_merge_ocr_results", queue="wf2")
 def wf2_merge_ocr_results(results: list[tuple[int, str, str]], workflow_run_id: int):
     """
     Workflow 2: Merge OCR Results Task.
@@ -482,12 +501,12 @@ def wf2_merge_ocr_results(results: list[tuple[int, str, str]], workflow_run_id: 
         return workflow_run_id
 
     # Trigger the next step
-    wf2_run_invoice_analysis.s(workflow_run_id).apply_async()
+    wf2_run_invoice_analysis.s(workflow_run_id).set(queue="wf2").apply_async()
 
     return workflow_run_id
 
 # TASK_INVENTORY: ACTIVE (2025-11-28). WF2 invoice analysis stage (parses merged OCR).
-@celery_app.task(name="wf2_run_invoice_analysis")
+@celery_app.task(name="wf2_run_invoice_analysis", queue="wf2")
 def wf2_run_invoice_analysis(workflow_run_id: int) -> int:
     """
     Workflow 2: Invoice Analysis Task.
@@ -535,8 +554,15 @@ def wf2_run_invoice_analysis(workflow_run_id: int) -> int:
             inserted=inserted,
         )
 
-        # Trigger finalization
-        wf2_finalize.s(workflow_run_id).apply_async()
+        # Trigger finalization (lazy import to avoid circular import at module load)
+        import importlib
+
+        wf_tasks = importlib.import_module("services.tasks.workflow_tasks")
+        finalize_task = getattr(wf_tasks, "wf2_finalize", None)
+        if not finalize_task:
+            raise NameError("wf2_finalize task not found in workflow_tasks module")
+
+        finalize_task.s(workflow_run_id).set(queue="wf2").apply_async()
 
     except Exception as e:
         mark_stage(workflow_run_id, "invoice_analysis", "failed", message=str(e), end=True)
