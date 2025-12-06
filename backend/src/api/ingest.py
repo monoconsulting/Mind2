@@ -18,6 +18,7 @@ from services.tasks import (
     complete_import_stage,
     dispatch_workflow,
     log_import_event,
+    mark_stage,
 )
 from services.workflow_runs import create_workflow_run
 from services.db.files import (
@@ -288,7 +289,11 @@ def resume_processing(file_id: str) -> Any:
             file_id,
         )
         workflow_run_id = existing_run_id
-        # Don't reset status if workflow is already running
+        # Ensure SoT-compliant AI-status when resuming an existing run
+        try:
+            set_ai_status(file_id, "processing")
+        except Exception as exc:
+            logger.warning("Failed to set ai_status=processing for %s on resume: %s", file_id, exc)
     else:
         # Create new workflow_run only if none exists
         workflow_run_id = create_workflow_run(
@@ -302,7 +307,11 @@ def resume_processing(file_id: str) -> Any:
             logger.error("Failed to create workflow run for resume (file_id=%s)", file_id)
             return jsonify({"queued": False, "error": "workflow_creation_failed"}), 500
 
-        set_ai_status(file_id, "queued")
+        # SoT: ai_status must be a valid value; use 'processing' when resuming/dispatching
+        try:
+            set_ai_status(file_id, "processing")
+        except Exception as exc:
+            logger.warning("Failed to set ai_status=processing for %s on resume (new run): %s", file_id, exc)
 
     # Ensure workflow_run status/current_stage reflect the resume action so polling UI sees progress
     try:
@@ -310,7 +319,7 @@ def resume_processing(file_id: str) -> Any:
             cur.execute(
                 """
                 UPDATE workflow_runs
-                   SET status='queued',
+                   SET status='running',
                        current_stage='resume_dispatch',
                        updated_at=NOW()
                  WHERE id=%s
@@ -321,55 +330,56 @@ def resume_processing(file_id: str) -> Any:
         logger.warning("Failed to bump workflow_run status on resume (id=%s): %s", workflow_run_id, exc)
 
     # Log resume stage to workflow_stage_runs so frontend sees immediate change
-    log_import_event(
-        workflow_run_id,
-        "resume_dispatch",
-        status="running",
-        message=f"Återupptar bearbetning (tidigare status: {current_status})",
-    )
-
-    _history(
-        file_id=file_id,
-        job="resume",
-        status="queued",
-        ai_stage_name="resume_dispatch",
-        log_text=f"Resume requested via API (workflow={workflow_key}, previous_status={current_status})",
-    )
-
-    dispatched = False
     try:
-        dispatched = dispatch_workflow(workflow_run_id)
-        # Mark workflow_runs as running immediately if dispatch was accepted
-        if dispatched:
-            with db_cursor() as cur:
-                cur.execute(
-                    "UPDATE workflow_runs SET status='running', current_stage='dispatch', updated_at=NOW() WHERE id=%s",
-                    (workflow_run_id,),
-                )
-    except Exception as exc:  # pragma: no cover - defensive logging
-        logger.exception("Dispatch raised for workflow_run %s: %s", workflow_run_id, exc)
-        dispatched = False
+        log_import_event(
+            workflow_run_id,
+            "resume_dispatch",
+            status="running",
+            message=f"Återupptar bearbetning (tidigare status: {current_status})",
+        )
+        # Ensure workflow_runs.current_stage/status mirror the latest stage for UI polling
+        mark_stage(
+            workflow_run_id,
+            "resume_dispatch",
+            "running",
+            update_workflow_status=True,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to log resume_dispatch for %s: %s", workflow_run_id, exc)
 
-    if not dispatched:
-        set_ai_status(file_id, "failed")
+    # Dispatch workflow so processing actually resumes and subsequent stages update status
+    if dispatch_workflow:
+        try:
+            dispatch_ok = dispatch_workflow(workflow_run_id)
+            if not dispatch_ok:
+                logger.error("Dispatch workflow failed for resume (id=%s)", workflow_run_id)
+                # Mark stage as failed to avoid infinite "running"
+                mark_stage(
+                    workflow_run_id,
+                    "resume_dispatch",
+                    "failed",
+                    message="Dispatch failed on resume",
+                    update_workflow_status=True,
+                    workflow_status_override="failed",
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Dispatch workflow raised for resume (id=%s): %s", workflow_run_id, exc, exc_info=True)
+            mark_stage(
+                workflow_run_id,
+                "resume_dispatch",
+                "failed",
+                message=f"Dispatch exception: {exc}",
+                update_workflow_status=True,
+                workflow_status_override="failed",
+            )
+
+    try:
         _history(
             file_id=file_id,
             job="resume",
-            status="error",
-            ai_stage_name="resume_dispatch",
-            error_message="Dispatch failed",
-            log_text=f"Failed to dispatch workflow_run {workflow_run_id} for resume.",
         )
-        return jsonify({"queued": False, "error": "dispatch_failed"}), 500
-
-    set_ai_status(file_id, "processing")
-    _history(
-        file_id=file_id,
-        job="resume",
-        status="success",
-        ai_stage_name="resume_dispatch",
-        log_text=f"Resume dispatched successfully (workflow_run={workflow_run_id}, workflow={workflow_key})",
-    )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("History logging failed for resume %s: %s", file_id, exc)
 
     message = "Bearbetning återupptagen"
     action = f"{workflow_key} run {workflow_run_id}"

@@ -13,6 +13,7 @@ try:
     from services.db.files import (
         DuplicateFileError,
         create_unified_file,
+        get_unified_file_by_hash,
         set_ai_status,
         update_other_data,
     )
@@ -77,6 +78,7 @@ __all__ = [
     "db_cursor",
     "DuplicateFileError",
     "FileStorage",
+    "get_unified_file_by_hash",
     "InvoiceDocumentStatus",
     "InvoiceLineMatchStatus",
     "InvoiceProcessingStatus",

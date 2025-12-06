@@ -21,9 +21,11 @@ function QueuePage() {
   const [error, setError] = React.useState('')
   const [resuming, setResuming] = React.useState(new Set())
 
-  const loadQueue = React.useCallback(async () => {
-    setLoading(true)
-    setError('')
+  const loadQueue = React.useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true)
+      setError('')
+    }
     try {
       const res = await api.fetch('/ai/api/queue/')
       if (!res.ok) {
@@ -35,13 +37,15 @@ function QueuePage() {
       setError(err instanceof Error ? err.message : String(err))
       setItems([])
     } finally {
-      setLoading(false)
+      if (!silent) {
+        setLoading(false)
+      }
     }
   }, [])
 
   React.useEffect(() => {
-    loadQueue()
-    const interval = setInterval(loadQueue, 5000)
+    loadQueue(false)
+    const interval = setInterval(() => loadQueue(true), 5000)
     return () => clearInterval(interval)
   }, [loadQueue])
 
@@ -71,10 +75,15 @@ function QueuePage() {
     const tone = statusClass[row.status] || 'status-queued'
     const stage = row.latest_stage_key ? `${row.latest_stage_key} ${row.latest_stage_status || ''}`.trim() : row.current_stage
     const stalled = row.stalled
-    const canResume = stalled && (row.status === 'running' || row.status === 'queued') && row.file_id
+
+    // Can resume if stalled OR if it's an orphan file (no run ID yet but stuck in processing/queued)
+    const isOrphan = !row.id && row.file_id;
+    const canResume = (stalled && (row.status === 'running' || row.status === 'queued') && row.file_id) || isOrphan;
+
     const isResuming = resuming.has(row.file_id)
+
     return (
-      <div key={row.id} className={`card ${isFirst ? 'border-red-600 border' : ''}`}>
+      <div key={row.id || row.file_id} className={`card ${isFirst ? 'border-red-600 border' : ''}`}>
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-lg bg-gray-800 text-red-200">
@@ -82,12 +91,13 @@ function QueuePage() {
             </div>
             <div>
               <div className="text-sm text-gray-400">Workflow</div>
-              <div className="text-lg font-semibold text-white">{row.workflow_key}</div>
+              <div className="text-lg font-semibold text-white">{row.workflow_key || 'Okänd'}</div>
               <div className="text-xs text-gray-500">Källa: {row.source_channel || 'okänd'}</div>
             </div>
           </div>
           <div className="flex items-center gap-2">
             {stalled && <Badge label="Stalled" tone="status-failed" />}
+            {isOrphan && <Badge label="Orphan" tone="status-failed" />}
             <Badge label={row.status || 'okänd'} tone={tone} />
           </div>
         </div>
@@ -109,7 +119,7 @@ function QueuePage() {
           <div><FiClock className="inline mr-1" />Start: {row.created_at || '-'}</div>
           <div><FiClock className="inline mr-1" />Senast: {row.updated_at || '-'}</div>
           {stalled && <div className="text-red-400 font-semibold">Ingen uppdatering på {row.idle_seconds}s</div>}
-          <div className="ml-auto">Run-ID: {row.id}</div>
+          <div className="ml-auto">Run-ID: {row.id || 'Saknas'}</div>
         </div>
         {canResume && (
           <div className="mt-3 flex justify-end">
@@ -134,16 +144,12 @@ function QueuePage() {
           <h2 className="text-2xl font-semibold text-white">Kö</h2>
           <p className="text-sm text-gray-400">Visar alla workflow_runs i ordning. Överst = pågående.</p>
         </div>
-        <button type="button" className="btn btn-secondary" onClick={loadQueue} disabled={loading}>
+        <button type="button" className="btn btn-secondary" onClick={() => loadQueue(false)} disabled={loading}>
           Uppdatera
         </button>
       </div>
 
-      {loading && (
-        <div className="card flex items-center gap-2 text-gray-200">
-          <div className="loading-spinner" /> Laddar kö...
-        </div>
-      )}
+      {/* Silent refresh: no visible spinner to avoid layout jump */}
 
       {error && (
         <div className="card border border-red-700 text-red-200 flex items-center gap-2">

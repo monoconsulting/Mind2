@@ -8,6 +8,7 @@ services:
       - ./storage:/data/storage
       - ./inbox:/data/inbox
       - G:\Dropbox\MINDUPLOAD:/data/upload
+      - ./backend/src:/app:ro
     environment:
       - PYTHONPATH=/app
       - DB_HOST=mysql

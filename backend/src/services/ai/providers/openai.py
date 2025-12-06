@@ -28,8 +28,13 @@ class OpenAIProvider(BaseLLMProvider):
 
         url = "https://api.openai.com/v1/chat/completions"
 
+        # OpenAI requires the literal word "json" in the messages when using response_format=json_object.
+        json_guardrail = (
+            f"{prompt}\n\nReturn a JSON object. Do not add text outside JSON. Key names must be stable."
+        )
+
         messages = [
-            {"role": "system", "content": prompt},
+            {"role": "system", "content": json_guardrail},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
 

@@ -5,6 +5,7 @@ from flask import Blueprint, jsonify
 
 from api.middleware import auth_required
 from services.db.connection import db_cursor
+from config import config
 
 queue_bp = Blueprint("queue", __name__, url_prefix="/queue")
 logger = logging.getLogger(__name__)
@@ -65,16 +66,41 @@ def list_queue():
                     ) AS latest_stage_updated_at
                 FROM workflow_runs wr
                 LEFT JOIN unified_files uf ON uf.id = wr.file_id
+                
+                UNION ALL
+                
+                SELECT
+                    NULL as id,
+                    uf.workflow_type as workflow_key,
+                    'orphan_file' as source_channel,
+                    uf.id as file_id,
+                    uf.content_hash,
+                    'unknown' as current_stage,
+                    'queued' as status,
+                    uf.created_at,
+                    uf.updated_at,
+                    TIMESTAMPDIFF(SECOND, uf.updated_at, NOW()) AS idle_seconds,
+                    uf.original_filename,
+                    uf.ai_status,
+                    NULL as latest_stage_key,
+                    NULL as latest_stage_status,
+                    NULL as latest_stage_updated_at
+                FROM unified_files uf
+                LEFT JOIN workflow_runs wr ON wr.file_id = uf.id
+                WHERE wr.id IS NULL
+                  AND uf.ai_status IN ('queued', 'processing', 'running')
+                  AND uf.deleted_at IS NULL
+                
                 ORDER BY
-                    CASE wr.status
+                    CASE status
                         WHEN 'running' THEN 0
                         WHEN 'queued' THEN 1
                         ELSE 2
                     END,
-                    CASE wr.status
-                        WHEN 'running' THEN wr.updated_at
-                        WHEN 'queued' THEN wr.created_at
-                        ELSE wr.updated_at
+                    CASE status
+                        WHEN 'running' THEN updated_at
+                        WHEN 'queued' THEN created_at
+                        ELSE updated_at
                     END DESC
                 """
             )
@@ -104,6 +130,8 @@ def list_queue():
                 except Exception:
                     stalled = False
 
+                stall_threshold = config.QUEUE_STALL_THRESHOLD_SECONDS
+
                 items.append(
                     {
                         "id": run_id,
@@ -123,7 +151,8 @@ def list_queue():
                         "latest_stage_updated_at": latest_stage_updated_at.isoformat()
                         if hasattr(latest_stage_updated_at, "isoformat")
                         else latest_stage_updated_at,
-                        "stalled": stalled,
+                        "stalled": idle_seconds is not None and idle_seconds > stall_threshold,
+                        "stall_threshold_seconds": stall_threshold,
                     }
                 )
     except Exception as exc:
