@@ -365,3 +365,48 @@ Authorization: Bearer <token>
 - Runbook changes require review
 - All incidents should be documented
 - Post-incident reviews for critical issues
+
+## 15. Invoice State Repair Procedure (Missing invoice_documents)
+
+**Symptom:** Logs contain repeated warnings like: `Illegal transition for processing_status id=<uuid>: current=missing target=<state>`
+
+**Cause:** The application attempted to transition an invoice that has no corresponding row in `invoice_documents`.
+
+**Repair steps:**
+
+1. Identify affected invoices:
+
+   ```sql
+   SELECT il.invoice_id
+   FROM invoice_lines il
+   LEFT JOIN invoice_documents d ON d.id = il.invoice_id
+   WHERE d.id IS NULL
+   GROUP BY il.invoice_id;
+   ```
+
+2. For each `invoice_id` in the result set, run the admin script that calls:
+
+   ```
+   ensure_invoice_document(invoice_id, "credit_card_invoice")
+   ```
+
+   This creates a minimal row with:
+   - `status = IMPORTED`
+   - `processing_status = UPLOADED`
+   - `metadata_json.recovered_from_missing_invoice_document = true`
+
+3. After recovery, re-run the relevant workflows using the existing resume or batch-resume mechanisms.
+
+4. If recovery fails for any invoice (e.g., referential integrity issues), escalate as a data-quality incident and handle manually.
+
+## 15. Batch Resume Operation
+
+Use the batch resume API to restart multiple items with the standard resume logic.
+
+- **Endpoint:** `POST /queue/resume-batch`
+- **Payload:**
+  ```json
+  { "file_ids": [<int>, <int>, ...] }
+  ```
+- **Behavior:** For each `file_id` the system calls the existing single-file resume API (`POST /ingest/process/<file_id>/resume`), creating or reusing the appropriate workflow run. No new workflow mechanics are introduced; it reuses the standard resume pipeline.
+- **When to use:** Selecting multiple orphans or stalled `running` workflows from the queue view to resume processing in bulk.

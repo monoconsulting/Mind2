@@ -33,6 +33,7 @@ from .file_management_tasks import (
     _move_to_manual_review,
     _save_accounting_entries,
     _update_file_status,
+    _fail_invoice_processing,
 )
 from .history import _history
 from .invoice_tasks import (
@@ -67,7 +68,7 @@ from .workflow_base import (
     log_import_event,
     mark_stage,
 )
-from services.ai_service import AIService
+from services.ai_service import AIService, AiProviderError
 from api.ai_processing import classify_document_internal
 from services.workflow_coordinator import FirstCardWorkflowCoordinator
 
@@ -380,6 +381,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     fc_coordinator.begin_fc_import_stage(workflow_run_id, "firstcard_invoice", "Workflow running")
 
     file_id = wfr.get("file_id")
+    invoice_id = file_id  # unified_files.id is the invoice identifier for WF3
     if not file_id:
         fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
@@ -603,7 +605,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
 
     ai_service = AIService()
     request = CreditCardInvoiceExtractionRequest(
-        invoice_id=file_id,
+        invoice_id=invoice_id,
         ocr_text=combined_text,
         page_ids=page_ids,
     )
@@ -649,6 +651,39 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
                 file_id,
                 ai7_stats.get("error", "unknown"),
             )
+    except AiProviderError as exc:
+        fc_coordinator.complete_fc_import_stage(
+            workflow_run_id,
+            "fc_parse",
+            success=False,
+            message=f"AI6 provider failed: {exc}",
+        )
+        transition_processing_status(
+            invoice_id,
+            InvoiceProcessingStatus.FAILED,
+            (
+                InvoiceProcessingStatus.AI_PROCESSING,
+                InvoiceProcessingStatus.OCR_DONE,
+                InvoiceProcessingStatus.OCR_PENDING,
+            ),
+        )
+        transition_document_status(
+            invoice_id,
+            InvoiceDocumentStatus.FAILED,
+            (
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.MATCHING,
+            ),
+        )
+        _fail_invoice_processing(invoice_id, f"AI6 provider failed: {exc}")
+        fc_coordinator.complete_fc_import_stage(
+            workflow_run_id,
+            "firstcard_invoice",
+            success=False,
+            message=f"AI6 provider failed: {exc}",
+        )
+        log_finalize_failure(workflow_run_id, f"AI6 provider failed: {exc}")
+        return workflow_run_id
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
         error_msg = f"{type(exc).__name__}: {exc}"
@@ -920,6 +955,35 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
         success=True,
         message="WF3 slutf├╢rd",
     )
+    # SoT compliance: mark workflow as succeeded and set ai_status to completed
+    try:
+        if db_cursor:
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE workflow_runs
+                       SET status=%s,
+                           current_stage=%s,
+                           updated_at=NOW()
+                     WHERE id=%s
+                    """,
+                    ("succeeded", "KLAR", workflow_run_id),
+                )
+        if wfr and wfr.get("file_id"):
+            from services.db.files import set_ai_status
+
+            set_ai_status(wfr["file_id"], AiStatus.COMPLETED.value)
+            logger.info(
+                "wf3_firstcard_invoice_complete_status_set",
+                extra={"workflow_run_id": workflow_run_id, "file_id": wfr.get("file_id")},
+            )
+    except Exception:
+        logger.error(
+            "wf3_firstcard_invoice_finalize_status_failed",
+            exc_info=True,
+            extra={"workflow_run_id": workflow_run_id, "file_id": wfr.get("file_id") if wfr else None},
+        )
+
     return workflow_run_id
 
 __all__ = [

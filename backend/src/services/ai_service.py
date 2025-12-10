@@ -61,6 +61,15 @@ class AccountingProposalValidationError(ValueError):
     """Raised when AI4 accounting proposals fail validation."""
 
 
+class AiProviderError(RuntimeError):
+    """Raised when an upstream AI provider fails hard (e.g., HTTP 5xx)."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 def _quantize_two_decimals(value: Decimal) -> Decimal:
     return value.quantize(TWO_DECIMAL_PLACES, rounding=ROUND_HALF_UP)
 
@@ -607,7 +616,7 @@ class AIService:
                     provider=provider_name,
                     model_name=model_name,
                 )
-            return None
+            raise AiProviderError("provider_failed", str(exc))
 
     # ------------------------------------------------------------------
     # AI1 - Document classification
@@ -738,6 +747,33 @@ class AIService:
         ocr_text = request.ocr_text or ""
         logger.info("Extracting structured data via LLM for %s", request.file_id)
 
+        def _parse_purchase_datetime(raw_value: Any) -> Optional[datetime]:
+            """Normalise purchase_datetime to a datetime object in YYYY-MM-DD HH:MM:SS."""
+            if raw_value in (None, "", False):
+                return None
+            if isinstance(raw_value, datetime):
+                return raw_value
+            if isinstance(raw_value, date):
+                return datetime.combine(raw_value, datetime.min.time())
+            if isinstance(raw_value, str):
+                text = raw_value.strip().replace("T", " ")
+                if not text:
+                    return None
+                # Try strict formats first
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                    try:
+                        parsed = datetime.strptime(text, fmt)
+                        if fmt == "%Y-%m-%d":
+                            parsed = datetime.combine(parsed.date(), datetime.min.time())
+                        return parsed
+                    except ValueError:
+                        continue
+                try:
+                    return datetime.fromisoformat(text)
+                except Exception as exc:  # pragma: no cover - defensive
+                    raise ValueError(f"Invalid purchase_datetime format: {raw_value!r}") from exc
+            raise ValueError(f"Unsupported purchase_datetime type: {type(raw_value).__name__}")
+
         # ONLY LLM extracts data - call LLM provider
         llm_result = self._provider_generate(
             "data_extraction",
@@ -764,6 +800,11 @@ class AIService:
         # Deep clean the dictionary from LLM
         llm_result = _deep_clean_dict(llm_result)
 
+        required_keys = ["company", "unified_file", "receipt_items", "company_match_type", "company_create_needed"]
+        missing_keys = [k for k in required_keys if k not in llm_result]
+        if missing_keys:
+            raise ValueError(f"AI3 response missing required fields: {', '.join(missing_keys)}")
+
         # Extract data from LLM response
         confidence = 0.5
         if "confidence" in llm_result:
@@ -774,10 +815,23 @@ class AIService:
 
         # Extract unified_file data from LLM
         unified_data = llm_result.get("unified_file", {}) or {}
+        if unified_data in (None, {}):
+            raise ValueError("AI3 response missing unified_file payload")
 
         # Serialize other_data if it's a dict
         other_data_value = unified_data.get("other_data")
         if isinstance(other_data_value, dict):
+            other_data_value = json.dumps(other_data_value, ensure_ascii=False)
+        elif isinstance(other_data_value, str):
+            try:
+                json.loads(other_data_value)
+            except Exception:
+                # Wrap arbitrary string as JSON string to satisfy storage expectations
+                other_data_value = json.dumps({"raw_other_data": other_data_value}, ensure_ascii=False)
+        elif other_data_value is None:
+            other_data_value = "{}"
+        else:
+            # Fallback to JSON-serialise any other type
             other_data_value = json.dumps(other_data_value, ensure_ascii=False)
 
         # Handle common aliases for last four digits
@@ -790,9 +844,10 @@ class AIService:
 
         unified_file = UnifiedFileBase(
             file_type=request.document_type,
-            orgnr=unified_data.get("orgnr"),
+            vat=unified_data.get("vat") or unified_data.get("orgnr"),
+            orgnr=unified_data.get("vat") or unified_data.get("orgnr"),
             payment_type=unified_data.get("payment_type"),
-            purchase_datetime=unified_data.get("purchase_datetime"),
+            purchase_datetime=_parse_purchase_datetime(unified_data.get("purchase_datetime")),
             expense_type=request.expense_type if request.expense_type in {"personal", "corporate"} else None,
             gross_amount_original=unified_data.get("gross_amount_original"),
             net_amount_original=unified_data.get("net_amount_original"),
@@ -815,9 +870,12 @@ class AIService:
 
         # Extract company data from LLM
         company_data = llm_result.get("company", {})
+        if company_data in (None, {}):
+            raise ValueError("AI3 response missing company payload")
         company = Company(
-            name=company_data.get("name") or "",  # Required by schema but may be empty
-            orgnr=company_data.get("orgnr") or "",  # Required by schema but may be empty
+            name=company_data.get("name"),
+            vat=company_data.get("vat") or company_data.get("orgnr"),
+            orgnr=company_data.get("vat") or company_data.get("orgnr"),
             address=company_data.get("address"),
             address2=company_data.get("address2"),
             zip=company_data.get("zip"),
@@ -825,11 +883,15 @@ class AIService:
             country=company_data.get("country"),
             phone=company_data.get("phone"),
             www=company_data.get("www"),
+            email=company_data.get("email"),
         )
 
         # Extract receipt items from LLM
         receipt_items: List[ReceiptItem] = []
         llm_items_raw = llm_result.get("receipt_items")
+
+        if llm_items_raw is None:
+            raise ValueError("AI3 response missing receipt_items")
 
         if llm_items_raw:
             if not isinstance(llm_items_raw, list):
@@ -879,13 +941,32 @@ class AIService:
             )
 
         logger.info(
-            "LLM extracted: company='%s', orgnr='%s', gross=%s, items=%d, confidence=%.2f",
+            "LLM extracted: company='%s', vat/orgnr='%s', gross=%s, items=%d, confidence=%.2f",
             company.name,
-            company.orgnr,
+            company.vat or company.orgnr,
             unified_file.gross_amount_original,
             len(receipt_items),
             confidence,
         )
+
+        match_type_raw = llm_result.get("company_match_type")
+        if isinstance(match_type_raw, str):
+            match_type = match_type_raw.strip().lower()
+            synonyms = {
+                "vat_match": "vat",
+                "orgnr": "vat",
+                "name_match": "name",
+                "new_company": "new",
+            }
+            match_type = synonyms.get(match_type, match_type)
+        else:
+            match_type = None
+        if match_type not in {"vat", "name", "new"}:
+            raise ValueError("AI3 response missing or invalid company_match_type")
+
+        if "company_create_needed" not in llm_result:
+            raise ValueError("AI3 response missing company_create_needed")
+        company_create_needed = bool(llm_result.get("company_create_needed"))
 
         return DataExtractionResponse(
             file_id=request.file_id,
@@ -893,6 +974,8 @@ class AIService:
             receipt_items=receipt_items,
             company=company,
             confidence=confidence,
+            company_match_type=match_type,
+            company_create_needed=company_create_needed,
         )
 
     def extract_data(self, request: DataExtractionRequest) -> DataExtractionResponse:

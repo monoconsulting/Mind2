@@ -72,6 +72,8 @@ Execution state for a workflow instance.
 | `failed` | Execution failed |
 | `canceled` | Manually canceled |
 
+**Mandatory rule:** After the final stage (`finalize_ok` / `KLAR`) completes successfully, every workflow **must** set `workflow_runs.status = 'succeeded'` and persist `current_stage = 'KLAR'`. No workflow may remain in `running` after successful completion.
+
 ### State Diagram
 
 ```mermaid
@@ -323,3 +325,41 @@ ORDER BY wsr.started_at DESC LIMIT 1
 - New status values may not be introduced in code or database without updating this file.
 - Deprecated values must be explicitly noted with migration plan.
 - All status transitions must be validated by state machine helpers in `invoice_status.py`.
+
+## 11. Orphan Files
+
+An *orphan file* is a row in `unified_files` that has **no** matching row in `workflow_runs` **and** whose `ai_status` is one of the valid starting states:
+
+- `uploaded`
+- `processing`
+- `ocr_done`
+- `ocr_failed`
+- `manual_review`
+
+Legacy values such as `queued` or `running` are invalid for `ai_status` and must be migrated or ignored in diagnostics.
+
+## 12. Stalled Condition (UI Diagnostic Only)
+
+A workflow is considered *stalled* for queue/diagnostic purposes when:
+
+- `workflow_runs.status = 'running'`, **and**
+- `idle_seconds` (time since `workflow_runs.updated_at`) exceeds the configured `stall_threshold`.
+
+"Stalled" is a **computed UI flag only**. It must never be written to the database.
+
+## 13. Invoice Document Integrity
+
+For every invoice that participates in the invoice state machine, the following must always hold:
+
+- There MUST be exactly one row in `invoice_documents` with `id = invoice_id`.
+- All calls to `transition_processing_status` and `transition_document_status` MUST only be made for invoice ids that have a corresponding `invoice_documents` row.
+
+To enforce this, application code MUST call a central helper (e.g. `ensure_invoice_document(...)`) before performing any state transitions. If the helper cannot create or confirm the `invoice_documents` row, the pipeline MUST fail fast and record an error, instead of performing any transitions.
+
+### Illegal transitions from a missing document
+
+If the state machine receives a request to transition an invoice id that does not exist in `invoice_documents`, this MUST be treated as a data integrity issue. The implementation MUST:
+
+- Log an "illegal transition" event with `current=missing`.
+- NOT create any new invoice state rows implicitly (unless explicitly defined as a recovery operation).
+- Provide a separate operator-level repair procedure in the runbook to fix or recreate the missing `invoice_documents` rows.

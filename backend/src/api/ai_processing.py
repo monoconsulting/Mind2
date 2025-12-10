@@ -1,10 +1,13 @@
 """API endpoints for AI processing of receipts and documents."""
 from __future__ import annotations
 
+import json
 import logging
+import re
 from contextlib import closing
 from datetime import datetime
 from decimal import Decimal
+from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from flask import Blueprint, jsonify, request
@@ -30,7 +33,7 @@ from models.ai_processing import (
 from services.ai_service import AIService
 from services.box_enrichment import run_box_enrichment
 from services.db.connection import db_cursor, get_connection
-from services.status_constants import InvoiceLineMatchStatus
+from services.status_constants import InvoiceLineMatchStatus, AiStatus
 from api.middleware import auth_required
 from observability.events import log_event
 
@@ -39,12 +42,12 @@ logger = logging.getLogger(__name__)
 bp = Blueprint("ai_processing", __name__, url_prefix="/ai")
 
 _AI_STAGE_STATUS = {
-    "AI1": "ai1_completed",
-    "AI2": "ai2_completed",
-    "AI3": "ai3_completed",
-    "AI4": "ai4_completed",
-    "AI5_TRUE": "ai5_completed",
-    "AI5_FALSE": "ai5_no_match",
+    "AI1": AiStatus.PROCESSING.value,
+    "AI2": AiStatus.PROCESSING.value,
+    "AI3": AiStatus.COMPLETED.value,
+    "AI4": AiStatus.PROCESSING.value,
+    "AI5_TRUE": AiStatus.PROCESSING.value,
+    "AI5_FALSE": AiStatus.PROCESSING.value,
 }
 
 
@@ -68,6 +71,22 @@ def _set_ai_stage(
 ) -> None:
     """Set AI stage status. Note: rowcount may be 0 if values don't change, which is OK."""
     status_value = _stage_status(stage, matched)
+
+    # Do not downgrade a completed/manual_review/failed status back to processing
+    try:
+        cursor.execute("SELECT ai_status FROM unified_files WHERE id = %s", (file_id,))
+        current = cursor.fetchone()
+        if current:
+            current_status = current[0]
+            if current_status in (
+                AiStatus.COMPLETED.value,
+                AiStatus.MANUAL_REVIEW.value,
+                AiStatus.FAILED.value,
+            ) and status_value == AiStatus.PROCESSING.value:
+                return
+    except Exception:
+        pass
+
     if confidence is None:
         cursor.execute(
             "UPDATE unified_files SET ai_status = %s, updated_at = NOW() WHERE id = %s",
@@ -88,99 +107,98 @@ def _set_ai_stage(
     # The file existence is verified by the calling function
 
 
-def _ensure_company(cursor, company: Company) -> Optional[int]:
+def _ensure_company(cursor, company: Company) -> tuple[int, str, bool]:
     """
-    Ensure company exists in database and return its ID.
+    Deterministically resolve (or create) a company based on VAT/ORGNR and name.
 
-    Strategy:
-    1. Search by orgnr if provided (most reliable identifier)
-    2. Fall back to name search if no orgnr match
-    3. Update existing company with new data
-    4. Create new company if not found
+    Resolution order:
+    1) VAT/ORGNR match (normalized digits)
+    2) Name match (exact, starts-with, fuzzy >= 0.85)
+    3) Auto-create using provided company fields
 
     Returns:
-        Company ID if company was found/created, None if insufficient data
+        (company_id, match_type, created_flag)
+        match_type is one of: vat, name, new
     """
-    name = (company.name or "").strip() or None
-    orgnr = (company.orgnr or "").strip() or None
 
-    if not name and not orgnr:
-        logger.warning("Cannot ensure company: both name and orgnr are empty")
-        return None
+    def _normalize_vat(value: Optional[str]) -> Optional[str]:
+        digits = "".join(ch for ch in (value or "") if ch.isdigit())
+        return digits or None
+
+    def _normalize_name(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        lowered = value.lower()
+        lowered = lowered.replace("†", "a").replace("„", "o").replace("”", "o")
+        collapsed = re.sub(r"\s+", " ", lowered).strip()
+        return collapsed or None
+
+    name_raw = (company.name or "").strip()
+    vat_raw = company.vat or company.orgnr
+    vat_norm = _normalize_vat(vat_raw)
+    name_norm = _normalize_name(name_raw)
+
+    if not vat_norm and not name_norm:
+        raise ValueError("Company resolution failed: both vat/orgnr and name are missing")
 
     company_id: Optional[int] = None
+    match_type: Optional[str] = None
 
-    # Strategy 1: Try to find by orgnr (most reliable)
-    if orgnr:
-        cursor.execute("SELECT id FROM companies WHERE orgnr = %s", (orgnr,))
-        row = cursor.fetchone()
-        if row:
-            company_id = int(row[0])
-            logger.debug(f"Found company by orgnr={orgnr}: company_id={company_id}")
-
-    # Strategy 2: Fall back to name search if orgnr didn't match
-    if company_id is None and name:
+    # 1) VAT/ORGNR match
+    if vat_norm:
         cursor.execute(
-            "SELECT id FROM companies WHERE name = %s ORDER BY id LIMIT 1",
-            (name,),
+            "SELECT id, name, orgnr FROM companies "
+            "WHERE REPLACE(REPLACE(IFNULL(orgnr, ''), '-', ''), ' ', '') = %s "
+            "LIMIT 1",
+            (vat_norm,),
         )
         row = cursor.fetchone()
         if row:
             company_id = int(row[0])
-            logger.debug(f"Found company by name='{name}': company_id={company_id}")
+            match_type = "vat"
 
-    # Update existing company with new information
-    if company_id is not None:
+    # 2) Name match (exact, then startswith, then fuzzy)
+    if company_id is None and name_norm:
         cursor.execute(
-            """
-            UPDATE companies
-               SET name = COALESCE(%s, name),
-                   orgnr = COALESCE(%s, orgnr),
-                   address = COALESCE(%s, address),
-                   address2 = COALESCE(%s, address2),
-                   zip = COALESCE(%s, zip),
-                   city = COALESCE(%s, city),
-                   country = COALESCE(%s, country),
-                   phone = COALESCE(%s, phone),
-                   www = COALESCE(%s, www),
-                   updated_at = NOW()
-             WHERE id = %s
-            """,
-            (
-                name,
-                orgnr,
-                company.address,
-                company.address2,
-                company.zip,
-                company.city,
-                company.country,
-                company.phone,
-                company.www,
-                company_id,
-            ),
+            "SELECT id, name FROM companies WHERE LOWER(TRIM(name)) = %s ORDER BY id LIMIT 1",
+            (name_norm,),
         )
-        logger.info(f"Updated company {company_id} with new data")
-        return company_id
+        row = cursor.fetchone()
+        if row:
+            company_id = int(row[0])
+            match_type = "name"
 
-    # Create new company if not found
-    if not name:
-        logger.warning("Cannot create company: name is required but missing")
-        return None
+    if company_id is None and name_norm:
+        cursor.execute(
+            "SELECT id, name FROM companies WHERE LOWER(name) LIKE %s ORDER BY LENGTH(name) ASC LIMIT 20",
+            (f"{name_norm}%",),
+        )
+        candidates = cursor.fetchall() or []
+        best_match = None
+        best_score = 0.0
+        for cid, cname in candidates:
+            score = SequenceMatcher(None, name_norm, _normalize_name(cname)).ratio()
+            if score > best_score:
+                best_score = score
+                best_match = (cid, cname)
+        if best_match and best_score >= 0.85:
+            company_id = int(best_match[0])
+            match_type = "name"
 
-    if not orgnr:
-        logger.warning(f"Cannot create company '{name}': orgnr is required but missing")
-        return None
-
-    try:
+    # 3) Auto-create
+    created = False
+    if company_id is None:
+        if not name_norm:
+            raise ValueError("Company resolution failed: name required for auto-create")
         cursor.execute(
             """
             INSERT INTO companies
-                (name, orgnr, address, address2, zip, city, country, phone, www)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (name, orgnr, address, address2, zip, city, country, phone, www, email, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             """,
             (
-                name,
-                orgnr,
+                name_raw or name_norm,
+                vat_norm,
                 company.address,
                 company.address2,
                 company.zip,
@@ -188,14 +206,46 @@ def _ensure_company(cursor, company: Company) -> Optional[int]:
                 company.country,
                 company.phone,
                 company.www,
+                getattr(company, "email", None),
             ),
         )
         company_id = int(cursor.lastrowid)
-        logger.info(f"Created new company: {company_id} (name='{name}', orgnr={orgnr})")
-        return company_id
-    except Exception as exc:
-        logger.error(f"Failed to create company (name='{name}', orgnr={orgnr}): {exc}")
-        raise
+        match_type = "new"
+        created = True
+
+    # Update existing record with any new data (safe merge)
+    cursor.execute(
+        """
+        UPDATE companies
+           SET name = COALESCE(%s, name),
+               orgnr = COALESCE(%s, orgnr),
+               address = COALESCE(%s, address),
+               address2 = COALESCE(%s, address2),
+               zip = COALESCE(%s, zip),
+               city = COALESCE(%s, city),
+               country = COALESCE(%s, country),
+               phone = COALESCE(%s, phone),
+               www = COALESCE(%s, www),
+               email = COALESCE(%s, email),
+               updated_at = NOW()
+         WHERE id = %s
+        """,
+        (
+            name_raw or name_norm,
+            vat_norm,
+            company.address,
+            company.address2,
+            company.zip,
+            company.city,
+            company.country,
+            company.phone,
+            company.www,
+            getattr(company, "email", None),
+            company_id,
+        ),
+    )
+
+    return company_id, match_type or "name", created
 
 
 def _replace_receipt_items(cursor, file_id: str, items: Iterable[ReceiptItem]) -> List[int]:
@@ -272,10 +322,26 @@ def _persist_extraction_result(
     try:
         if owns_connection:
             conn.start_transaction()
-        company_id = _ensure_company(cursor, result.company)
+
+        resolved_company_id, resolved_match_type, created = _ensure_company(cursor, result.company)
         unified = result.unified_file
+        # Reflect resolved company metadata back on the response model
+        result.company_match_type = resolved_match_type
+        result.company_create_needed = created
+
+        # Normalise/merge other_data as JSON string and attach match metadata
+        other_data_payload: dict[str, Any] = {}
+        if unified.other_data:
+            try:
+                other_data_payload = json.loads(unified.other_data)
+            except Exception:
+                other_data_payload = {"raw_other_data": unified.other_data}
+        other_data_payload["company_match_type"] = resolved_match_type
+        other_data_payload["company_create_needed"] = created or bool(result.company_create_needed)
+        other_data_json = json.dumps(other_data_payload, ensure_ascii=False)
+
         updates: Dict[str, Any] = {
-            "orgnr": unified.orgnr,
+            "vat": unified.vat,
             "payment_type": unified.payment_type,
             "purchase_datetime": unified.purchase_datetime,
             "expense_type": unified.expense_type,
@@ -283,11 +349,13 @@ def _persist_extraction_result(
             "net_amount_original": unified.net_amount_original,
             "exchange_rate": unified.exchange_rate,
             "currency": unified.currency,
+            "gross_amount": unified.gross_amount_sek,  # legacy column
+            "net_amount": unified.net_amount_sek,  # legacy column
             "gross_amount_sek": unified.gross_amount_sek,
             "net_amount_sek": unified.net_amount_sek,
-            "company_id": company_id,
+            "company_id": resolved_company_id,
             "receipt_number": unified.receipt_number,
-            "other_data": unified.other_data or "{}",
+            "other_data": other_data_json,
             "ocr_raw": unified.ocr_raw or "",
             "credit_card_number": unified.credit_card_number,
             "credit_card_last_4_digits": unified.credit_card_last_4_digits,
@@ -297,35 +365,47 @@ def _persist_extraction_result(
             "credit_card_type": unified.credit_card_type,
             "credit_card_token": unified.credit_card_token,
             "credit_card_entering_mode": unified.credit_card_entering_mode,
+            "ai_status": AiStatus.COMPLETED.value,
+            "ai_confidence": result.confidence,
         }
-        set_parts: List[str] = []
-        params: List[Any] = []
-        for column, value in updates.items():
-            if value is None:
-                continue
-            set_parts.append(f"{column} = %s")
-            params.append(value)
+
+        set_parts: List[str] = [f"{column} = %s" for column in updates.keys()]
+        params: List[Any] = list(updates.values())
         set_parts.append("updated_at = NOW()")
         params.append(file_id)
+
         # Check if file exists first
         cursor.execute("SELECT id FROM unified_files WHERE id = %s", (file_id,))
         if cursor.fetchone() is None:
             raise ValueError(f"File {file_id} not found")
+
         cursor.execute(
             "UPDATE unified_files SET " + ", ".join(set_parts) + " WHERE id = %s",
             tuple(params),
         )
-        inserted_ids = _replace_receipt_items(cursor, file_id, result.receipt_items)
-        # Update the receipt_items in the result with their database IDs
-        for item, item_id in zip(result.receipt_items, inserted_ids):
+
+        # Ensure receipt items carry currency fallback
+        receipt_items_with_currency: list[ReceiptItem] = []
+        for item in result.receipt_items:
+            if not item.currency and unified.currency:
+                item.currency = unified.currency
+            receipt_items_with_currency.append(item)
+
+        inserted_ids = _replace_receipt_items(cursor, file_id, receipt_items_with_currency)
+        for item, item_id in zip(receipt_items_with_currency, inserted_ids):
             item.id = item_id
+
         logger.info(
-            "AI3 created %d receipt_items for %s with IDs: %s",
+            "AI3 created %d receipt_items for %s with IDs: %s (company_match_type=%s created=%s)",
             len(inserted_ids),
             file_id,
-            inserted_ids
+            inserted_ids,
+            resolved_match_type,
+            created,
         )
+
         _set_ai_stage(cursor, file_id, "AI3", result.confidence)
+
         if owns_connection:
             conn.commit()
     except Exception:
@@ -588,9 +668,13 @@ def classify_expense_internal(req: ExpenseClassificationRequest) -> ExpenseClass
 
 def extract_data_internal(req: DataExtractionRequest) -> DataExtractionResponse:
     ai_service = AIService()
-    result = ai_service.run_ai3_data_extraction(req)
-    _persist_extraction_result(req.file_id, result)
-    return result
+    try:
+        result = ai_service.run_ai3_data_extraction(req)
+        _persist_extraction_result(req.file_id, result)
+        return result
+    except Exception as exc:
+        _mark_manual_review(req.file_id, str(exc))
+        raise
 
 
 def classify_accounting_internal(req: AccountingClassificationRequest) -> AccountingClassificationResponse:

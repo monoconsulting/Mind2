@@ -338,6 +338,14 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             message=f"AI3 extraherade {item_count} artiklar",
         )
 
+        company_stage_msg = f"company_match_type={result.company_match_type or 'unknown'} created={result.company_create_needed}"
+        log_import_event(
+            workflow_run_id,
+            "company_resolved",
+            status="succeeded",
+            message=company_stage_msg,
+        )
+
         begin_import_stage(
             workflow_run_id,
             "r_persist",
@@ -369,6 +377,7 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             success=False,
             message=error_msg,
         )
+        _move_to_manual_review(file_id, error_msg)
         raise
 
     # AI4 - Accounting Classification

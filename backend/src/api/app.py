@@ -19,6 +19,7 @@ from api.export import export_bp
 from api.receipts import receipts_bp
 from api.companies import companies_bp
 from api.reconciliation_firstcard import recon_bp
+import api.reconciliation_firstcard.routes  # noqa: F401  # ensure routes are registered
 from api.rules import rules_bp
 from api.auth import auth_bp
 from api.fetcher import fetcher_bp

@@ -22,6 +22,7 @@ from services.invoice_status import (
     transition_document_status,
     transition_processing_status,
 )
+from api.reconciliation_firstcard.utils.db_helpers import ensure_invoice_document
 
 try:
     from services.db.connection import db_cursor
@@ -87,6 +88,13 @@ class WorkflowCoordinator:
         """
         logger.info(f"Starting workflow for invoice {invoice_id}")
 
+        if not ensure_invoice_document(invoice_id, invoice_type="credit_card_invoice"):
+            logger.error(
+                "Cannot start workflow for %s: invoice_documents row missing and cannot be created",
+                invoice_id,
+            )
+            return False
+
         success = transition_processing_status(
             invoice_id,
             InvoiceProcessingStatus.OCR_PENDING,
@@ -115,6 +123,13 @@ class WorkflowCoordinator:
         """
         logger.info(f"Marking OCR complete for invoice {invoice_id}")
 
+        if not ensure_invoice_document(invoice_id, invoice_type="credit_card_invoice"):
+            logger.error(
+                "Cannot mark OCR complete for %s: invoice_documents row missing and cannot be created",
+                invoice_id,
+            )
+            return False
+
         success = transition_processing_status(
             invoice_id,
             InvoiceProcessingStatus.OCR_DONE,
@@ -142,6 +157,13 @@ class WorkflowCoordinator:
             True if transition succeeded, False otherwise
         """
         logger.info(f"Starting AI processing for invoice {invoice_id}")
+
+        if not ensure_invoice_document(invoice_id, invoice_type="credit_card_invoice"):
+            logger.error(
+                "Cannot start AI processing for %s: invoice_documents row missing and cannot be created",
+                invoice_id,
+            )
+            return False
 
         success = transition_processing_status(
             invoice_id,
@@ -173,6 +195,13 @@ class WorkflowCoordinator:
             True if transition succeeded, False otherwise
         """
         logger.info(f"Marking invoice {invoice_id} ready for matching")
+
+        if not ensure_invoice_document(invoice_id, invoice_type="credit_card_invoice"):
+            logger.error(
+                "Cannot mark ready_for_matching for %s: invoice_documents row missing and cannot be created",
+                invoice_id,
+            )
+            return False
 
         # Transition processing status
         processing_success = transition_processing_status(
@@ -218,6 +247,13 @@ class WorkflowCoordinator:
         """
         logger.info(f"Completing matching for invoice {invoice_id}")
 
+        if not ensure_invoice_document(invoice_id, invoice_type="credit_card_invoice"):
+            logger.error(
+                "Cannot complete matching for %s: invoice_documents row missing and cannot be created",
+                invoice_id,
+            )
+            return False
+
         # Transition processing status
         processing_success = transition_processing_status(
             invoice_id,
@@ -258,6 +294,13 @@ class WorkflowCoordinator:
             True if transition succeeded, False otherwise
         """
         logger.error(f"Marking invoice {invoice_id} as failed: {reason or 'unknown reason'}")
+
+        if not ensure_invoice_document(invoice_id, invoice_type="credit_card_invoice"):
+            logger.error(
+                "Cannot mark invoice %s failed: invoice_documents row missing and cannot be created",
+                invoice_id,
+            )
+            return False
 
         # Transition processing status to failed
         processing_success = transition_processing_status(
