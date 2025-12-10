@@ -3,7 +3,7 @@ from datetime import datetime, date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional, List, Literal
 
-from pydantic import BaseModel, Field, condecimal, validator
+from pydantic import BaseModel, Field, condecimal, validator, root_validator
 
 
 Decimal18_2 = condecimal(max_digits=18, decimal_places=2)
@@ -37,7 +37,12 @@ class UnifiedFileBase(BaseModel):
     """Base model mirroring the unified_files table."""
 
     file_type: Literal["receipt", "invoice", "other", "Manual Review"]
-    orgnr: Optional[str] = Field(None, max_length=32, description="Company Organization Number")
+    vat: Optional[str] = Field(None, max_length=32, description="VAT/Organization number")
+    orgnr: Optional[str] = Field(
+        None,
+        max_length=32,
+        description="Company Organization Number (legacy alias for vat)",
+    )
     payment_type: Optional[Literal["cash", "card", "swish"]] = Field(
         None, description='Cash vs corporate card purchase classification'
     )
@@ -77,6 +82,7 @@ class UnifiedFileBase(BaseModel):
 
     @validator(
         "orgnr",
+        "vat",
         "payment_type",
         "receipt_number",
         "mime_type",
@@ -92,6 +98,22 @@ class UnifiedFileBase(BaseModel):
     )
     def _strip_optional(cls, value):
         return _empty_to_none(value)
+
+    @root_validator(pre=True)
+    def _sync_vat_and_orgnr(cls, values):
+        """
+        Keep vat and orgnr in sync.
+
+        - Prefer `vat` (post-migration column name)
+        - Fall back to `orgnr` if only that exists
+        - Ensure both fields carry the same normalized value
+        """
+        vat_val = _empty_to_none(values.get("vat"))
+        orgnr_val = _empty_to_none(values.get("orgnr"))
+        preferred = vat_val or orgnr_val
+        values["vat"] = preferred
+        values["orgnr"] = preferred
+        return values
 
     @validator("currency", pre=True)
     def _normalize_currency(cls, value):
@@ -201,8 +223,11 @@ class ReceiptItem(BaseModel):
 class Company(BaseModel):
     """Model for company information."""
 
-    name: str = Field(max_length=234)
-    orgnr: str = Field(max_length=22, description="Organization number")
+    name: Optional[str] = Field(None, max_length=234)
+    vat: Optional[str] = Field(None, max_length=32, description="VAT/Organization number")
+    orgnr: Optional[str] = Field(
+        None, max_length=32, description="Organization number (legacy alias for vat)"
+    )
     address: Optional[str] = Field(None, max_length=222)
     address2: Optional[str] = Field(None, max_length=222)
     zip: Optional[str] = Field(None, max_length=123)
@@ -210,6 +235,16 @@ class Company(BaseModel):
     country: Optional[str] = Field(None, max_length=234)
     phone: Optional[str] = Field(None, max_length=234)
     www: Optional[str] = Field(None, max_length=234)
+    email: Optional[str] = Field(None, max_length=255)
+
+    @root_validator(pre=True)
+    def _sync_vat_orgnr(cls, values):
+        vat_val = _empty_to_none(values.get("vat"))
+        orgnr_val = _empty_to_none(values.get("orgnr"))
+        preferred = vat_val or orgnr_val
+        values["vat"] = preferred
+        values["orgnr"] = preferred
+        return values
 
 
 class CreditCardInvoiceMain(BaseModel):
@@ -463,6 +498,10 @@ class DataExtractionResponse(BaseModel):
     receipt_items: List[ReceiptItem]
     company: Company
     confidence: float = Field(ge=0.0, le=1.0)
+    company_match_type: Optional[str] = Field(
+        None, description="vat | name | new | missing"
+    )
+    company_create_needed: bool = False
 
 
 class AccountingProposal(BaseModel):

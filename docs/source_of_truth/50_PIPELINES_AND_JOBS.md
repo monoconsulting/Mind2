@@ -276,9 +276,30 @@ When a stage fails:
 - AI failures can trigger manual_review
 - Critical failures require restart
 
-## 10. Monitoring
+## 10. Queue View (Diagnostics)
 
-### 10.1 Diagnostic Views
+The queue view must present only active or actionable items:
+
+1. **Active workflows:** `workflow_runs.status` in `running` or `queued`.
+2. **Orphan files:** Rows in `unified_files` with no matching `workflow_runs` row and `ai_status` in `uploaded`, `processing`, `ocr_done`, `ocr_failed`, `manual_review`.
+3. **Stalled workflows:** `workflow_runs.status = 'running'` where `idle_seconds > stall_threshold` (computed from `workflow_runs.updated_at`).
+
+Completed (`succeeded`) and permanently failed (`failed`) workflow runs must **not** appear in the queue; they belong to the workflow history view.
+
+## 11. AI Provider Failures (e.g. OpenAI 500)
+
+When an external AI provider returns a 5xx error or equivalent hard failure during invoice processing:
+
+- The pipeline MUST NOT transition the invoice to `AI_PROCESSING` or any later processing status after the failure.
+- Instead, the invoice MUST transition to a failure state using the standard helper (e.g. `_fail_invoice_processing(...)`), which sets:
+  - `invoice_documents.processing_status = FAILED`
+  - `invoice_documents.status = FAILED` or `MANUAL_REVIEW` (according to product rules)
+- The failure MUST be logged in the invoice history with enough detail to support later reprocessing.
+- Reprocessing (via resume or batch-resume) is allowed and MUST perform a fresh AI call and a new state-transition sequence.
+
+## 12. Monitoring
+
+### 11.1 Diagnostic Views
 
 ```sql
 -- Workflow overview
@@ -295,13 +316,13 @@ WHERE wr.file_id = 'xxx'
 ORDER BY wsr.started_at DESC LIMIT 1;
 ```
 
-### 10.2 Health Indicators
+### 11.2 Health Indicators
 
 - Check `workflow_runs` for stuck `running` status
 - Check `workflow_stage_runs` for `failed` status
 - Monitor Celery queues for task backlog
 
-## 11. Governance
+## 13. Governance
 
 - New workflows must be documented here before implementation
 - New stages must be added to section 2-4 before deployment

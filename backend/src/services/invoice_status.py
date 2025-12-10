@@ -180,6 +180,7 @@ def _record_illegal(entity: str, object_id: str, target: str) -> None:
     """Log and emit metrics for illegal transitions."""
 
     current_value = "missing"
+    exists_flag = False
     if db_cursor is not None:
         column = "processing_status" if entity == "processing_status" else "status"
         if entity == "line_match_status":
@@ -194,12 +195,18 @@ def _record_illegal(entity: str, object_id: str, target: str) -> None:
                 cur.execute(query, params)
                 row = cur.fetchone()
             if row:
+                exists_flag = True
                 current_value = row[0] or "null"
         except Exception:  # pragma: no cover - defensive logging path
             logger.exception("Failed to fetch current invoice state for assertion")
     record_invoice_state_assertion(entity, current_value, target)
     logger.warning(
-        "Illegal transition for %s id=%s: current=%s target=%s", entity, object_id, current_value, target
+        "Illegal transition for %s id=%s: current=%s target=%s exists=%s",
+        entity,
+        object_id,
+        current_value,
+        target,
+        exists_flag,
     )
 
 

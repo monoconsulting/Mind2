@@ -16,10 +16,12 @@ function Badge({ label, tone = 'status-queued' }) {
 }
 
 function QueuePage() {
+  const MAX_ITEMS = 200
   const [items, setItems] = React.useState([])
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState('')
   const [resuming, setResuming] = React.useState(new Set())
+  const [selected, setSelected] = React.useState(new Set())
 
   const loadQueue = React.useCallback(async (silent = false) => {
     if (!silent) {
@@ -32,7 +34,12 @@ function QueuePage() {
         throw new Error(`HTTP ${res.status}`)
       }
       const data = await res.json()
-      setItems(Array.isArray(data.items) ? data.items : [])
+      const list = Array.isArray(data.items) ? data.items : []
+      const trimmed = list.slice(0, MAX_ITEMS)
+      setItems(trimmed)
+      // Drop selections that are no longer visible
+      const visibleIds = new Set(trimmed.map((r) => r.file_id))
+      setSelected((prev) => new Set([...prev].filter((id) => visibleIds.has(id))))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setItems([])
@@ -45,9 +52,53 @@ function QueuePage() {
 
   React.useEffect(() => {
     loadQueue(false)
-    const interval = setInterval(() => loadQueue(true), 5000)
+    const intervalMs = 30000
+    const interval = setInterval(() => loadQueue(true), intervalMs)
     return () => clearInterval(interval)
   }, [loadQueue])
+
+  const toggleSelected = (fileId) => {
+    if (!fileId) return
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(fileId)) {
+        next.delete(fileId)
+      } else {
+        next.add(fileId)
+      }
+      return next
+    })
+  }
+
+  const selectAllOrphans = () => {
+    const orphanIds = items.filter((r) => r.is_orphan && r.can_resume && r.file_id).map((r) => r.file_id)
+    setSelected(new Set(orphanIds))
+  }
+
+  const clearSelection = () => setSelected(new Set())
+
+  const handleResumeSelected = async () => {
+    const ids = Array.from(selected)
+    if (ids.length === 0) return
+    setResuming(new Set(ids))
+    try {
+      const res = await api.fetch('/ai/api/queue/resume-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_ids: ids }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`)
+      }
+      await loadQueue()
+      clearSelection()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setResuming(new Set())
+    }
+  }
 
   const handleResume = async (row) => {
     if (!row.file_id) return
@@ -75,12 +126,14 @@ function QueuePage() {
     const tone = statusClass[row.status] || 'status-queued'
     const stage = row.latest_stage_key ? `${row.latest_stage_key} ${row.latest_stage_status || ''}`.trim() : row.current_stage
     const stalled = row.stalled
-
-    // Can resume if stalled OR if it's an orphan file (no run ID yet but stuck in processing/queued)
-    const isOrphan = !row.id && row.file_id;
-    const canResume = (stalled && (row.status === 'running' || row.status === 'queued') && row.file_id) || isOrphan;
+    const isOrphan = row.is_orphan || (!row.id && row.file_id)
+    const canResumeApi = row.can_resume === true
+    // Fallback logic if API does not provide can_resume
+    const canResumeLocal = (stalled && (row.status === 'running' || row.status === 'queued') && row.file_id) || isOrphan
+    const canResume = canResumeApi || canResumeLocal
 
     const isResuming = resuming.has(row.file_id)
+    const isSelected = selected.has(row.file_id)
 
     return (
       <div key={row.id || row.file_id} className={`card ${isFirst ? 'border-red-600 border' : ''}`}>
@@ -99,6 +152,14 @@ function QueuePage() {
             {stalled && <Badge label="Stalled" tone="status-failed" />}
             {isOrphan && <Badge label="Orphan" tone="status-failed" />}
             <Badge label={row.status || 'okänd'} tone={tone} />
+            {canResume && (
+              <input
+                type="checkbox"
+                className="form-checkbox h-4 w-4 text-blue-500"
+                checked={isSelected}
+                onChange={() => toggleSelected(row.file_id)}
+              />
+            )}
           </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4 text-sm text-gray-200">
@@ -112,7 +173,7 @@ function QueuePage() {
           </div>
           <div>
             <div className="text-gray-400 text-xs">AI-status</div>
-            <div>{row.ai_status || '-'}</div>
+            <div>{row.derived_ai_status || row.ai_status || '-'}</div>
           </div>
         </div>
         <div className="flex items-center gap-4 text-xs text-gray-500 mt-3">
@@ -144,9 +205,27 @@ function QueuePage() {
           <h2 className="text-2xl font-semibold text-white">Kö</h2>
           <p className="text-sm text-gray-400">Visar alla workflow_runs i ordning. Överst = pågående.</p>
         </div>
-        <button type="button" className="btn btn-secondary" onClick={() => loadQueue(false)} disabled={loading}>
-          Uppdatera
-        </button>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-sm text-gray-300">
+            <input
+              type="checkbox"
+              className="form-checkbox h-4 w-4"
+              onChange={(e) => (e.target.checked ? selectAllOrphans() : clearSelection())}
+            />
+            Markera alla Orphan
+          </label>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handleResumeSelected}
+            disabled={selected.size === 0 || resuming.size > 0}
+          >
+            Återuppta markerade
+          </button>
+          <button type="button" className="btn btn-secondary" onClick={() => loadQueue(false)} disabled={loading}>
+            Uppdatera
+          </button>
+        </div>
       </div>
 
       {/* Silent refresh: no visible spinner to avoid layout jump */}
@@ -162,6 +241,13 @@ function QueuePage() {
       )}
 
       {items.map((row, idx) => renderRow(row, idx === 0))}
+
+      {!loading && !error && items.length === MAX_ITEMS && (
+        <div className="text-xs text-gray-500">
+          Visar de första {MAX_ITEMS} posterna av köresultatet för att undvika att sidan blir tung. Använd manuellt
+          Uppdatera vid behov.
+        </div>
+      )}
     </div>
   )
 }

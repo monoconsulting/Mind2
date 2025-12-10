@@ -6,7 +6,7 @@ import uuid
 import hashlib
 import logging
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Tuple
 from flask import Blueprint, jsonify, request
 from werkzeug.utils import secure_filename
 
@@ -218,15 +218,16 @@ def _resolve_resume_workflow(
     return "WF1_RECEIPT"
 
 
-@ingest_bp.post("/ingest/process/<file_id>/resume")
-@auth_required
-def resume_processing(file_id: str) -> Any:
-    """Re-dispatch processing for an existing receipt or invoice."""
+def _resume_processing_internal(file_id: str) -> Tuple[dict[str, Any], int]:
+    """
+    Shared resume logic used by both the single-file and batch resume endpoints.
+    Returns (payload, status_code) without Flask response wrapping.
+    """
     if not file_id:
-        return jsonify({"queued": False, "error": "missing_file_id"}), 400
+        return {"queued": False, "error": "missing_file_id"}, 400
 
     if db_cursor is None:
-        return jsonify({"queued": False, "error": "database_unavailable"}), 503
+        return {"queued": False, "error": "database_unavailable"}, 503
 
     try:
         with db_cursor() as cur:
@@ -246,10 +247,10 @@ def resume_processing(file_id: str) -> Any:
             row = cur.fetchone()
     except Exception as exc:
         logger.error("Resume lookup failed for %s: %s", file_id, exc, exc_info=True)
-        return jsonify({"queued": False, "error": "database_error"}), 500
+        return {"queued": False, "error": "database_error"}, 500
 
     if not row:
-        return jsonify({"queued": False, "error": "not_found"}), 404
+        return {"queued": False, "error": "not_found"}, 404
 
     (
         _fid,
@@ -274,11 +275,10 @@ def resume_processing(file_id: str) -> Any:
             file_type,
             workflow_type,
         )
-        return jsonify({"queued": False, "error": "unknown_workflow"}), 400
+        return {"queued": False, "error": "unknown_workflow"}, 400
 
     effective_hash = content_hash or other_data.get("content_hash") or file_id
 
-    # Check for existing active workflow to prevent duplicate runs
     from services.workflow_runs import get_active_workflow_run
 
     existing_run_id = get_active_workflow_run(file_id, workflow_key)
@@ -289,13 +289,11 @@ def resume_processing(file_id: str) -> Any:
             file_id,
         )
         workflow_run_id = existing_run_id
-        # Ensure SoT-compliant AI-status when resuming an existing run
         try:
             set_ai_status(file_id, "processing")
         except Exception as exc:
             logger.warning("Failed to set ai_status=processing for %s on resume: %s", file_id, exc)
     else:
-        # Create new workflow_run only if none exists
         workflow_run_id = create_workflow_run(
             workflow_key=workflow_key,
             source_channel="manual_resume",
@@ -305,15 +303,13 @@ def resume_processing(file_id: str) -> Any:
 
         if not workflow_run_id:
             logger.error("Failed to create workflow run for resume (file_id=%s)", file_id)
-            return jsonify({"queued": False, "error": "workflow_creation_failed"}), 500
+            return {"queued": False, "error": "workflow_creation_failed"}, 500
 
-        # SoT: ai_status must be a valid value; use 'processing' when resuming/dispatching
         try:
             set_ai_status(file_id, "processing")
         except Exception as exc:
             logger.warning("Failed to set ai_status=processing for %s on resume (new run): %s", file_id, exc)
 
-    # Ensure workflow_run status/current_stage reflect the resume action so polling UI sees progress
     try:
         with db_cursor() as cur:
             cur.execute(
@@ -329,7 +325,6 @@ def resume_processing(file_id: str) -> Any:
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Failed to bump workflow_run status on resume (id=%s): %s", workflow_run_id, exc)
 
-    # Log resume stage to workflow_stage_runs so frontend sees immediate change
     try:
         log_import_event(
             workflow_run_id,
@@ -337,7 +332,6 @@ def resume_processing(file_id: str) -> Any:
             status="running",
             message=f"Återupptar bearbetning (tidigare status: {current_status})",
         )
-        # Ensure workflow_runs.current_stage/status mirror the latest stage for UI polling
         mark_stage(
             workflow_run_id,
             "resume_dispatch",
@@ -347,13 +341,11 @@ def resume_processing(file_id: str) -> Any:
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Failed to log resume_dispatch for %s: %s", workflow_run_id, exc)
 
-    # Dispatch workflow so processing actually resumes and subsequent stages update status
     if dispatch_workflow:
         try:
             dispatch_ok = dispatch_workflow(workflow_run_id)
             if not dispatch_ok:
                 logger.error("Dispatch workflow failed for resume (id=%s)", workflow_run_id)
-                # Mark stage as failed to avoid infinite "running"
                 mark_stage(
                     workflow_run_id,
                     "resume_dispatch",
@@ -385,17 +377,23 @@ def resume_processing(file_id: str) -> Any:
     action = f"{workflow_key} run {workflow_run_id}"
 
     return (
-        jsonify(
-            {
-                "queued": True,
-                "file_id": file_id,
-                "workflow_key": workflow_key,
-                "workflow_run_id": workflow_run_id,
-                "status": "processing",
-                "message": message,
-                "action": action,
-                "previous_status": current_status,
-            }
-        ),
+        {
+            "queued": True,
+            "file_id": file_id,
+            "workflow_key": workflow_key,
+            "workflow_run_id": workflow_run_id,
+            "status": "processing",
+            "message": message,
+            "action": action,
+            "previous_status": current_status,
+        },
         200,
     )
+
+
+@ingest_bp.post("/ingest/process/<file_id>/resume")
+@auth_required
+def resume_processing(file_id: str) -> Any:
+    """Re-dispatch processing for an existing receipt or invoice."""
+    payload, status_code = _resume_processing_internal(file_id)
+    return jsonify(payload), status_code

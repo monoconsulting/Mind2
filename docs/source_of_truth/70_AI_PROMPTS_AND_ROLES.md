@@ -274,38 +274,63 @@ Parse FirstCard credit card statements to extract header and line items.
 ### 7.6 Model / Provider
 
 - **Primary:** OpenAI GPT-4 / GPT-4-turbo
-- **Prompt stored in:** `ai_prompts` table (key: `AI6_CREDIT_CARD_INVOICE`)
+- **Prompt stored in:** `ai_system_prompts` table (key: `credit_card_invoice_parsing`)
 
 ## 8. Prompt Storage and Versioning
 
 ### 8.1 Storage Location
 
-- Prompts stored in `ai_prompts` database table
+- Prompts stored in `ai_system_prompts` database table
 - Migration: `0020_insert_ai_prompts.sql`, `0030_insert_ai6_credit_card_invoice_prompt.sql`
+- Schema update: `0043_expand_prompt_content_to_mediumtext.sql`
 
 ### 8.2 Prompt Table Schema
 
 ```sql
-CREATE TABLE ai_prompts (
-  id INT PRIMARY KEY,
-  prompt_key VARCHAR(64) UNIQUE,
-  title VARCHAR(255),
-  prompt_text TEXT,
-  version VARCHAR(16),
-  created_at TIMESTAMP,
-  updated_at TIMESTAMP
+CREATE TABLE ai_system_prompts (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  prompt_key VARCHAR(100) UNIQUE NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  description TEXT,
+  prompt_content MEDIUMTEXT,          -- Supports prompts up to 16 MB
+  selected_model_id INT,              -- FK to ai_llm_model
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 ```
 
-### 8.3 Prompt Keys
+### 8.3 Related Tables
+
+```sql
+-- LLM Providers (OpenAI, Anthropic, etc.)
+CREATE TABLE ai_llm (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(100) NOT NULL,
+  api_key_env_var VARCHAR(100),
+  base_url VARCHAR(255),
+  is_active BOOLEAN DEFAULT TRUE
+);
+
+-- LLM Models (gpt-4, claude-3, etc.)
+CREATE TABLE ai_llm_model (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  llm_id INT,                         -- FK to ai_llm
+  model_name VARCHAR(100) NOT NULL,
+  display_name VARCHAR(255),
+  is_active BOOLEAN DEFAULT TRUE
+);
+```
+
+### 8.4 Prompt Keys
 
 | Key | AI Role | Description |
 |-----|---------|-------------|
-| `AI1_DOCUMENT_TYPE` | AI1 | Document classification |
-| `AI3_DATA_EXTRACTION` | AI3 | Data extraction |
-| `AI4_ACCOUNTING` | AI4 | Accounting classification |
-| `AI5_MATCHING` | AI5 | Credit card matching |
-| `AI6_CREDIT_CARD_INVOICE` | AI6 | FirstCard parsing |
+| `document_analysis` | AI1 | Document type classification |
+| `data_extraction` | AI3 | Data extraction from receipts |
+| `expense_classification` | AI2 | Expense categorization |
+| `accounting_classification` | AI4 | Accounting proposal generation |
+| `credit_card_matching` | AI5 | Credit card transaction matching |
+| `credit_card_invoice_parsing` | AI6 | FirstCard statement parsing |
 
 ## 9. AI Processing History
 

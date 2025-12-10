@@ -22,6 +22,7 @@ from services.storage import FileStorage
 from services.workflow_runs import create_workflow_run
 from services.invoice_status import (
     InvoiceProcessingStatus,
+    InvoiceDocumentStatus,
     invoice_documents_supports_updated_at,
 )
 from services.status_constants import InvoiceLineMatchStatus
@@ -270,6 +271,50 @@ def _create_invoice_document(
         return True
     except Exception as e:
         logger.error(f"Failed to create/update invoice document: {e}")
+        return False
+
+
+def _ensure_invoice_document(
+    invoice_id: str,
+    invoice_type: str = "credit_card_invoice",
+) -> bool:
+    """
+    Ensure that an invoice_documents row exists for the given invoice_id.
+
+    Behaviour:
+    - If a row exists (including soft-deleted), return True.
+    - If no row exists, create a minimal, SoT-compliant document row:
+        * id = invoice_id
+        * invoice_type = invoice_type
+        * status = InvoiceDocumentStatus.IMPORTED.value
+        * processing_status = InvoiceProcessingStatus.UPLOADED.value
+        * metadata_json contains {"recovered_from_missing_invoice_document": true}
+    - If creation fails, log an error and return False.
+    """
+    if db_cursor is None:
+        return False
+
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT id FROM invoice_documents WHERE id=%s LIMIT 1", (invoice_id,))
+            exists = cur.fetchone() is not None
+        if exists:
+            return True
+
+        metadata = {"recovered_from_missing_invoice_document": True}
+        created = _create_invoice_document(
+            invoice_id=invoice_id,
+            invoice_type=invoice_type,
+            status=InvoiceDocumentStatus.IMPORTED.value,
+            metadata=metadata,
+            processing_status=InvoiceProcessingStatus.UPLOADED.value,
+        )
+        if not created:
+            logger.error("Failed to auto-create missing invoice_document for %s", invoice_id)
+            return False
+        return True
+    except Exception as exc:
+        logger.error("ensure_invoice_document failed for %s: %s", invoice_id, exc, exc_info=True)
         return False
 
 
@@ -528,3 +573,4 @@ find_invoice_line_id_for_item = _find_invoice_line_id_for_item
 ensure_processing_state = _ensure_processing_state
 log_line_history = _log_line_history
 as_decimal = _as_decimal
+ensure_invoice_document = _ensure_invoice_document

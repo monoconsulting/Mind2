@@ -22,6 +22,7 @@ from .. import recon_bp
 from ..utils.db_helpers import (
     create_invoice_document,
     find_file_id_by_hash,
+    ensure_invoice_document,
     write_invoice_metadata,
 )
 from ..services.workflow_coordinator import WorkflowCoordinator
@@ -139,6 +140,7 @@ def upload_invoice() -> Any:
         metadata=metadata,
         processing_status=metadata.get("processing_status"),
     )
+    ensure_invoice_document(invoice_id=invoice_id, invoice_type="credit_card_invoice")
 
     coordinator = WorkflowCoordinator()
     
@@ -177,6 +179,7 @@ def upload_invoice() -> Any:
         metadata=metadata,
         processing_status=metadata.get("processing_status"),
     )
+    ensure_invoice_document(invoice_id=invoice_id, invoice_type="credit_card_invoice")
     coordinator.complete_import_stage(
         workflow_run_id,
         "fc_create",

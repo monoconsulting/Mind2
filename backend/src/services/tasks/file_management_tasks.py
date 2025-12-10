@@ -31,6 +31,7 @@ from .utils.invoice_utils import (
     _set_invoice_metadata_field,
     _update_invoice_metadata,
 )
+from api.reconciliation_firstcard.utils.db_helpers import ensure_invoice_document
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +246,14 @@ def _maybe_advance_invoice_from_file(file_id: str, success: bool) -> None:
         )
 
     _update_invoice_metadata(invoice_id, metadata)
+    if not ensure_invoice_document(invoice_id, invoice_type="credit_card_invoice"):
+        logger.error(
+            "Skipping invoice state advance for %s (file %s): missing invoice_documents row",
+            invoice_id,
+            file_id,
+        )
+        return
+
     transition_processing_status(invoice_id, next_state, allowed_states)
 
     if should_schedule and _enqueue_invoice_document(invoice_id):

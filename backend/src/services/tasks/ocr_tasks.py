@@ -99,6 +99,7 @@ def wf1_run_ocr(workflow_run_id: int) -> int:
         message = f"OCR succeeded, extracted {text_len} chars in {elapsed}ms."
         mark_stage(workflow_run_id, "ocr", "succeeded", message=message, end=True)
         complete_import_stage(workflow_run_id, "r_ocr", success=True, message=message)
+        _update_file_status(file_id, AiStatus.OCR_DONE.value)
         log_event(
             logger,
             "wf1.ocr.succeeded",
@@ -121,6 +122,7 @@ def wf1_run_ocr(workflow_run_id: int) -> int:
             error=error_msg or "no_text",
             duration_ms=elapsed,
         )
+        _update_file_status(file_id, AiStatus.OCR_FAILED.value)
 
     return workflow_run_id
 

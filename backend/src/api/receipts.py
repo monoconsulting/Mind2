@@ -1259,10 +1259,31 @@ def update_receipt(rid: str) -> Any:
 def get_receipt_modal(rid: str) -> Any:
     details = _fetch_receipt_details(rid)
     company_id = details.get("company_id")
+    if company_id in (None, 0):
+        logger.error("Receipt %s is missing company_id in preview DTO", rid)
+        return jsonify({"error": "company_missing", "message": "Receipt saknar kopplat bolag (company_id)"}), 500
     company = _fetch_company_by_id(company_id)
+    if not company.get("name"):
+        logger.error("Receipt %s has company_id=%s but company record is empty", rid, company_id)
+        return jsonify({"error": "company_missing", "message": "Kunde inte ladda bolagsdata f\u00f6r kvittot"}), 500
     items, items_source = _get_receipt_items_with_source(rid, details.get("currency"))
     proposals = _fetch_saved_accounting_entries(rid)
     boxes = _load_boxes(rid)
+    other_data_json: dict[str, Any] = {}
+    raw_other_data = details.get("other_data")
+    if raw_other_data:
+        try:
+            other_data_json = json.loads(raw_other_data)
+        except Exception:
+            other_data_json = {"raw_other_data": raw_other_data}
+    ai_block = {
+        "status": details.get("ai_status"),
+        "confidence": details.get("ai_confidence"),
+    }
+    if "company_match_type" in other_data_json:
+        ai_block["company_match_type"] = other_data_json.get("company_match_type")
+    if "company_create_needed" in other_data_json:
+        ai_block["company_create_needed"] = other_data_json.get("company_create_needed")
     response = {
         "id": rid,
         "receipt": details,
@@ -1270,6 +1291,8 @@ def get_receipt_modal(rid: str) -> Any:
         "items": items,
         "proposals": proposals,
         "boxes": boxes,
+        "ai": ai_block,
+        "other_data": other_data_json,
         "meta": {
             "items_count": len(items),
             "items_source": items_source,

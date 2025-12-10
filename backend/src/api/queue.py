@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 from api.middleware import auth_required
 from services.db.connection import db_cursor
@@ -66,9 +66,11 @@ def list_queue():
                     ) AS latest_stage_updated_at
                 FROM workflow_runs wr
                 LEFT JOIN unified_files uf ON uf.id = wr.file_id
-                
+                WHERE wr.status IN ('running', 'queued')
+                  AND uf.deleted_at IS NULL
+
                 UNION ALL
-                
+
                 SELECT
                     NULL as id,
                     uf.workflow_type as workflow_key,
@@ -76,7 +78,7 @@ def list_queue():
                     uf.id as file_id,
                     uf.content_hash,
                     'unknown' as current_stage,
-                    'queued' as status,
+                    'orphan' as status,
                     uf.created_at,
                     uf.updated_at,
                     TIMESTAMPDIFF(SECOND, uf.updated_at, NOW()) AS idle_seconds,
@@ -88,23 +90,37 @@ def list_queue():
                 FROM unified_files uf
                 LEFT JOIN workflow_runs wr ON wr.file_id = uf.id
                 WHERE wr.id IS NULL
-                  AND uf.ai_status IN ('queued', 'processing', 'running')
+                  AND uf.ai_status IN ('uploaded', 'processing', 'ocr_done', 'ocr_failed', 'manual_review')
                   AND uf.deleted_at IS NULL
-                
+
                 ORDER BY
                     CASE status
                         WHEN 'running' THEN 0
                         WHEN 'queued' THEN 1
-                        ELSE 2
+                        WHEN 'orphan' THEN 2
+                        ELSE 3
                     END,
                     CASE status
                         WHEN 'running' THEN updated_at
                         WHEN 'queued' THEN created_at
+                        WHEN 'orphan' THEN created_at
                         ELSE updated_at
                     END DESC
                 """
             )
             rows = cur.fetchall() or []
+
+            def derive_ai_status(raw_ai_status, wf_status, latest_key, latest_status):
+                if wf_status == "failed":
+                    return "failed"
+                if latest_key in ("KLAR", "finalize_ok") and latest_status == "succeeded":
+                    return "completed"
+                if latest_key and "ocr" in (latest_key or "") and latest_status == "succeeded":
+                    return "ocr_done"
+                if wf_status in ("running", "queued"):
+                    return "processing"
+                return raw_ai_status or "uploaded"
+
             for row in rows:
                 (
                     run_id,
@@ -124,13 +140,10 @@ def list_queue():
                     latest_stage_updated_at,
                 ) = row
 
-                stalled = False
-                try:
-                    stalled = status in ("queued", "running") and idle_seconds is not None and idle_seconds > 300
-                except Exception:
-                    stalled = False
-
                 stall_threshold = config.QUEUE_STALL_THRESHOLD_SECONDS
+                derived_ai_status = derive_ai_status(ai_status, status, latest_stage_key, latest_stage_status)
+                stalled = status == "running" and idle_seconds is not None and idle_seconds > stall_threshold
+                is_orphan = run_id is None and file_id is not None
 
                 items.append(
                     {
@@ -146,13 +159,16 @@ def list_queue():
                         "idle_seconds": idle_seconds,
                         "file_name": original_filename,
                         "ai_status": ai_status,
+                        "derived_ai_status": derived_ai_status,
                         "latest_stage_key": latest_stage_key,
                         "latest_stage_status": latest_stage_status,
                         "latest_stage_updated_at": latest_stage_updated_at.isoformat()
                         if hasattr(latest_stage_updated_at, "isoformat")
                         else latest_stage_updated_at,
-                        "stalled": idle_seconds is not None and idle_seconds > stall_threshold,
+                        "stalled": stalled,
                         "stall_threshold_seconds": stall_threshold,
+                        "is_orphan": is_orphan,
+                        "can_resume": bool((is_orphan and file_id) or (stalled and file_id)),
                     }
                 )
     except Exception as exc:
@@ -160,3 +176,37 @@ def list_queue():
         return jsonify({"items": [], "meta": {"total": 0, "error": "db_error"}}), 500
 
     return jsonify({"items": items, "meta": {"total": len(items)}}), 200
+
+
+@queue_bp.post("/resume-batch")
+@auth_required
+def resume_batch():
+    """Resume multiple workflow items by delegating to the existing single-file resume logic."""
+    payload = request.get_json(silent=True) or {}
+    file_ids = payload.get("file_ids") if isinstance(payload, dict) else None
+
+    if not isinstance(file_ids, list) or not file_ids:
+        return jsonify({"error": "invalid_input", "message": "file_ids must be a non-empty list"}), 400
+
+    from api.ingest import _resume_processing_internal
+
+    results = []
+    seen = set()
+    for fid in file_ids:
+        if not fid or fid in seen:
+            continue
+        seen.add(fid)
+        data, status_code = _resume_processing_internal(str(fid))
+        results.append(
+            {
+                "file_id": str(fid),
+                "queued": data.get("queued", False),
+                "workflow_run_id": data.get("workflow_run_id"),
+                "workflow_key": data.get("workflow_key"),
+                "status_code": status_code,
+                "error": data.get("error"),
+                "message": data.get("message"),
+            }
+        )
+
+    return jsonify({"results": results, "count": len(results)}), 200
