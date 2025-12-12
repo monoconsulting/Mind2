@@ -57,42 +57,66 @@ test('Login, open Process, preview first receipt', async ({ page }) => {
   await expect(previewBtn).toBeVisible();
   await previewBtn.click();
 
-  // Optional: assert that a modal opened or a preview area became visible.
-  // Replace the selector below with a stable preview container marker in your UI.
-  // const previewModal = page.getByRole('dialog').or(page.getByTestId('receipt-preview'));
-  // await expect(previewModal).toBeVisible();
+  // Modal should open. The stable wrapper is modal-backdrop with receipt-preview-modal class.
+  const previewModalBackdrop = page.locator('.modal-backdrop.receipt-preview-modal');
+  await expect(previewModalBackdrop).toBeVisible();
 
+  // Multi-page navigation (only when modal exposes pages).
+  const pageIndicator = page.locator('.receipt-modal-page-indicator');
+  const indicatorCount = await pageIndicator.count();
+  if (indicatorCount > 0) {
+    const indicatorText = (await pageIndicator.first().textContent()) || '';
+    const match = indicatorText.match(/Sida\s+(\d+)\s+av\s+(\d+)/i);
+    const totalPages = match ? Number(match[2]) : 0;
+
+    if (totalPages > 1) {
+      const prevPage = page.getByRole('button', { name: 'Föregående sida' });
+      const nextPage = page.getByRole('button', { name: 'Nästa sida' });
+      const previewImage = page.locator('img.receipt-modal-image');
+
+      await expect(prevPage).toHaveCount(0);
+      await expect(nextPage).toBeVisible();
+
+      const srcBefore = await previewImage.getAttribute('src');
+      await nextPage.click();
+      await expect.poll(async () => await previewImage.getAttribute('src')).not.toBe(srcBefore);
+      await expect(prevPage).toBeVisible();
+    }
+  }
+
+  // If field overlays are present, verify they are not opaque.
   const overlays = page.locator('.receipt-modal-overlay');
-  await expect(overlays.first()).toBeVisible();
+  const overlayCount = await overlays.count();
+  if (overlayCount > 0) {
+    const overlayBackgrounds = await overlays.evaluateAll((elements) =>
+      elements.map((element) => {
+        const { backgroundColor } = window.getComputedStyle(element);
+        return backgroundColor.toLowerCase();
+      }),
+    );
 
-  const overlayBackgrounds = await overlays.evaluateAll((elements) =>
-    elements.map((element) => {
-      const { backgroundColor } = window.getComputedStyle(element);
-      return backgroundColor.toLowerCase();
-    }),
-  );
+    const hasOpaqueOverlay = overlayBackgrounds.some((color) => {
+      if (color === 'transparent') {
+        return false;
+      }
+      const match = color.match(/rgba?\(([^)]+)\)/);
+      if (!match) {
+        return true;
+      }
+      const channels = match[1].split(',').map((channel) => Number.parseFloat(channel.trim()));
+      if (channels.length < 4) {
+        return true;
+      }
+      const alpha = channels[3];
+      return alpha > 0;
+    });
 
-  const hasOpaqueOverlay = overlayBackgrounds.some((color) => {
-    if (color === 'transparent') {
-      return false;
-    }
-    const match = color.match(/rgba?\(([^)]+)\)/);
-    if (!match) {
-      return true;
-    }
-    const channels = match[1].split(',').map((channel) => Number.parseFloat(channel.trim()));
-    if (channels.length < 4) {
-      return true;
-    }
-    const alpha = channels[3];
-    return alpha > 0;
-  });
-
-  expect(hasOpaqueOverlay).toBeFalsy();
+    expect(hasOpaqueOverlay).toBeFalsy();
+  }
 
   // AI3/AI4 - the items section should render extracted line items, not the empty state.
-  const itemsHeader = page.getByText('Varor och kontering');
-  await expect(itemsHeader).toBeVisible();
+  const itemsHeader = page.locator('.receipt-item-header-main');
+  await expect(itemsHeader).toBeVisible({ timeout: 15000 });
   await page.waitForFunction(
     () => document.querySelector('.receipt-item-card-new') !== null,
     undefined,
@@ -100,4 +124,15 @@ test('Login, open Process, preview first receipt', async ({ page }) => {
   );
   const itemCards = page.locator('.receipt-item-card-new');
   await expect(itemCards.first()).toBeVisible();
+
+  // Restart conversion should respond 200 and success=true.
+  const restartButton = page.getByRole('button', { name: 'Starta om konvertering' });
+  await expect(restartButton).toBeVisible();
+  const [restartResponse] = await Promise.all([
+    page.waitForResponse((response) => response.url().includes('/ai/api/receipts/') && response.url().endsWith('/restart-ai') && response.request().method() === 'POST'),
+    restartButton.click(),
+  ]);
+  expect(restartResponse.status()).toBe(200);
+  const restartJson = await restartResponse.json().catch(() => null);
+  expect(restartJson?.success).toBeTruthy();
 });

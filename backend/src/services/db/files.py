@@ -204,6 +204,7 @@ def create_unified_file(
     initial_process_status: str | None = None,
     initial_ai_status: str,
     extra_metadata: dict | None = None,
+    workflow_key: str | None = None,
     workflow_type: str | None = None,
     mime_type: str | None = None,
     file_suffix: str | None = None,
@@ -236,6 +237,7 @@ def create_unified_file(
     # But we should probably be explicit or let DB default handle it?
     # DB schema might not have default. insert_unified_file used "receipt".
     final_workflow_type = workflow_type or "receipt"
+    effective_workflow_key = workflow_key or (final_workflow_type if str(final_workflow_type).startswith("WF") else None)
 
     try:
         with db_cursor() as cur:
@@ -281,9 +283,9 @@ def create_unified_file(
             )
             
             # Create workflow run if workflow type is present and requested
-            if create_workflow and final_workflow_type:
+            if create_workflow and effective_workflow_key:
                 workflow_run_id = create_workflow_run(
-                    workflow_key=final_workflow_type,
+                    workflow_key=effective_workflow_key,
                     source_channel=source or "unknown",
                     file_id=file_id,
                     content_hash=content_hash or ""
@@ -297,4 +299,3 @@ def create_unified_file(
         if "Duplicate entry" in msg and "idx_content_hash" in msg:
             raise DuplicateFileError(f"File with hash {content_hash} already exists") from db_error
         raise
-
