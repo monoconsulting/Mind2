@@ -88,6 +88,7 @@ def upload_files() -> Any:
             detection = detect_file(data, safe_filename)
             
             workflow_key = None
+            workflow_type = "receipt"
             if detection.kind == "image":
                 workflow_key = "WF1_RECEIPT"
             elif detection.kind == "pdf":
@@ -112,9 +113,38 @@ def upload_files() -> Any:
                 original_file_size=len(data),
                 extra_metadata={"detected_kind": detection.kind},
                 source="web_upload",
-                workflow_type=workflow_key,
+                workflow_key=workflow_key,
+                workflow_type=workflow_type,
             )
             fs.save_original(file_id, safe_filename, data)
+            if detection.kind == "image":
+                allowed_suffixes = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+                image_suffix = Path(safe_filename).suffix.lower()
+                if image_suffix not in allowed_suffixes:
+                    mime = str(detection.mime_type or "").lower()
+                    suffix_by_mime = {
+                        "image/jpeg": ".jpg",
+                        "image/jpg": ".jpg",
+                        "image/png": ".png",
+                        "image/tiff": ".tiff",
+                    }
+                    image_suffix = suffix_by_mime.get(mime, "")
+                if image_suffix in allowed_suffixes:
+                    try:
+                        fs.save(file_id, f"page-0001{image_suffix}", data)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to save page copy for image upload %s (%s): %s",
+                            safe_filename,
+                            file_id,
+                            exc,
+                        )
+                else:
+                    logger.warning(
+                        "Skipping page copy for unsupported image type %s (mime=%s)",
+                        safe_filename,
+                        detection.mime_type,
+                    )
 
             workflow_run_id = unified_file.workflow_run_id
 
