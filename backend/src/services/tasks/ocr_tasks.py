@@ -236,6 +236,7 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
                 create_unified_file(
                     file_id=page_id,
                     file_type="pdf_page",
+                    workflow_type="receipt",
                     content_hash=page_hash,
                     submitted_by="workflow",
                     source="wf2_split",
@@ -270,12 +271,37 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
                 )
 
             stored_page_name = f"page-{page_number:04d}.png"
-            fs.adopt(target_file_id, stored_page_name, page.path)
+            stored_page_path = fs.adopt(target_file_id, stored_page_name, page.path)
+            if page_number == 1:
+                try:
+                    existing_parent_images = [
+                        name
+                        for name in fs.list(file_id)
+                        if name.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff"))
+                    ]
+                    if not existing_parent_images:
+                        fs.save(file_id, "page-0001.png", stored_page_path.read_bytes())
+                        log_event(
+                            logger,
+                            "wf2.parent_preview_written",
+                            workflow_run_id=workflow_run_id,
+                            file_id=file_id,
+                            source_page_file_id=target_file_id,
+                        )
+                except Exception as exc:
+                    log_event(
+                        logger,
+                        "wf2.parent_preview_write_failed",
+                        workflow_run_id=workflow_run_id,
+                        file_id=file_id,
+                        error=str(exc),
+                    )
             page_refs.append(
                 {
                     "file_id": target_file_id,
                     "page_number": page_number,
                     "duplicate": duplicate,
+                    "workflow_type": "receipt",
                 }
             )
 
@@ -477,7 +503,7 @@ def wf2_merge_ocr_results(results: list[tuple[int, str, str]], workflow_run_id: 
                 all_text.append(text)
             else:
                 failed_pages.append(page_id)
-    
+
     combined_text = "\n\n--- PAGE BREAK ---\n\n".join(all_text)
     
     # Save the combined text to the parent PDF's other_data
@@ -487,6 +513,16 @@ def wf2_merge_ocr_results(results: list[tuple[int, str, str]], workflow_run_id: 
     if failed_pages:
         other_data["failed_ocr_pages"] = failed_pages
     update_other_data(file_id, other_data)
+
+    # Update parent ocr_raw to enable downstream AI
+    _update_file_fields(file_id, ocr_raw=combined_text)
+    _update_file_status(file_id, AiStatus.OCR_DONE.value)
+
+    # Mark pages as completed to avoid orphan queue noise
+    for result in results:
+        if result and len(result) == 3:
+            _, page_id, _ = result
+            _update_file_status(page_id, AiStatus.COMPLETED.value)
 
     message = f"Merged OCR text from {len(all_text)} pages. {len(failed_pages)} pages failed."
     status = "succeeded"
@@ -502,8 +538,74 @@ def wf2_merge_ocr_results(results: list[tuple[int, str, str]], workflow_run_id: 
     if status != "succeeded":
         return workflow_run_id
 
-    # Trigger the next step
-    wf2_run_invoice_analysis.s(workflow_run_id).set(queue="wf2").apply_async()
+    # Decide next step based on intended workflow type
+    parent_workflow_type = str(parent_file_info.get("workflow_type") or "").lower()
+
+    if parent_workflow_type in ("receipt", ""):
+        # Create and dispatch a WF1 workflow_run for the parent PDF (single log entry expected)
+        try:
+            from services.workflow_runs import create_workflow_run
+            from services.tasks.workflow_tasks import dispatch_workflow, mark_stage as wt_mark_stage
+        except Exception:
+            dispatch_workflow = None
+            create_workflow_run = None
+            wt_mark_stage = None
+
+        if create_workflow_run and dispatch_workflow and wt_mark_stage:
+            # Ensure invoice_analysis is marked so wf2_finalize can succeed
+            wt_mark_stage(workflow_run_id, "invoice_analysis", "succeeded", message="Skipped: forwarded to WF1")
+
+            new_wr_id = create_workflow_run(
+                workflow_key="WF1_RECEIPT",
+                source_channel="wf2_split",
+                file_id=file_id,
+                content_hash=parent_file_info.get("content_hash") or "",
+            )
+            dispatch_workflow(new_wr_id)
+            log_event(
+                logger,
+                "wf2.dispatch_wf1_after_split",
+                workflow_run_id=workflow_run_id,
+                new_workflow_run_id=new_wr_id,
+                file_id=file_id,
+            )
+        else:
+            log_event(
+                logger,
+                "wf2.dispatch_wf1_after_split_failed",
+                workflow_run_id=workflow_run_id,
+                file_id=file_id,
+                reason="dispatch helpers unavailable",
+            )
+
+        # Finalize WF2 to succeeded to keep SoT invariant
+        mark_stage(
+            workflow_run_id,
+            "finalize",
+            "succeeded",
+            message="WF2 slutförd, dispatchad till WF1 for receipt processing",
+            end=True,
+            workflow_status_override="succeeded",
+        )
+        begin_import_stage(
+            workflow_run_id,
+            "finalize_ok",
+            message="WF2 slutförd",
+        )
+        complete_import_stage(
+            workflow_run_id,
+            "finalize_ok",
+            success=True,
+            message="PDF-split avslutad och skickad vidare till WF1",
+        )
+        log_import_event(
+            workflow_run_id,
+            "KLAR",
+            message="WF2 slutförd",
+        )
+    else:
+        # Non-receipt path: continue existing WF2 invoice analysis chain
+        wf2_run_invoice_analysis.s(workflow_run_id).set(queue="wf2").apply_async()
 
     return workflow_run_id
 

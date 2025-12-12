@@ -7,6 +7,7 @@ from typing import Any, Iterable, Optional
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from flask import Blueprint, jsonify, request, send_file
 
@@ -1035,6 +1036,8 @@ def list_receipts() -> Any:
                 where.append(
                     "(u.file_type IS NULL OR (LOWER(u.file_type) NOT LIKE 'cc_%' AND LOWER(u.file_type) <> 'credit_card'))"
                 )
+                # Hide internal pdf_page rows from receipt list (SoT: single post per dokument)
+                where.append("(LOWER(u.file_type) <> 'pdf_page')")
 
             if q_upload_stage:
                 # Treat upload stage as source channel or initial stage key (src_portal, src_ftp, etc.)
@@ -1087,7 +1090,15 @@ def list_receipts() -> Any:
                     " ORDER BY wsr.started_at DESC LIMIT 1) as workflow_stage_state, "
                     "(SELECT wr.source_channel FROM workflow_runs wr "
                     " WHERE wr.file_id = u.id "
-                    " ORDER BY wr.created_at DESC LIMIT 1) as workflow_source_channel "
+                    " ORDER BY wr.created_at DESC LIMIT 1) as workflow_source_channel, "
+                    "(SELECT wsr.stage_key FROM workflow_runs wr "
+                    " JOIN workflow_stage_runs wsr ON wsr.workflow_run_id = wr.id "
+                    " WHERE wr.file_id = u.id AND wsr.stage_key LIKE 'src_%' "
+                    " ORDER BY wsr.started_at ASC LIMIT 1) as upload_stage_key, "
+                    "(SELECT wsr.status FROM workflow_runs wr "
+                    " JOIN workflow_stage_runs wsr ON wsr.workflow_run_id = wr.id "
+                    " WHERE wr.file_id = u.id AND wsr.stage_key LIKE 'src_%' "
+                    " ORDER BY wsr.started_at ASC LIMIT 1) as upload_stage_status "
                     "FROM unified_files u "
                     "LEFT JOIN companies c ON c.id = u.company_id "
                     "LEFT JOIN file_tags t ON t.file_id=u.id "
@@ -1125,6 +1136,8 @@ def list_receipts() -> Any:
                     workflow_stage_key,
                     workflow_stage_state,
                     workflow_source_channel,
+                    upload_stage_key,
+                    upload_stage_status,
                 ) in results:
                     wf_type = (workflow_type or "").lower()
                     file_type_lower = (str(file_type or "")).lower()
@@ -1179,10 +1192,10 @@ def list_receipts() -> Any:
                             document_type = "Credit Card"
 
                     upload_stage = None
-                    if workflow_stage_key and str(workflow_stage_key).lower().startswith("src_"):
+                    if upload_stage_key:
                         upload_stage = {
-                            "stage_key": workflow_stage_key,
-                            "status": workflow_stage_state,
+                            "stage_key": upload_stage_key,
+                            "status": upload_stage_status,
                         }
 
                     items.append(
@@ -1260,12 +1273,13 @@ def get_receipt_modal(rid: str) -> Any:
     details = _fetch_receipt_details(rid)
     company_id = details.get("company_id")
     if company_id in (None, 0):
-        logger.error("Receipt %s is missing company_id in preview DTO", rid)
-        return jsonify({"error": "company_missing", "message": "Receipt saknar kopplat bolag (company_id)"}), 500
-    company = _fetch_company_by_id(company_id)
-    if not company.get("name"):
-        logger.error("Receipt %s has company_id=%s but company record is empty", rid, company_id)
-        return jsonify({"error": "company_missing", "message": "Kunde inte ladda bolagsdata f\u00f6r kvittot"}), 500
+        logger.warning("Receipt %s is missing company_id in preview DTO", rid)
+        company: dict[str, Any] = {}
+    else:
+        company = _fetch_company_by_id(company_id)
+        if not company.get("name"):
+            logger.error("Receipt %s has company_id=%s but company record is empty", rid, company_id)
+            return jsonify({"error": "company_missing", "message": "Kunde inte ladda bolagsdata f\u00f6r kvittot"}), 500
     items, items_source = _get_receipt_items_with_source(rid, details.get("currency"))
     proposals = _fetch_saved_accounting_entries(rid)
     boxes = _load_boxes(rid)
@@ -1300,9 +1314,62 @@ def get_receipt_modal(rid: str) -> Any:
             "boxes_count": len(boxes),
         },
     }
+    pages: list[dict[str, Any]] = []
+    if db_cursor is not None:
+        try:
+            with db_cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, original_filename
+                    FROM unified_files
+                    WHERE original_file_id = %s
+                      AND LOWER(file_type) = 'pdf_page'
+                      AND deleted_at IS NULL
+                    ORDER BY original_filename ASC, id ASC
+                    """,
+                    (rid,),
+                )
+                for index, (page_id, page_filename) in enumerate(cur.fetchall() or [], 1):
+                    filename = page_filename or ""
+                    match = re.search(r"page-(\d{4})", filename, flags=re.IGNORECASE)
+                    page_number = int(match.group(1)) if match else index
+                    pages.append(
+                        {
+                            "file_id": page_id,
+                            "page_number": page_number,
+                            "original_filename": page_filename,
+                        }
+                    )
+        except Exception:
+            logger.warning("Failed to fetch pdf_page list for receipt %s", rid, exc_info=True)
+    response["pages"] = pages
     if items_source != "database":
         response["line_items"] = items
     return jsonify(response), 200
+
+
+@receipts_bp.post("/receipts/<rid>/restart-ai")
+def restart_receipt_ai(rid: str) -> Any:
+    """
+    Restart/resume receipt processing from the UI.
+
+    The frontend expects:
+      - HTTP 200
+      - JSON body with {"success": true, ...} on success.
+    """
+    try:
+        from api.ingest import _resume_processing_internal  # type: ignore
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Unable to import resume handler for restart-ai: %s", exc, exc_info=True)
+        return jsonify({"success": False, "error": "restart_unavailable"}), 500
+
+    payload, status_code = _resume_processing_internal(rid)
+    if status_code == 200 and payload.get("queued") is True:
+        return jsonify({"success": True, **payload}), 200
+
+    error = payload.get("error") if isinstance(payload, dict) else None
+    message = payload.get("message") if isinstance(payload, dict) else None
+    return jsonify({"success": False, "error": error or "restart_failed", "message": message}), status_code
 
 
 @receipts_bp.put("/receipts/<rid>/modal")
@@ -1948,7 +2015,7 @@ def get_receipt_log(rid: str) -> Any:
                     created_at,
                     updated_at
                 FROM workflow_runs
-                WHERE file_id = %s
+                WHERE file_id = %s AND workflow_key <> 'WF2_PDF_SPLIT'
                 ORDER BY created_at DESC, id DESC
                 """,
                 (rid,),
