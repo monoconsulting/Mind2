@@ -818,6 +818,7 @@ export default function ReceiptPreviewModal({
     setError(null);
     setEditing(false);
     setHoverField(null);
+    setCurrentPageIndex(0);
 
     const fetchData = async () => {
       try {
@@ -1437,14 +1438,61 @@ export default function ReceiptPreviewModal({
 
   const handleResetImageZoom = () => setImageZoom(1);
 
-  const pages = payload?.pages || [];
+  const pages = (() => {
+    const rawPages = payload?.pages ?? payload?.other_data?.pages;
+    if (!Array.isArray(rawPages)) {
+      return [];
+    }
+
+    const mapped = rawPages
+      .map((entry, index) => {
+        if (typeof entry === 'string') {
+          return { filename: entry, page_number: index + 1 };
+        }
+        if (!entry || typeof entry !== 'object') {
+          return null;
+        }
+        const fileId = entry.file_id ?? entry.fileId ?? entry.id ?? null;
+        const pageNumberCandidate = entry.page_number ?? entry.pageNumber ?? entry.page ?? index + 1;
+        const pageNumber = Number.isFinite(Number(pageNumberCandidate)) ? Number(pageNumberCandidate) : index + 1;
+        const filename = entry.filename ?? entry.file_name ?? null;
+        if (!fileId && !filename) {
+          return null;
+        }
+        return { file_id: fileId, filename, page_number: pageNumber };
+      })
+      .filter(Boolean);
+
+    mapped.sort((a, b) => (a.page_number ?? 0) - (b.page_number ?? 0));
+    return mapped;
+  })();
+
   const hasMultiplePages = pages.length > 1;
-  const currentPageFilename = hasMultiplePages && pages[currentPageIndex] ? pages[currentPageIndex] : null;
+
+  React.useEffect(() => {
+    if (!hasMultiplePages) {
+      if (currentPageIndex !== 0) {
+        setCurrentPageIndex(0);
+      }
+      return;
+    }
+    if (currentPageIndex > pages.length - 1) {
+      setCurrentPageIndex(0);
+    }
+  }, [hasMultiplePages, pages.length, currentPageIndex]);
+
+  const currentPage = pages[currentPageIndex] || null;
+  const pageImageId = currentPage?.file_id || null;
+  const pageFilename = currentPage?.filename || null;
 
   const baseImageSrc = safeReceiptId
-    ? previewImage && !currentPageFilename
-      ? previewImage
-      : `/ai/api/receipts/${safeReceiptId}/image?size=preview&rotate=portrait${currentPageFilename ? `&filename=${currentPageFilename}` : ''}`
+    ? hasMultiplePages
+      ? pageImageId
+        ? `/ai/api/receipts/${pageImageId}/image?size=preview&rotate=portrait`
+        : `/ai/api/receipts/${safeReceiptId}/image?size=preview&rotate=portrait${pageFilename ? `&filename=${pageFilename}` : ''}`
+      : previewImage
+        ? previewImage
+        : `/ai/api/receipts/${safeReceiptId}/image?size=preview&rotate=portrait`
     : null;
 
   const handlePrevPage = () => {
@@ -1826,14 +1874,8 @@ export default function ReceiptPreviewModal({
                 <div className="receipt-modal-center">
                   <div className="receipt-modal-image-toolbar">
                     {hasMultiplePages && (
-                      <div className="flex items-center gap-2 mr-4">
-                        <button type="button" className="btn btn-sm btn-secondary p-1" onClick={handlePrevPage} disabled={currentPageIndex === 0}>
-                          <FiChevronLeft />
-                        </button>
-                        <span className="text-sm font-medium whitespace-nowrap">Sida {currentPageIndex + 1} av {pages.length}</span>
-                        <button type="button" className="btn btn-sm btn-secondary p-1" onClick={handleNextPage} disabled={currentPageIndex === pages.length - 1}>
-                          <FiChevronRight />
-                        </button>
+                      <div className="receipt-modal-page-indicator text-sm font-medium whitespace-nowrap mr-4">
+                        Sida {currentPageIndex + 1} av {pages.length}
                       </div>
                     )}
                     <button
@@ -1848,13 +1890,35 @@ export default function ReceiptPreviewModal({
                   <div className="receipt-modal-image-wrapper">
                     {baseImageSrc ? (
                       <div className="receipt-modal-image-stage">
+                        {hasMultiplePages && currentPageIndex > 0 && (
+                          <button
+                            type="button"
+                            className="receipt-modal-page-arrow left"
+                            onClick={handlePrevPage}
+                            aria-label="Föregående sida"
+                            title="Föregående sida"
+                          >
+                            <FiChevronLeft />
+                          </button>
+                        )}
+                        {hasMultiplePages && currentPageIndex < pages.length - 1 && (
+                          <button
+                            type="button"
+                            className="receipt-modal-page-arrow right"
+                            onClick={handleNextPage}
+                            aria-label="Nästa sida"
+                            title="Nästa sida"
+                          >
+                            <FiChevronRight />
+                          </button>
+                        )}
                         <img
                           ref={imgRef}
                           src={baseImageSrc}
                           alt={`Kvitto ${safeReceiptId || ''}`}
                           className="receipt-modal-image"
                         />
-                        {boxes.map((box, index) => {
+                        {currentPageIndex === 0 && boxes.map((box, index) => {
                           const overlayKey = box.field || `box-${index}`;
                           const toCss = (val) => {
                             if (typeof val !== 'number') {
@@ -2190,7 +2254,6 @@ export default function ReceiptPreviewModal({
     </>
   );
 }
-
 
 
 
