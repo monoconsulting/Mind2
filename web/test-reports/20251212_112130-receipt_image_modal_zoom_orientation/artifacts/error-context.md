@@ -1,0 +1,783 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: M
+      - generic [ref=e7]: Mind Admin
+    - navigation [ref=e8]:
+      - button "Översikt" [ref=e9] [cursor=pointer]:
+        - img [ref=e10] [cursor=pointer]
+        - generic [ref=e13] [cursor=pointer]: Översikt
+      - button "Process" [ref=e14] [cursor=pointer]:
+        - img [ref=e15] [cursor=pointer]
+        - generic [ref=e16] [cursor=pointer]: Process
+      - button "Kvitton" [ref=e17] [cursor=pointer]:
+        - img [ref=e18] [cursor=pointer]
+        - generic [ref=e21] [cursor=pointer]: Kvitton
+      - button "Kortmatchning" [ref=e22] [cursor=pointer]:
+        - img [ref=e23] [cursor=pointer]
+        - generic [ref=e25] [cursor=pointer]: Kortmatchning
+      - button "Manuell matchning" [ref=e26] [cursor=pointer]:
+        - img [ref=e27] [cursor=pointer]
+        - generic [ref=e30] [cursor=pointer]: Manuell matchning
+      - button "Kö" [ref=e31] [cursor=pointer]:
+        - img [ref=e32] [cursor=pointer]
+        - generic [ref=e35] [cursor=pointer]: Kö
+      - button "AI" [ref=e36] [cursor=pointer]:
+        - img [ref=e37] [cursor=pointer]
+        - generic [ref=e38] [cursor=pointer]: AI
+      - button "Export" [ref=e39] [cursor=pointer]:
+        - img [ref=e40] [cursor=pointer]
+        - generic [ref=e43] [cursor=pointer]: Export
+      - button "Användare" [ref=e44] [cursor=pointer]:
+        - img [ref=e45] [cursor=pointer]
+        - generic [ref=e46] [cursor=pointer]: Användare
+    - generic [ref=e48]:
+      - generic [ref=e49]:
+        - generic [ref=e50]: A
+        - generic [ref=e51]:
+          - generic [ref=e52]: Administratör
+          - generic [ref=e53]: Systemansvarig
+      - button "Logga ut" [ref=e54] [cursor=pointer]:
+        - img [ref=e55] [cursor=pointer]
+        - generic [ref=e58] [cursor=pointer]: Logga ut
+  - generic [ref=e59]:
+    - banner [ref=e60]:
+      - generic [ref=e61]: Process
+      - generic [ref=e63]: Överblick över status för kvittohanteringen och centrala nyckeltal
+    - main [ref=e64]:
+      - generic [ref=e65]:
+        - generic [ref=e67]:
+          - generic [ref=e68]:
+            - heading "Process" [level=1] [ref=e69]
+            - paragraph [ref=e70]: Hantera, filtrera och exportera filer från systemet
+          - generic [ref=e71]:
+            - button "Hämta från FTP" [ref=e72] [cursor=pointer]:
+              - img [ref=e73] [cursor=pointer]
+              - text: Hämta från FTP
+            - button "Ladda upp" [ref=e77] [cursor=pointer]:
+              - img [ref=e78] [cursor=pointer]
+              - text: Ladda upp
+            - button "Exportera" [ref=e81] [cursor=pointer]:
+              - img [ref=e82] [cursor=pointer]
+              - text: Exportera
+            - button "Filter" [ref=e85] [cursor=pointer]:
+              - img [ref=e86] [cursor=pointer]
+              - text: Filter
+            - button "Återuppta alla" [ref=e88] [cursor=pointer]:
+              - img [ref=e89] [cursor=pointer]
+              - text: Återuppta alla
+        - generic [ref=e93]:
+          - img [ref=e95]
+          - generic [ref=e97]: Visar 8 av 8 kvitton
+          - button "Stäng meddelande" [ref=e98] [cursor=pointer]:
+            - img [ref=e99] [cursor=pointer]
+        - generic [ref=e102]:
+          - generic [ref=e104]:
+            - heading "Sök och filtrera" [level=3] [ref=e105]
+            - paragraph [ref=e106]: Hitta kvitton snabbt
+          - generic [ref=e107]:
+            - generic [ref=e108]:
+              - generic [ref=e109]:
+                - img [ref=e110]
+                - textbox "Sök efter företag, filnamn eller belopp" [ref=e113]
+              - button "Sök" [ref=e114] [cursor=pointer]:
+                - img [ref=e115] [cursor=pointer]
+                - text: Sök
+              - button "Rensa" [ref=e118] [cursor=pointer]
+            - generic [ref=e119]:
+              - generic [ref=e120]: "Visa per sida:"
+              - combobox "Visa per sida:" [ref=e121]:
+                - option "10"
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+                - option "250"
+                - option "500"
+                - option "1000"
+        - generic [ref=e122]:
+          - heading "Filter" [level=3] [ref=e124]
+          - generic [ref=e125]:
+            - generic [ref=e126]:
+              - generic [ref=e127]:
+                - generic [ref=e128]: Status
+                - combobox "Status" [ref=e129]:
+                  - option "Alla statusar" [selected]
+                  - option "Slutförda (KLAR)"
+                  - option "Ej slutförda"
+                  - option "Ej matchade"
+                  - option "Manuell hantering"
+                  - option "Uploads · FC klar"
+                  - option "Uploads · FC start"
+                  - option "Uploads · FC-uppladdning"
+                  - option "Uploads · FTP"
+                  - option "Uploads · FTP klar"
+                  - option "Uploads · FTP start"
+                  - option "Uploads · Lagrar fil"
+                  - option "Uploads · Lagrar fil klar"
+                  - option "Uploads · Lagrar fil start"
+                  - option "Uploads · Portal"
+                  - option "Uploads · Portal klar"
+                  - option "Uploads · Portal start"
+                  - option "Uploads · Startar kvittoflöde"
+                  - option "Uploads · Startar kvittoflöde"
+                  - option "Uploads · Startar kvittoflöde klar"
+                  - option "Workflow · Dataextraktion"
+                  - option "Workflow · Dataextraktion (AI3)"
+                  - option "Workflow · Dokumentklassning"
+                  - option "Workflow · Dokumentklassning (AI1)"
+                  - option "Workflow · FC OCR"
+                  - option "Workflow · FC redo för matchning"
+                  - option "Workflow · FC-fakturor (AI6)"
+                  - option "Workflow · FC-parsing"
+                  - option "Workflow · Köar matchning"
+                  - option "Workflow · Normalisering"
+                  - option "Workflow · Normalisering (AI4)"
+                  - option "Workflow · OCR"
+                  - option "Workflow · Skapar FC-faktura"
+                  - option "Workflow · Sparar data"
+                  - option "Workflow · Utgiftstyp (AI2)"
+                  - option "Workflow · Är FC-faktura?"
+                  - option "Matchning · Kortmatchning (AI5)"
+                  - option "Matchning · Länka kvitto"
+                  - option "Matchning · Match hittad?"
+                  - option "Matchning · Omatchad"
+                  - option "Återuppta · Omstartar"
+                  - option "Återuppta · Återupptar"
+                  - option "Slutstatus · KLAR"
+                  - option "Slutstatus · Manuell granskning"
+                  - option "Slutstatus · Slutför"
+                  - option "Slutstatus · Slutför (fel)"
+              - generic [ref=e130]:
+                - generic [ref=e131]: Upload
+                - combobox "Upload" [ref=e132]:
+                  - option "Alla källor" [selected]
+                  - option "Manuellt"
+                  - option "FTP"
+              - generic [ref=e133]:
+                - generic [ref=e134]: Dokumenttyp
+                - combobox "Dokumenttyp" [ref=e135]:
+                  - option "Alla" [selected]
+                  - option "Kvitton"
+                  - option "Fakturor"
+                  - option "Övriga"
+              - generic [ref=e136]:
+                - generic [ref=e137]: Utgiftstyp
+                - combobox "Utgiftstyp" [ref=e138]:
+                  - option "Alla typer" [selected]
+                  - option "Personal"
+                  - option "Corporate"
+              - generic [ref=e139]:
+                - generic [ref=e140]: Betalningstyp
+                - combobox "Betalningstyp" [ref=e141]:
+                  - option "Alla" [selected]
+                  - option "Kort"
+                  - option "Swish"
+                  - option "Kontant"
+            - generic [ref=e142]:
+              - generic [ref=e143]:
+                - generic [ref=e144]: År
+                - combobox "År" [ref=e145]:
+                  - option "Alla år" [selected]
+                  - option "2025"
+                  - option "2024"
+                  - option "2023"
+                  - option "2022"
+                  - option "2021"
+              - generic [ref=e146]:
+                - generic [ref=e147]: Månad
+                - combobox "Månad" [ref=e148]:
+                  - option "Alla månader" [selected]
+                  - option "Januari"
+                  - option "Februari"
+                  - option "Mars"
+                  - option "April"
+                  - option "Maj"
+                  - option "Juni"
+                  - option "Juli"
+                  - option "Augusti"
+                  - option "September"
+                  - option "Oktober"
+                  - option "November"
+                  - option "December"
+            - button "Rensa filter" [ref=e150] [cursor=pointer]
+        - generic [ref=e151]:
+          - generic [ref=e153]:
+            - heading "Alla kvitton (8)" [level=3] [ref=e154]
+            - paragraph [ref=e155]: Sorterat efter senaste först
+          - table [ref=e157]:
+            - rowgroup [ref=e158]:
+              - row "Förhandsgranskning Fakturadatum/Inköpsdatum Företag Upload Utgiftstyp Betalningstyp Uppladdningsdatum Sista 4 Exkl. moms Inkl. moms Matchad Status Dokumenttyp Plats Ladda ned Logg Återuppta Radera" [ref=e159]:
+                - cell "Förhandsgranskning" [ref=e160]
+                - cell "Fakturadatum/Inköpsdatum" [ref=e161] [cursor=pointer]
+                - cell "Företag" [ref=e162] [cursor=pointer]
+                - cell "Upload" [ref=e163]
+                - cell "Utgiftstyp" [ref=e164] [cursor=pointer]
+                - cell "Betalningstyp" [ref=e165] [cursor=pointer]
+                - cell "Uppladdningsdatum" [ref=e166] [cursor=pointer]
+                - cell "Sista 4" [ref=e167]
+                - cell "Exkl. moms" [ref=e168] [cursor=pointer]
+                - cell "Inkl. moms" [ref=e169] [cursor=pointer]
+                - cell "Matchad" [ref=e170]
+                - cell "Status" [ref=e171] [cursor=pointer]
+                - cell "Dokumenttyp" [ref=e172] [cursor=pointer]
+                - cell "Plats" [ref=e173]
+                - cell "Ladda ned" [ref=e174]
+                - cell "Logg" [ref=e175]
+                - cell "Återuppta" [ref=e176]
+                - cell "Radera" [ref=e177]
+            - rowgroup [ref=e178]:
+              - row "Förhandsgranska kvitto 116e9b83-fbaf-42dc-b58f-3253fd7484b7 2025-08-13 Microsoft AB Manuellt corporate card 2025-12-12 06:45 - 110,00 kr 138,00 kr Nej KLAR - klar Kvitto" [ref=e179]:
+                - cell "Förhandsgranska kvitto 116e9b83-fbaf-42dc-b58f-3253fd7484b7" [ref=e180]:
+                  - button "Förhandsgranska kvitto 116e9b83-fbaf-42dc-b58f-3253fd7484b7" [active] [ref=e181] [cursor=pointer]:
+                    - generic [ref=e182] [cursor=pointer]: Kunde inte ladda
+                - cell "2025-08-13" [ref=e183]:
+                  - generic [ref=e184]: 2025-08-13
+                - cell "Microsoft AB" [ref=e185]:
+                  - generic [ref=e186]: Microsoft AB
+                - cell "Manuellt" [ref=e187]:
+                  - generic [ref=e188]: Manuellt
+                - cell "corporate" [ref=e189]:
+                  - generic [ref=e190]: corporate
+                - cell "card" [ref=e191]:
+                  - generic [ref=e192]: card
+                - cell "2025-12-12 06:45" [ref=e193]:
+                  - generic [ref=e194]: 2025-12-12 06:45
+                - cell "-" [ref=e195]:
+                  - generic [ref=e196]: "-"
+                - cell "110,00 kr" [ref=e197]
+                - cell "138,00 kr" [ref=e198]
+                - cell "Nej" [ref=e199]
+                - cell "KLAR - klar" [ref=e200]:
+                  - generic [ref=e201]: KLAR - klar
+                - cell "Kvitto" [ref=e202]:
+                  - generic [ref=e203]: Kvitto
+                - cell [ref=e204]:
+                  - button [ref=e205] [cursor=pointer]:
+                    - img [ref=e206] [cursor=pointer]
+                - cell [ref=e209]:
+                  - button [ref=e210] [cursor=pointer]:
+                    - img [ref=e211] [cursor=pointer]
+                - cell [ref=e214]:
+                  - button "Visa logg" [ref=e215] [cursor=pointer]:
+                    - img [ref=e216] [cursor=pointer]
+                - cell [ref=e219]:
+                  - button "Återuppta bearbetning från där den stannade" [ref=e220] [cursor=pointer]:
+                    - img [ref=e221] [cursor=pointer]
+                - cell [ref=e225]:
+                  - button "Radera kvitto" [ref=e226] [cursor=pointer]:
+                    - img [ref=e227] [cursor=pointer]
+              - row "Förhandsgranska kvitto 07935e44-828f-4b45-84b6-d47689b30f51 - Okänt bolag Manuellt - - 2025-12-12 06:45 - 0,00 kr 0,00 kr Nej finalize_fail_end - misslyckades Övrigt" [ref=e229]:
+                - cell "Förhandsgranska kvitto 07935e44-828f-4b45-84b6-d47689b30f51" [ref=e230]:
+                  - button "Förhandsgranska kvitto 07935e44-828f-4b45-84b6-d47689b30f51" [ref=e231] [cursor=pointer]:
+                    - generic [ref=e232] [cursor=pointer]: Kunde inte ladda
+                - cell "-" [ref=e233]:
+                  - generic [ref=e234]: "-"
+                - cell "Okänt bolag" [ref=e235]:
+                  - generic [ref=e236]: Okänt bolag
+                - cell "Manuellt" [ref=e237]:
+                  - generic [ref=e238]: Manuellt
+                - cell "-" [ref=e239]:
+                  - generic [ref=e240]: "-"
+                - cell "-" [ref=e241]:
+                  - generic [ref=e242]: "-"
+                - cell "2025-12-12 06:45" [ref=e243]:
+                  - generic [ref=e244]: 2025-12-12 06:45
+                - cell "-" [ref=e245]:
+                  - generic [ref=e246]: "-"
+                - cell "0,00 kr" [ref=e247]
+                - cell "0,00 kr" [ref=e248]
+                - cell "Nej" [ref=e249]
+                - cell "finalize_fail_end - misslyckades" [ref=e250]:
+                  - generic [ref=e251]: finalize_fail_end - misslyckades
+                - cell "Övrigt" [ref=e252]:
+                  - generic [ref=e253]: Övrigt
+                - cell [ref=e254]:
+                  - button [ref=e255] [cursor=pointer]:
+                    - img [ref=e256] [cursor=pointer]
+                - cell [ref=e259]:
+                  - button [ref=e260] [cursor=pointer]:
+                    - img [ref=e261] [cursor=pointer]
+                - cell [ref=e264]:
+                  - button "Visa logg" [ref=e265] [cursor=pointer]:
+                    - img [ref=e266] [cursor=pointer]
+                - cell [ref=e269]:
+                  - button "Återuppta bearbetning från där den stannade" [ref=e270] [cursor=pointer]:
+                    - img [ref=e271] [cursor=pointer]
+                - cell [ref=e275]:
+                  - button "Radera kvitto" [ref=e276] [cursor=pointer]:
+                    - img [ref=e277] [cursor=pointer]
+              - row "Förhandsgranska kvitto 72ecd302-a9f8-43d8-ac5b-934e3f573400 2025-11-21 JULA Manuellt personal card 2025-12-12 06:45 - 103,00 kr 129,00 kr Nej finalize - klar Kvitto" [ref=e279]:
+                - cell "Förhandsgranska kvitto 72ecd302-a9f8-43d8-ac5b-934e3f573400" [ref=e280]:
+                  - button "Förhandsgranska kvitto 72ecd302-a9f8-43d8-ac5b-934e3f573400" [ref=e281] [cursor=pointer]:
+                    - generic [ref=e282] [cursor=pointer]: Kunde inte ladda
+                - cell "2025-11-21" [ref=e283]:
+                  - generic [ref=e284]: 2025-11-21
+                - cell "JULA" [ref=e285]:
+                  - generic [ref=e286]: JULA
+                - cell "Manuellt" [ref=e287]:
+                  - generic [ref=e288]: Manuellt
+                - cell "personal" [ref=e289]:
+                  - generic [ref=e290]: personal
+                - cell "card" [ref=e291]:
+                  - generic [ref=e292]: card
+                - cell "2025-12-12 06:45" [ref=e293]:
+                  - generic [ref=e294]: 2025-12-12 06:45
+                - cell "-" [ref=e295]:
+                  - generic [ref=e296]: "-"
+                - cell "103,00 kr" [ref=e297]
+                - cell "129,00 kr" [ref=e298]
+                - cell "Nej" [ref=e299]
+                - cell "finalize - klar" [ref=e300]:
+                  - generic [ref=e301]: finalize - klar
+                - cell "Kvitto" [ref=e302]:
+                  - generic [ref=e303]: Kvitto
+                - cell [ref=e304]:
+                  - button [ref=e305] [cursor=pointer]:
+                    - img [ref=e306] [cursor=pointer]
+                - cell [ref=e309]:
+                  - button [ref=e310] [cursor=pointer]:
+                    - img [ref=e311] [cursor=pointer]
+                - cell [ref=e314]:
+                  - button "Visa logg" [ref=e315] [cursor=pointer]:
+                    - img [ref=e316] [cursor=pointer]
+                - cell [ref=e319]:
+                  - button "Återuppta bearbetning från där den stannade" [ref=e320] [cursor=pointer]:
+                    - img [ref=e321] [cursor=pointer]
+                - cell [ref=e325]:
+                  - button "Radera kvitto" [ref=e326] [cursor=pointer]:
+                    - img [ref=e327] [cursor=pointer]
+              - row "Förhandsgranska kvitto a76e9604-f122-4e5b-a509-9a15ec94ffae 2025-04-10 Mono Consulting Sweden AB Manuellt personal swish 2025-12-12 06:45 - 0,00 kr 1 800,00 kr Nej KLAR - klar Faktura" [ref=e329]:
+                - cell "Förhandsgranska kvitto a76e9604-f122-4e5b-a509-9a15ec94ffae" [ref=e330]:
+                  - button "Förhandsgranska kvitto a76e9604-f122-4e5b-a509-9a15ec94ffae" [ref=e331] [cursor=pointer]:
+                    - generic [ref=e332] [cursor=pointer]: Kunde inte ladda
+                - cell "2025-04-10" [ref=e333]:
+                  - generic [ref=e334]: 2025-04-10
+                - cell "Mono Consulting Sweden AB" [ref=e335]:
+                  - generic [ref=e336]: Mono Consulting Sweden AB
+                - cell "Manuellt" [ref=e337]:
+                  - generic [ref=e338]: Manuellt
+                - cell "personal" [ref=e339]:
+                  - generic [ref=e340]: personal
+                - cell "swish" [ref=e341]:
+                  - generic [ref=e342]: swish
+                - cell "2025-12-12 06:45" [ref=e343]:
+                  - generic [ref=e344]: 2025-12-12 06:45
+                - cell "-" [ref=e345]:
+                  - generic [ref=e346]: "-"
+                - cell "0,00 kr" [ref=e347]
+                - cell "1 800,00 kr" [ref=e348]
+                - cell "Nej" [ref=e349]
+                - cell "KLAR - klar" [ref=e350]:
+                  - generic [ref=e351]: KLAR - klar
+                - cell "Faktura" [ref=e352]:
+                  - generic [ref=e353]: Faktura
+                - cell [ref=e354]:
+                  - button [ref=e355] [cursor=pointer]:
+                    - img [ref=e356] [cursor=pointer]
+                - cell [ref=e359]:
+                  - button [ref=e360] [cursor=pointer]:
+                    - img [ref=e361] [cursor=pointer]
+                - cell [ref=e364]:
+                  - button "Visa logg" [ref=e365] [cursor=pointer]:
+                    - img [ref=e366] [cursor=pointer]
+                - cell [ref=e369]:
+                  - button "Återuppta bearbetning från där den stannade" [ref=e370] [cursor=pointer]:
+                    - img [ref=e371] [cursor=pointer]
+                - cell [ref=e375]:
+                  - button "Radera kvitto" [ref=e376] [cursor=pointer]:
+                    - img [ref=e377] [cursor=pointer]
+              - row "Förhandsgranska kvitto c44f3e81-1d6f-4369-9104-791897d2e37c 2023-11-24 Autodesk Ireland Operations UC Manuellt corporate - 2025-12-12 06:45 - 680,00 kr 680,00 kr Nej r_queue_match_end - klar Kvitto" [ref=e379]:
+                - cell "Förhandsgranska kvitto c44f3e81-1d6f-4369-9104-791897d2e37c" [ref=e380]:
+                  - button "Förhandsgranska kvitto c44f3e81-1d6f-4369-9104-791897d2e37c" [ref=e381] [cursor=pointer]:
+                    - generic [ref=e382] [cursor=pointer]: Kunde inte ladda
+                - cell "2023-11-24" [ref=e383]:
+                  - generic [ref=e384]: 2023-11-24
+                - cell "Autodesk Ireland Operations UC" [ref=e385]:
+                  - generic [ref=e386]: Autodesk Ireland Operations UC
+                - cell "Manuellt" [ref=e387]:
+                  - generic [ref=e388]: Manuellt
+                - cell "corporate" [ref=e389]:
+                  - generic [ref=e390]: corporate
+                - cell "-" [ref=e391]:
+                  - generic [ref=e392]: "-"
+                - cell "2025-12-12 06:45" [ref=e393]:
+                  - generic [ref=e394]: 2025-12-12 06:45
+                - cell "-" [ref=e395]:
+                  - generic [ref=e396]: "-"
+                - cell "680,00 kr" [ref=e397]
+                - cell "680,00 kr" [ref=e398]
+                - cell "Nej" [ref=e399]
+                - cell "r_queue_match_end - klar" [ref=e400]:
+                  - generic [ref=e401]: r_queue_match_end - klar
+                - cell "Kvitto" [ref=e402]:
+                  - generic [ref=e403]: Kvitto
+                - cell [ref=e404]:
+                  - button [ref=e405] [cursor=pointer]:
+                    - img [ref=e406] [cursor=pointer]
+                - cell [ref=e409]:
+                  - button [ref=e410] [cursor=pointer]:
+                    - img [ref=e411] [cursor=pointer]
+                - cell [ref=e414]:
+                  - button "Visa logg" [ref=e415] [cursor=pointer]:
+                    - img [ref=e416] [cursor=pointer]
+                - cell [ref=e419]:
+                  - button "Återuppta bearbetning från där den stannade" [ref=e420] [cursor=pointer]:
+                    - img [ref=e421] [cursor=pointer]
+                - cell [ref=e425]:
+                  - button "Radera kvitto" [ref=e426] [cursor=pointer]:
+                    - img [ref=e427] [cursor=pointer]
+              - row "Förhandsgranska kvitto c88da8ad-905e-4413-8d59-25db2341b531 2024-07-17 Elgiganten SE Manuellt corporate card 2025-12-12 06:45 - 2 232,00 kr 2 790,00 kr Nej finalize_ok_end - klar Kvitto" [ref=e429]:
+                - cell "Förhandsgranska kvitto c88da8ad-905e-4413-8d59-25db2341b531" [ref=e430]:
+                  - button "Förhandsgranska kvitto c88da8ad-905e-4413-8d59-25db2341b531" [ref=e431] [cursor=pointer]:
+                    - generic [ref=e432] [cursor=pointer]: Kunde inte ladda
+                - cell "2024-07-17" [ref=e433]:
+                  - generic [ref=e434]: 2024-07-17
+                - cell "Elgiganten SE" [ref=e435]:
+                  - generic [ref=e436]: Elgiganten SE
+                - cell "Manuellt" [ref=e437]:
+                  - generic [ref=e438]: Manuellt
+                - cell "corporate" [ref=e439]:
+                  - generic [ref=e440]: corporate
+                - cell "card" [ref=e441]:
+                  - generic [ref=e442]: card
+                - cell "2025-12-12 06:45" [ref=e443]:
+                  - generic [ref=e444]: 2025-12-12 06:45
+                - cell "-" [ref=e445]:
+                  - generic [ref=e446]: "-"
+                - cell "2 232,00 kr" [ref=e447]
+                - cell "2 790,00 kr" [ref=e448]
+                - cell "Nej" [ref=e449]
+                - cell "finalize_ok_end - klar" [ref=e450]:
+                  - generic [ref=e451]: finalize_ok_end - klar
+                - cell "Kvitto" [ref=e452]:
+                  - generic [ref=e453]: Kvitto
+                - cell [ref=e454]:
+                  - button [ref=e455] [cursor=pointer]:
+                    - img [ref=e456] [cursor=pointer]
+                - cell [ref=e459]:
+                  - button [ref=e460] [cursor=pointer]:
+                    - img [ref=e461] [cursor=pointer]
+                - cell [ref=e464]:
+                  - button "Visa logg" [ref=e465] [cursor=pointer]:
+                    - img [ref=e466] [cursor=pointer]
+                - cell [ref=e469]:
+                  - button "Återuppta bearbetning från där den stannade" [ref=e470] [cursor=pointer]:
+                    - img [ref=e471] [cursor=pointer]
+                - cell [ref=e475]:
+                  - button "Radera kvitto" [ref=e476] [cursor=pointer]:
+                    - img [ref=e477] [cursor=pointer]
+              - row "Förhandsgranska kvitto f7e3a069-4f04-4dfb-b876-e58c8f29635c - Okänt bolag Manuellt - - 2025-12-12 06:45 - 0,00 kr 0,00 kr Nej finalize_fail_end - misslyckades Övrigt" [ref=e479]:
+                - cell "Förhandsgranska kvitto f7e3a069-4f04-4dfb-b876-e58c8f29635c" [ref=e480]:
+                  - button "Förhandsgranska kvitto f7e3a069-4f04-4dfb-b876-e58c8f29635c" [ref=e481] [cursor=pointer]:
+                    - generic [ref=e482] [cursor=pointer]: Kunde inte ladda
+                - cell "-" [ref=e483]:
+                  - generic [ref=e484]: "-"
+                - cell "Okänt bolag" [ref=e485]:
+                  - generic [ref=e486]: Okänt bolag
+                - cell "Manuellt" [ref=e487]:
+                  - generic [ref=e488]: Manuellt
+                - cell "-" [ref=e489]:
+                  - generic [ref=e490]: "-"
+                - cell "-" [ref=e491]:
+                  - generic [ref=e492]: "-"
+                - cell "2025-12-12 06:45" [ref=e493]:
+                  - generic [ref=e494]: 2025-12-12 06:45
+                - cell "-" [ref=e495]:
+                  - generic [ref=e496]: "-"
+                - cell "0,00 kr" [ref=e497]
+                - cell "0,00 kr" [ref=e498]
+                - cell "Nej" [ref=e499]
+                - cell "finalize_fail_end - misslyckades" [ref=e500]:
+                  - generic [ref=e501]: finalize_fail_end - misslyckades
+                - cell "Övrigt" [ref=e502]:
+                  - generic [ref=e503]: Övrigt
+                - cell [ref=e504]:
+                  - button [ref=e505] [cursor=pointer]:
+                    - img [ref=e506] [cursor=pointer]
+                - cell [ref=e509]:
+                  - button [ref=e510] [cursor=pointer]:
+                    - img [ref=e511] [cursor=pointer]
+                - cell [ref=e514]:
+                  - button "Visa logg" [ref=e515] [cursor=pointer]:
+                    - img [ref=e516] [cursor=pointer]
+                - cell [ref=e519]:
+                  - button "Återuppta bearbetning från där den stannade" [ref=e520] [cursor=pointer]:
+                    - img [ref=e521] [cursor=pointer]
+                - cell [ref=e525]:
+                  - button "Radera kvitto" [ref=e526] [cursor=pointer]:
+                    - img [ref=e527] [cursor=pointer]
+              - row "Förhandsgranska kvitto 63dbe559-2ea0-478f-b9f9-f433972e688f - Okänt bolag Manuellt - - 2025-12-12 06:45 - 0,00 kr 0,00 kr Nej finalize_fail_end - misslyckades Övrigt" [ref=e529]:
+                - cell "Förhandsgranska kvitto 63dbe559-2ea0-478f-b9f9-f433972e688f" [ref=e530]:
+                  - button "Förhandsgranska kvitto 63dbe559-2ea0-478f-b9f9-f433972e688f" [ref=e531] [cursor=pointer]:
+                    - generic [ref=e532] [cursor=pointer]: Kunde inte ladda
+                - cell "-" [ref=e533]:
+                  - generic [ref=e534]: "-"
+                - cell "Okänt bolag" [ref=e535]:
+                  - generic [ref=e536]: Okänt bolag
+                - cell "Manuellt" [ref=e537]:
+                  - generic [ref=e538]: Manuellt
+                - cell "-" [ref=e539]:
+                  - generic [ref=e540]: "-"
+                - cell "-" [ref=e541]:
+                  - generic [ref=e542]: "-"
+                - cell "2025-12-12 06:45" [ref=e543]:
+                  - generic [ref=e544]: 2025-12-12 06:45
+                - cell "-" [ref=e545]:
+                  - generic [ref=e546]: "-"
+                - cell "0,00 kr" [ref=e547]
+                - cell "0,00 kr" [ref=e548]
+                - cell "Nej" [ref=e549]
+                - cell "finalize_fail_end - misslyckades" [ref=e550]:
+                  - generic [ref=e551]: finalize_fail_end - misslyckades
+                - cell "Övrigt" [ref=e552]:
+                  - generic [ref=e553]: Övrigt
+                - cell [ref=e554]:
+                  - button [ref=e555] [cursor=pointer]:
+                    - img [ref=e556] [cursor=pointer]
+                - cell [ref=e559]:
+                  - button [ref=e560] [cursor=pointer]:
+                    - img [ref=e561] [cursor=pointer]
+                - cell [ref=e564]:
+                  - button "Visa logg" [ref=e565] [cursor=pointer]:
+                    - img [ref=e566] [cursor=pointer]
+                - cell [ref=e569]:
+                  - button "Återuppta bearbetning från där den stannade" [ref=e570] [cursor=pointer]:
+                    - img [ref=e571] [cursor=pointer]
+                - cell [ref=e575]:
+                  - button "Radera kvitto" [ref=e576] [cursor=pointer]:
+                    - img [ref=e577] [cursor=pointer]
+        - generic [ref=e579]:
+          - generic [ref=e581]:
+            - generic [ref=e582]:
+              - generic [ref=e583]: "8"
+              - generic [ref=e584]: Totalt antal kvitton
+            - img [ref=e585]
+          - generic [ref=e589]:
+            - generic [ref=e590]:
+              - generic [ref=e591]: "5"
+              - generic [ref=e592]: Godkända kvitton
+            - img [ref=e593]
+          - generic [ref=e597]:
+            - generic [ref=e598]:
+              - generic [ref=e599]: 5 537,00 kr
+              - generic [ref=e600]: Total summa
+            - img [ref=e601]
+        - dialog "Förhandsgranskning kvitto 116e9b83-fbaf-42dc-b58f-3253fd7484b7" [ref=e603]:
+          - button "Nästa kvitto" [ref=e604] [cursor=pointer]:
+            - img [ref=e605] [cursor=pointer]
+          - generic [ref=e607]:
+            - generic [ref=e608]:
+              - generic [ref=e609]:
+                - heading "Förhandsgranska kvitto" [level=3] [ref=e610]
+                - paragraph [ref=e611]: Microsoft AB • 2025-08-13
+                - text: "0"
+              - button "Stäng förhandsgranskning" [ref=e612] [cursor=pointer]:
+                - img [ref=e613] [cursor=pointer]
+            - generic [ref=e617]:
+              - generic [ref=e618]:
+                - generic [ref=e619]:
+                  - heading "Grunddata (Företagsinformation)" [level=4] [ref=e620]
+                  - generic [ref=e621]:
+                    - generic [ref=e622]:
+                      - generic [ref=e623]: Företag
+                      - generic [ref=e624]: Microsoft AB
+                    - generic [ref=e625]:
+                      - generic [ref=e626]: Organisationsnummer
+                      - generic [ref=e627]: "556233480401"
+                    - generic [ref=e628]:
+                      - generic [ref=e629]: Adress
+                      - generic [ref=e630]: Regeringsgatan 25
+                    - generic [ref=e631]:
+                      - generic [ref=e632]: Adress 2
+                      - generic [ref=e633]: "-"
+                    - generic [ref=e634]:
+                      - generic [ref=e635]: Postnummer
+                      - generic [ref=e636]: 111 53
+                    - generic [ref=e637]:
+                      - generic [ref=e638]: Ort
+                      - generic [ref=e639]: Stockholm
+                    - generic [ref=e640]:
+                      - generic [ref=e641]: Land
+                      - generic [ref=e642]: Sweden
+                    - generic [ref=e643]:
+                      - generic [ref=e644]: Hemsida
+                      - generic [ref=e645]: https://aka.ms/invoice-billing
+                    - generic [ref=e646]:
+                      - generic [ref=e647]: Telefonnummer
+                      - generic [ref=e648]: "-"
+                    - generic [ref=e649]:
+                      - generic [ref=e650]: Email
+                      - generic [ref=e651]: "-"
+                - generic [ref=e652]:
+                  - heading "Betalningstyp" [level=4] [ref=e653]
+                  - generic [ref=e654]:
+                    - generic [ref=e655]:
+                      - generic [ref=e656]: Inköpsdatum
+                      - generic [ref=e657]: 2025-08-13
+                    - generic [ref=e658]:
+                      - generic [ref=e659]: Kvittonummer
+                      - generic [ref=e660]: SE-TI2500377526
+                    - generic [ref=e661]:
+                      - generic [ref=e662]: Betalningstyp
+                      - generic [ref=e663]: card
+                    - generic [ref=e664]:
+                      - generic [ref=e665]: Utgiftstyp
+                      - generic [ref=e666]: corporate
+                    - generic [ref=e667]:
+                      - generic [ref=e668]: Kortnummer
+                      - generic [ref=e669]: "-"
+                    - generic [ref=e670]:
+                      - generic [ref=e671]: Kortnummer 4 sista
+                      - generic [ref=e672]: "-"
+                    - generic [ref=e673]:
+                      - generic [ref=e674]: Korttyp
+                      - generic [ref=e675]: "-"
+                    - generic [ref=e676]:
+                      - generic [ref=e677]: Korttyp full
+                      - generic [ref=e678]: "-"
+                    - generic [ref=e679]:
+                      - generic [ref=e680]: Korttyp kort
+                      - generic [ref=e681]: "-"
+                    - generic [ref=e682]:
+                      - generic [ref=e683]: Betalningsvariant
+                      - generic [ref=e684]: "-"
+                    - generic [ref=e685]:
+                      - generic [ref=e686]: Korttyp token
+                      - generic [ref=e687]: "-"
+                    - generic [ref=e688]:
+                      - generic [ref=e689]: Inmatningsläge
+                      - generic [ref=e690]: "-"
+                - generic [ref=e691]:
+                  - heading "Belopp" [level=4] [ref=e692]
+                  - generic [ref=e693]:
+                    - generic [ref=e694]:
+                      - generic [ref=e695]: Valuta
+                      - generic [ref=e696]: SEK
+                    - generic [ref=e697]:
+                      - generic [ref=e698]: Växlingskurs
+                      - generic [ref=e699]: "-"
+                    - generic [ref=e700]:
+                      - generic [ref=e701]: Originalbelopp ink. moms
+                      - generic [ref=e702]: 138,00 kr
+                    - generic [ref=e703]:
+                      - generic [ref=e704]: Originalbelopp ex. moms
+                      - generic [ref=e705]: 110,00 kr
+                    - generic [ref=e706]:
+                      - generic [ref=e707]: Svenskt totalbelopp ink moms SEK
+                      - generic [ref=e708]: 138,00 kr
+                    - generic [ref=e709]:
+                      - generic [ref=e710]: Svenskt totalbelopp ex. moms SEK
+                      - generic [ref=e711]: 110,00 kr
+                    - generic [ref=e712]:
+                      - generic [ref=e713]: Moms 25%
+                      - generic [ref=e714]: 0,00 kr
+                    - generic [ref=e715]:
+                      - generic [ref=e716]: Moms 12%
+                      - generic [ref=e717]: 0,00 kr
+                    - generic [ref=e718]:
+                      - generic [ref=e719]: Moms 6%
+                      - generic [ref=e720]: 0,00 kr
+                - generic [ref=e721]:
+                  - heading "Övrigt" [level=4] [ref=e722]
+                  - generic [ref=e723]:
+                    - generic [ref=e724]: Övrig data
+                    - generic [ref=e725]: "{\"billing_number\": \"G107601838\", \"company_match_type\": \"vat\", \"company_create_needed\": false}"
+              - generic [ref=e726]:
+                - button "Visa stor bild" [ref=e728] [cursor=pointer]
+                - img "Kvitto 116e9b83-fbaf-42dc-b58f-3253fd7484b7" [ref=e731]
+              - generic [ref=e733]:
+                - generic [ref=e734]: Varor och kontering
+                - generic [ref=e735]:
+                  - generic [ref=e736]: RAD 1
+                  - generic [ref=e737]:
+                    - generic [ref=e738]:
+                      - generic [ref=e739]: Artikelnummer
+                      - generic [ref=e740]: "-"
+                    - generic [ref=e741]:
+                      - generic [ref=e742]: Artikel
+                      - generic [ref=e743]: Teams Premium - Microsoft Teams Premium - One-Year commitment for monthly/yearly billing
+                    - generic [ref=e744]:
+                      - generic [ref=e745]: Antal
+                      - generic [ref=e746]: "1"
+                    - generic [ref=e747]:
+                      - generic [ref=e748]: Valuta
+                      - generic [ref=e749]: SEK
+                    - generic [ref=e750]:
+                      - generic [ref=e751]: Belopp ex. moms
+                      - generic [ref=e752]: "110.5"
+                    - generic [ref=e753]:
+                      - generic [ref=e754]: Belopp ink. moms
+                      - generic [ref=e755]: "138.13"
+                    - generic [ref=e756]:
+                      - generic [ref=e757]: Belopp moms
+                      - generic [ref=e758]: "27.63"
+                    - generic [ref=e759]:
+                      - generic [ref=e760]: Moms %
+                      - generic [ref=e761]: "0.25"
+                    - generic [ref=e762]:
+                      - generic [ref=e763]: Belopp totalt ex. moms
+                      - generic [ref=e764]: "110.5"
+                    - generic [ref=e765]:
+                      - generic [ref=e766]: Belopp totalt ink. moms
+                      - generic [ref=e767]: "138.13"
+                    - generic [ref=e768]:
+                      - generic [ref=e769]: Belopp moms totalt
+                      - generic [ref=e770]: "27.63"
+                  - generic [ref=e771]:
+                    - generic [ref=e772]: Kontering
+                    - generic [ref=e774]:
+                      - generic [ref=e775]:
+                        - generic [ref=e776]: Debetkonto
+                        - generic [ref=e777]: "6540"
+                      - generic [ref=e778]:
+                        - generic [ref=e779]: Belopp Debet
+                        - generic [ref=e780]: 110,50 kr
+                      - generic [ref=e781]:
+                        - generic [ref=e782]: Momssats
+                        - generic [ref=e783]: 25%
+                      - generic [ref=e784]:
+                        - generic [ref=e785]: Notering
+                        - generic [ref=e786]: "Licenskostnad f\x00f6r programvara exklusive moms (Microsoft Teams Premium)"
+                    - generic [ref=e788]:
+                      - generic [ref=e789]:
+                        - generic [ref=e790]: Debetkonto
+                        - generic [ref=e791]: "2641"
+                      - generic [ref=e792]:
+                        - generic [ref=e793]: Belopp Debet
+                        - generic [ref=e794]: 27,63 kr
+                      - generic [ref=e795]:
+                        - generic [ref=e796]: Momssats
+                        - generic [ref=e797]: 25%
+                      - generic [ref=e798]:
+                        - generic [ref=e799]: Notering
+                        - generic [ref=e800]: "Ing\x00e5ende moms 25% p\x00e5 programvarulicens"
+                    - generic [ref=e802]:
+                      - generic [ref=e803]:
+                        - generic [ref=e804]: Kreditkonto
+                        - generic [ref=e805]: "2440"
+                      - generic [ref=e806]:
+                        - generic [ref=e807]: Belopp Kredit
+                        - generic [ref=e808]: 138,13 kr
+                      - generic [ref=e809]:
+                        - generic [ref=e810]: Momssats
+                        - generic [ref=e811]: 0%
+                      - generic [ref=e812]:
+                        - generic [ref=e813]: Notering
+                        - generic [ref=e814]: "Leverant\x00f6rsskuld Microsoft AB (f\x00f6retagsutgift)"
+            - generic [ref=e815]:
+              - generic [ref=e816]: Hovra över fält eller bildmarkeringar för att se kopplingarna.
+              - generic [ref=e817]:
+                - button "Redigera" [ref=e818] [cursor=pointer]:
+                  - img [ref=e819] [cursor=pointer]
+                  - text: Redigera
+                - button "Starta om konvertering" [ref=e821] [cursor=pointer]:
+                  - img [ref=e822] [cursor=pointer]
+                  - text: Starta om konvertering
+                - button "Radera" [ref=e826] [cursor=pointer]:
+                  - img [ref=e827] [cursor=pointer]
+                  - text: Radera
+                - button "Stäng" [ref=e829] [cursor=pointer]
+```
