@@ -4,7 +4,7 @@
 
 > This runbook is for operators and developers responsible for keeping Mind healthy in daily operations.
 >
-> Version: 2025-12-04
+> Version: 2025-12-14.1
 > Source: `docs/OPS/*.md`, `docs/DEVELOPMENT/*.md`, `CLAUDE.md`
 
 ## 1. Environments
@@ -68,6 +68,58 @@ mind_rebuild_frontend.bat
 ```bat
 mind_docker_compose_build_ai-api_celery-worker.bat
 ```
+
+## 2.5 Migrations & Prompt Persistence (CRITICAL)
+
+### 2.5.1 Source of Problem
+
+Mind currently includes a migration runner (`backend/src/services/db/migrations.py`) that executes SQL files in `database/migrations/`.
+
+**Critical detail:** The runner does not track “already applied” migrations and will replay **all** `.sql` files every time it is invoked. The API endpoint `POST /system/apply-migrations` directly triggers this runner.
+
+Because some migrations contain **destructive statements** (`DELETE` / unconditional `UPDATE`) against user-editable tables, repeated runs can overwrite or remove data.
+
+### 2.5.2 Tables at Risk
+
+- `ai_system_prompts` (prompt edits made in the UI/API)
+- `ai_processing_history` (processing trace / audit)
+- `receipt_items` (FirstCard cleanup scripts)
+
+### 2.5.3 Known Destructive Migrations (as of 2025-12-14)
+
+These files contain statements that can overwrite or delete data on re-run:
+
+- `0020_insert_ai_prompts.sql`  
+  Deletes and re-inserts prompt keys: `data_extraction`, `document_analysis`, `expense_classification`.
+- `0025_update_ai_prompt_titles.sql`  
+  Updates titles/descriptions (metadata) for existing prompt keys.
+- `0027_receipt_preview_modal_enhancements.sql`  
+  Updates `prompt_content` for `data_extraction`.
+- `0030_insert_ai6_credit_card_invoice_prompt.sql`  
+  Deletes and re-inserts prompt key: `credit_card_invoice_parsing`.
+- `0035_cleanup_fc_receipt_items.sql`  
+  Deletes rows from `receipt_items` for incorrectly imported FirstCard data.
+- `0036_reset_fc_processing.sql`  
+  Deletes rows from `ai_processing_history` related to FirstCard processing.
+
+### 2.5.4 Operational Rules
+
+- Do **not** call `POST /system/apply-migrations` on a running environment unless you fully understand the impact above.
+- Treat prompt content in `ai_system_prompts.prompt_content` as **user data**. It must survive restarts and migrations.
+- Before any migration run in a real environment, export:
+  - `ai_system_prompts`
+  - `ai_processing_history`
+  - `receipt_items` (if FirstCard cleanup is involved)
+
+### 2.5.5 Required Engineering Fix (SoT Requirement)
+
+The migration mechanism must be updated to one of these safe designs:
+
+- Track applied migrations in a `schema_migrations` table and execute only pending migrations, **or**
+- Make every migration strictly idempotent and forbid destructive statements without explicit guards.
+
+This requirement is normative: the system is considered **non-compliant** while migrations can overwrite prompt edits.
+
 
 ## 3. Health Checks
 
@@ -399,7 +451,7 @@ Authorization: Bearer <token>
 
 4. If recovery fails for any invoice (e.g., referential integrity issues), escalate as a data-quality incident and handle manually.
 
-## 15. Batch Resume Operation
+## 16. Batch Resume Operation
 
 Use the batch resume API to restart multiple items with the standard resume logic.
 

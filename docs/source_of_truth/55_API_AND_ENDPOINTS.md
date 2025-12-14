@@ -3,6 +3,8 @@
 # Mind – API and Endpoints (Source of Truth)
 
 > This file documents all API endpoints, their contracts, and authentication requirements. If an endpoint exists in code but is not documented here, it must be added.
+>
+> Version: 2025-12-14.1
 
 ## 1. Overview
 
@@ -92,14 +94,50 @@ Exposes Prometheus-format metrics.
 GET /system/config
 PUT /system/config  (requires auth)
 ```
-Retrieve or update system configuration.
-
-### 3.8 Apply Migrations
+Retrieve or upda### 3.8 Apply Migrations (Manual Trigger)
 
 ```
 POST /system/apply-migrations
 ```
-Manually trigger database migrations.
+
+Manually triggers the database migration runner.
+
+**Auth:** No (currently unauthenticated in code).  
+**Use with care:** This endpoint executes SQL files from `database/migrations/`.
+
+#### Response (200)
+
+```json
+{
+  "ok": true,
+  "applied": [
+    "0001_initial_schema.sql",
+    "0002_add_indexes.sql",
+    "...etc..."
+  ]
+}
+```
+
+#### Error Response (500)
+
+```json
+{
+  "ok": false,
+  "error": "..."
+}
+```
+
+#### Critical Safety Rules (Source of Truth)
+
+- Migrations must be **idempotent** and must never destroy user data on re-run.
+- Seeding (including prompts in `ai_system_prompts`) must **not overwrite** any content that has been edited via UI/API.
+
+#### Current Implementation Note (Critical)
+
+As of 2025-12-14, the migration runner does **not** track “already applied” migrations and will replay **all** `.sql` files each time it is called. This means any migration that contains `DELETE` / `UPDATE` against user-editable tables can cause data loss.
+
+See `80_OPERATIONS_RUNBOOK.md` → “Migrations & Prompt Persistence” for the current list of known destructive migrations and operational mitigations.
+
 
 ## 4. Authentication Endpoints (`/auth`)
 
@@ -563,20 +601,142 @@ Update company details.
 
 ## 11. AI Config Endpoints (`/ai-config`)
 
-### 11.1 Get Prompts
+All endpoints below require authentication.
+
+### 11.1 Get Providers (+ Models)
+
+```
+GET /ai-config/providers
+```
+
+Returns providers and their configured models.
+
+**Response (200)**
+
+```json
+{
+  "providers": [
+    {
+      "id": 1,
+      "provider_name": "OpenAI",
+      "own_name": "Primary",
+      "api_key": "********",
+      "endpoint_url": "https://api.openai.com",
+      "enabled": true,
+      "created_at": "2025-12-14T09:00:00",
+      "models": [
+        {
+          "id": 10,
+          "model_name": "gpt-4o-mini",
+          "display_name": "GPT-4o mini",
+          "is_active": true,
+          "created_at": "2025-12-14T09:00:00"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### 11.2 Create Provider (Optional Models)
+
+```
+POST /ai-config/providers
+```
+
+**Request Body**
+
+```json
+{
+  "provider_name": "OpenAI",
+  "own_name": "Primary",
+  "api_key": "...",
+  "endpoint_url": "https://api.openai.com",
+  "enabled": true,
+  "models": [
+    {"model_name": "gpt-4o-mini", "display_name": "GPT-4o mini", "is_active": true}
+  ]
+}
+```
+
+### 11.3 Update Provider
+
+```
+PUT /ai-config/providers/{provider_id}
+```
+
+### 11.4 Delete Provider
+
+```
+DELETE /ai-config/providers/{provider_id}
+```
+
+### 11.5 Add Model to Provider
+
+```
+POST /ai-config/providers/{provider_id}/models
+```
+
+**Request Body**
+
+```json
+{
+  "model_name": "gpt-4o-mini",
+  "display_name": "GPT-4o mini",
+  "is_active": true
+}
+```
+
+### 11.6 Delete Model
+
+```
+DELETE /ai-config/models/{model_id}
+```
+
+### 11.7 Get Prompts
 
 ```
 GET /ai-config/prompts
 ```
-Returns AI prompt configurations.
 
-### 11.2 Update Prompts
+Returns all prompt rows from `ai_system_prompts` joined with the selected provider/model (if configured).
+
+**Important behavior:** If any known prompt keys are missing, the API inserts defaults for the missing keys (it does not delete existing ones).
+
+### 11.8 Update Prompt
 
 ```
-PUT /ai-config/prompts
+PUT /ai-config/prompts/{prompt_id}
 ```
-Update AI prompts.
 
+Updates `ai_system_prompts` (title, description, prompt_content, selected_model_id).
+
+**Request Body**
+
+```json
+{
+  "title": "AI3 - Data Extraction",
+  "description": "Extract receipt header + items",
+  "prompt_content": "...",
+  "selected_model_id": 10
+}
+```
+
+### 11.9 Test Provider Connection
+
+```
+POST /ai-config/providers/{provider_id}/test
+```
+
+Tests connectivity for the provider (e.g., OpenAI model listing). Returns `success=true|false`.
+
+### 11.10 Prompt Persistence – Critical Note
+
+Prompt edits made via `/ai-config/prompts/{prompt_id}` are stored in the database. They must not be overwritten by migrations or by repeated “migration replays”.
+
+See:
+- `70_AI_PROMPTS_AND_ROLES.md` → “Prompt Lifecycle”
+- `80_OPERATIONS_RUNBOOK.md` → “Migrations & Prompt Persistence”
 ## 12. Tags Endpoints (`/tags`)
 
 ### 12.1 List Tags

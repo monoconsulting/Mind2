@@ -4,6 +4,8 @@
 
 > This file defines the AI roles used in Mind (AI1–AI6), their responsibilities, and the prompts they use. If AI behavior in code differs from what is written here, this file must be updated.
 >
+> Version: 2025-12-14.1
+>
 > Version: 2025-12-14
 > Source: `backend/src/services/ai_service.py`, `backend/src/services/tasks/ai_pipeline_tasks.py`, `MIND_STATUS_DEFINITIONS.md`
 
@@ -62,15 +64,42 @@ Classify incoming documents to determine their type and route them appropriately
 - **Primary:** OpenAI GPT-4 / GPT-4-turbo
 - **Fallback:** Manual review queue
 
-## 3. AI2 – Expense Classification (Inactive)
+## 3. AI2 – Expense Type Classification (Active)
 
-### 3.1 Status
+AI2 determines whether a receipt is **personal** or **corporate** (expense type). This is critical because it affects:
 
-Currently not active in production pipeline.
+- downstream accounting proposals (AI4)
+- matching logic (receipt ↔ card transactions)
+- validation rules for card metadata
 
-### 3.2 Original Responsibility
+### 3.1 Inputs
 
-Classify expenses as personal or corporate.
+- `file_id`
+- `ocr_text` (from OCR stage)
+- `document_type` (from AI1)
+
+### 3.2 Output Contract
+
+AI2 must return:
+
+- `expense_type`: one of:
+  - `personal`
+  - `corporate`
+
+### 3.3 Persistence
+
+AI2 writes:
+
+- `unified_files.expense_type` = `personal|corporate`
+
+### 3.4 Execution Model
+
+AI2 is executed **inside** the WF1 AI pipeline (`wf1_run_ai_pipeline`) after AI1 and before AI3 (it is not a separate Celery task).
+
+### 3.5 Prompt Key
+
+- **Prompt stored in:** `ai_system_prompts` table (key: `expense_classification`)
+
 
 ## 4. AI3 – Data Extraction
 
@@ -351,6 +380,26 @@ CREATE TABLE ai_llm_model (
 | `accounting_classification` | AI4 | Accounting proposal generation |
 | `credit_card_matching` | AI5 | Credit card transaction matching |
 | `credit_card_invoice_parsing` | AI6 | FirstCard statement parsing |
+
+### 8.5 Prompt Lifecycle (Authoritative Rules)
+
+The system has **two ways** to change prompts:
+
+1. **Runtime update via API/UI** (`PUT /ai-config/prompts`) – updates rows in `ai_system_prompts`.
+2. **Migration seeding** (SQL in `database/migrations/`) – initializes default prompts.
+
+**Hard rule:** Migration seeding must be **idempotent** and must **never overwrite** an existing prompt that was edited via UI/API.
+
+- Allowed: `INSERT IGNORE` for adding new prompt keys.
+- Allowed: `INSERT ... ON DUPLICATE KEY UPDATE` only when updating **metadata fields** (`title`, `description`) without changing `prompt_content`.
+- Forbidden: unconditional `DELETE` on prompt keys that may be edited.
+- Forbidden: unconditional `UPDATE ... SET prompt_content = ...` on an existing `prompt_key`.
+
+### 8.6 Current Implementation Note (Critical)
+
+As of 2025-12-14, the current migration runner replays **all** SQL files at every run and ignores only a subset of idempotency errors. Because some migrations contain `DELETE` / `UPDATE` statements against `ai_system_prompts`, prompt edits made in the UI/API can be lost after a migration run or restart.
+
+Operational impact and mitigation are documented in `80_OPERATIONS_RUNBOOK.md` (see “Migrations & Prompt Persistence”).
 
 ## 9. AI Processing History
 

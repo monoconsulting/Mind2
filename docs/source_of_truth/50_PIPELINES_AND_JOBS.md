@@ -4,7 +4,7 @@
 
 > This file documents all major technical pipelines and scheduled jobs in Mind. It focuses on **what** each pipeline does and **how data flows**.
 >
-> Version: 2025-12-04
+> Version: 2025-12-14.1
 > Source: `docs/WORKFLOWS/*.md`, `backend/src/services/tasks/*.py`
 
 ## 1. Overview of Workflows
@@ -38,7 +38,8 @@ flowchart TD
     WF1 --> OCR[wf1_run_ocr: r_ocr stage]
     OCR --> AI[wf1_run_ai_pipeline]
     AI --> DT[detect_type: AI1 Classification]
-    DT --> AI3[r_ai3: AI3 Data Extraction]
+    DT --> AI2[expense_classification: AI2 Expense Type]
+    AI2 --> AI3[r_ai3: AI3 Data Extraction]
     AI3 --> AI4[r_ai4: AI4 Accounting]
     AI4 --> PERSIST[r_persist: Save data]
     PERSIST --> MATCH[r_queue_match: Queue matching]
@@ -51,6 +52,8 @@ flowchart TD
 
 ### 2.3 Stage Details
 
+> **Note:** AI2 runs *inside* `wf1_run_ai_pipeline` (not as a separate Celery task). It writes `unified_files.expense_type` and the value is included in the AI3 extraction context.
+
 | Stage | Task/Function | Description | Output |
 |-------|---------------|-------------|--------|
 | `src_portal` | `ingest.py` | Portal file upload | File stored |
@@ -59,6 +62,7 @@ flowchart TD
 | `ingest_wf1` | `ingest.py` | Create workflow run | `workflow_runs` row |
 | `r_ocr` | `wf1_run_ocr()` | OCR text extraction | `unified_files.ocr_raw` |
 | `detect_type` | `classify_and_route_receipt_v3()` | AI1: Document classification | Document type |
+| `expense_classification` | `classify_expense_internal()` | AI2: Expense type detection (personal/corporate) | `unified_files.expense_type` |
 | `r_ai3` | `extract_receipt_data_ai3()` | AI3: Data extraction | Amounts, dates, merchant |
 | `r_ai4` | `normalize_receipt_data_ai4()` | AI4: Accounting classification | Account codes, VAT |
 | `r_persist` | Implicit | Save structured data | `unified_files` + `receipt_items` |
@@ -221,7 +225,7 @@ celery-worker-wf2:    # wf2 queue
 | Task | Queue | Workflow | Description |
 |------|-------|----------|-------------|
 | `wf1_run_ocr` | wf1 | WF1 | Receipt OCR |
-| `wf1_run_ai_pipeline` | wf1 | WF1 | AI1-AI4 pipeline |
+| `wf1_run_ai_pipeline` | wf1 | WF1 | AI1-AI4 pipeline (includes AI2 expense type) |
 | `wf1_finalize` | wf1 | WF1 | Complete workflow |
 | `wf2_prepare_pdf_pages` | wf2 | WF2 | Split PDF |
 | `wf2_run_page_ocr` | wf2 | WF2 | Per-page OCR |
