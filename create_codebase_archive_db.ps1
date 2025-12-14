@@ -1,8 +1,9 @@
 # PowerShell script to create codebase archive WITH DATABASE DUMP
 $sourceDir = "E:\projects\Mind2"
 
-# Get current date and time in YYMMDD_HH-MM format
-$timestamp = Get-Date -Format "yyMMdd_HH-mm"
+# Get current date in YYYY-MM-DD format
+$timestamp = Get-Date -Format "yyyy-MM-dd"
+$timestampWithTime = Get-Date -Format "yyMMdd_HH-mm"
 
 # Create backup folders if they don't exist
 $codebaseBackupDir = "$sourceDir\.codebasebackup"
@@ -14,10 +15,10 @@ if (-not (Test-Path $dbBackupDir)) {
     New-Item -ItemType Directory -Path $dbBackupDir -Force | Out-Null
 }
 
-$zipFile = "$codebaseBackupDir\codebase_$timestamp.zip"
-$dumpFile = "$dbBackupDir\database_dump_$timestamp.sql"
+$zipFile = "$codebaseBackupDir\codebase_$timestampWithTime.zip"
+$dumpFile = "$dbBackupDir\mind_db_dump_$timestamp.sql"
 
-Write-Host "Creating codebase archive WITH DATABASE: codebase_$timestamp.zip" -ForegroundColor Green
+Write-Host "Creating codebase archive WITH DATABASE: codebase_$timestampWithTime.zip" -ForegroundColor Green
 Write-Host ""
 
 # Read database configuration from .env file
@@ -43,10 +44,11 @@ if ($dbName -and $dbUser -and $dbPass) {
     $containerStatus = docker inspect -f '{{.State.Running}}' mind2-mysql-1 2>$null
 
     if ($containerStatus -ne "true") {
-        Write-Host "Warning: MySQL container (mind2-mysql-1) is not running!" -ForegroundColor Red
+        Write-Host "ERROR: MySQL container (mind2-mysql-1) is not running!" -ForegroundColor Red
         Write-Host "Start Docker services first: mind_docker_compose_up.bat" -ForegroundColor Yellow
-        Write-Host "Continuing without database dump..." -ForegroundColor Yellow
         Write-Host ""
+        Write-Host "ABORTED: Database dump is required for backup." -ForegroundColor Red
+        exit 1
     } else {
         Write-Host "Creating MySQL dump..." -ForegroundColor Yellow
 
@@ -60,20 +62,23 @@ if ($dbName -and $dbUser -and $dbPass) {
                 $dumpSize = (Get-Item $dumpFile).Length / 1MB
                 Write-Host "Database dump created: $([math]::Round($dumpSize, 2)) MB" -ForegroundColor Green
             } else {
-                Write-Host "Warning: Database dump failed or is empty. Continuing without dump..." -ForegroundColor Red
+                Write-Host "ERROR: Database dump failed or is empty!" -ForegroundColor Red
                 if (Test-Path $dumpFile) { Remove-Item $dumpFile -Force }
+                Write-Host "ABORTED: Database dump is required for backup." -ForegroundColor Red
+                exit 1
             }
         } catch {
-            Write-Host "Warning: Could not create database dump. Error: $_" -ForegroundColor Red
-            Write-Host "Continuing without dump..." -ForegroundColor Yellow
+            Write-Host "ERROR: Could not create database dump. Error: $_" -ForegroundColor Red
             if (Test-Path $dumpFile) { Remove-Item $dumpFile -Force }
+            Write-Host "ABORTED: Database dump is required for backup." -ForegroundColor Red
+            exit 1
         }
         Write-Host ""
     }
 } else {
-    Write-Host "Warning: Could not read database configuration from .env file" -ForegroundColor Red
-    Write-Host "Continuing without database dump..." -ForegroundColor Yellow
-    Write-Host ""
+    Write-Host "ERROR: Could not read database configuration from .env file" -ForegroundColor Red
+    Write-Host "ABORTED: Database dump is required for backup." -ForegroundColor Red
+    exit 1
 }
 
 Write-Host "Collecting relevant code files..." -ForegroundColor Yellow
@@ -212,13 +217,9 @@ Get-ChildItem -Path $sourceDir -Recurse -Force -ErrorAction SilentlyContinue | F
 Write-Host "Total files copied: $fileCount" -ForegroundColor Green
 Write-Host ""
 
-# Copy database dump to temp directory if it exists
-$hasDump = $false
-if (Test-Path $dumpFile) {
-    Write-Host "Adding database dump to archive..." -ForegroundColor Cyan
-    Copy-Item $dumpFile -Destination "$tempDir\database_dump.sql" -Force
-    $hasDump = $true
-}
+# Copy database dump to temp directory (required)
+Write-Host "Adding database dump to archive..." -ForegroundColor Cyan
+Copy-Item $dumpFile -Destination "$tempDir\mind_db_dump.sql" -Force
 
 Write-Host "Creating zip archive..." -ForegroundColor Cyan
 
@@ -233,22 +234,33 @@ Compress-Archive -Path "$tempDir\*" -DestinationPath $zipFile -Force
 Write-Host "Cleaning up temporary files..." -ForegroundColor Cyan
 Remove-Item -Path $tempDir -Recurse -Force
 
+# Verify that database dump is included in the zip
+Write-Host "Verifying archive contents..." -ForegroundColor Cyan
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [System.IO.Compression.ZipFile]::OpenRead($zipFile)
+$dumpInZip = $zip.Entries | Where-Object { $_.FullName -eq "mind_db_dump.sql" }
+$zip.Dispose()
+
+if (-not $dumpInZip) {
+    Write-Host ""
+    Write-Host "ERROR: Database dump (mind_db_dump.sql) is NOT in the zip file!" -ForegroundColor Red
+    Write-Host "ABORTED: Backup verification failed." -ForegroundColor Red
+    Remove-Item $zipFile -Force
+    exit 1
+}
+
 Write-Host ""
-Write-Host "Archive created successfully!" -ForegroundColor Green
+Write-Host "Archive created and verified successfully!" -ForegroundColor Green
 Write-Host ""
 Write-Host "Locations:" -ForegroundColor Yellow
 Write-Host "  Codebase: $zipFile" -ForegroundColor White
 $fileSize = (Get-Item $zipFile).Length / 1MB
 Write-Host ("  Size: {0:N2} MB" -f $fileSize) -ForegroundColor Gray
-if ($hasDump) {
-    Write-Host "  Database: $dumpFile" -ForegroundColor White
-    $dumpSize = (Get-Item $dumpFile).Length / 1MB
-    Write-Host ("  Size: {0:N2} MB" -f $dumpSize) -ForegroundColor Gray
-}
+Write-Host "  Database: $dumpFile" -ForegroundColor White
+$dumpSize = (Get-Item $dumpFile).Length / 1MB
+Write-Host ("  Size: {0:N2} MB" -f $dumpSize) -ForegroundColor Gray
 Write-Host ""
 Write-Host "Contents of zip:" -ForegroundColor Yellow
 Write-Host "  - Complete codebase (excluding node_modules, cache, media files)" -ForegroundColor White
-if ($hasDump) {
-    Write-Host "  - Full MySQL database dump (database_dump.sql)" -ForegroundColor White
-}
+Write-Host "  - Full MySQL database dump (mind_db_dump.sql)" -ForegroundColor White
 Write-Host ""

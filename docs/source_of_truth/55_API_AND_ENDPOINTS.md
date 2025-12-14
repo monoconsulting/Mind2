@@ -221,19 +221,36 @@ Returns paginated list of receipts.
 
 **Query Parameters:**
 - `page`: Page number (default: 1)
-- `per_page`: Items per page (default: 20)
-- `status`: Filter by status
-- `company_id`: Filter by company
-- `creditcard_invoice_id`: Filter by credit card statement
+- `page_size`: Items per page (default: 50, max: 1000)
+- `sort_by`: Sort column (whitelist; default: `created_at`)
+- `sort_order`: `asc` | `desc` (default: `desc`)
+- `ai_status`: Filter by `unified_files.ai_status` (supports negation, e.g. `!completed`)
+- `status`: Alias for `ai_status` (backwards compatibility)
+- `workflow_stage_key`: Filter by latest workflow stage key
+- `workflow_stage_status`: Filter by latest workflow stage status/state
+- `match_status`: e.g. `unmatched`
+- `upload_stage`: Upload/source stage key prefix (e.g. `src_portal`, `src_ftp`)
+- `search`: Broad search across merchant/company, filename, id and status
+- `merchant`: Merchant/company name LIKE filter
+- `orgnr`: Organisation number filter
+- `tags`: Comma-separated ANY-tag filter
+- `from`: Purchase datetime/date lower bound (inclusive)
+- `to`: Purchase datetime/date upper bound (inclusive)
+- `file_type`: Filter by document type (`receipt`, `invoice`, `other`, ...)
+- `expense_type`: Filter by expense type (`personal`, `corporate`)
+- `payment_type`: Filter by payment type (`card`, `swish`, `cash`)
+- `include_credit`: Include credit card statements (`1/true/yes`), default `1` (Process-vyn skickar explicit `include_credit=0`)
 
 **Response:**
 ```json
 {
   "items": [...],
-  "total": 100,
-  "page": 1,
-  "per_page": 20,
-  "pages": 5
+  "meta": {
+    "page": 1,
+    "page_size": 50,
+    "total": 100,
+    "items": 50
+  }
 }
 ```
 
@@ -283,6 +300,39 @@ DELETE /receipts/{id}
 ```
 Soft-deletes a receipt (sets `deleted_at`).
 
+### 6.6 Bulk Update Receipts
+
+```
+PATCH /receipts/bulk
+```
+
+Bulk update fields for a set of receipts (limited to the current page selection in UI).
+
+**Request:**
+```json
+{
+  "ids": ["uuid-1", "uuid-2"],
+  "set": {
+    "file_type": "receipt",
+    "expense_type": "personal",
+    "payment_type": "swish"
+  }
+}
+```
+
+Rules:
+- `ids` must be non-empty (max 1000)
+- `set` must contain at least one field
+- Fields may be set, but not "cleared" (omit the key to leave unchanged)
+
+**Response:**
+```json
+{
+  "updated_count": 2,
+  "not_found_ids": []
+}
+```
+
 ## 7. FirstCard/Reconciliation Endpoints (`/reconciliation/firstcard`)
 
 ### 7.1 Upload Invoice
@@ -315,6 +365,48 @@ Returns statement with header and line items.
 GET /reconciliation/firstcard/statements/{id}/lines
 ```
 Returns transaction lines for a statement.
+
+### 7.10 Get Invoice Detail (Preview + Lines)
+
+```
+GET /reconciliation/firstcard/invoices/{invoice_id}
+```
+
+Returns a detailed invoice payload (metadata, line items, and preview pages).
+
+**Response (high-level):**
+```json
+{
+  "invoice": {
+    "id": "uuid",
+    "status": "imported|matching|matched|partially_matched|completed|failed",
+    "processing_status": "uploaded|ocr_pending|ocr_done|ai_processing|ready_for_matching|matching_completed|completed|failed",
+    "line_counts": { "total": 0, "matched": 0, "unmatched": 0 },
+    "pages": [
+      { "file_id": "uuid", "page_number": 1, "status": "ocr_done", "url": "/ai/api/receipts/<file_id>/image?size=original&quality=high" }
+    ],
+    "metadata": {
+      "pages": [
+        { "file_id": "uuid", "page_number": 1, "status": "ocr_done", "url": "/ai/api/receipts/<file_id>/image?size=original&quality=high" }
+      ]
+    }
+  },
+  "lines": [],
+  "items": []
+}
+```
+
+Notes:
+- `invoice.pages[]` and `invoice.metadata.pages[]` are provided for frontend preview rendering.
+- Each page uses the receipt image endpoint for high-quality rendering.
+
+### 7.11 Get Invoice OCR/Processing Status
+
+```
+GET /reconciliation/firstcard/invoices/{invoice_id}/status
+```
+
+Returns processing status plus OCR progress, including per-page preview URLs.
 
 ### 7.5 Auto-Match
 

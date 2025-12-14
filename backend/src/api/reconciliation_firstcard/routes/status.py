@@ -37,6 +37,18 @@ from services.status_constants import (
 
 logger = logging.getLogger(__name__)
 
+def _build_receipt_image_url(file_id: str) -> str:
+    """Build a high-quality receipt image URL for preview purposes.
+
+    Args:
+        file_id: The unified_files id for a receipt or invoice page image.
+
+    Returns:
+        A relative URL to the receipt image endpoint, using original size and high quality.
+    """
+    return f"/ai/api/receipts/{file_id}/image?size=original&quality=high"
+
+
 # OCR status constants
 _OCR_COMPLETE_STATUSES = {
     AiStatus.OCR_DONE.value,
@@ -45,6 +57,34 @@ _OCR_COMPLETE_STATUSES = {
     "ready",
     "ai_done",
 }
+
+def _page_refs_from_parent(files: list[dict[str, Any]], source_file_id: str) -> list[dict[str, Any]]:
+    """Extract page references from the parent unified_files.other_data.pages.
+
+    This is required when PDF page images are de-duplicated by content hash and therefore
+    may not have `original_file_id = source_file_id`.
+    """
+    parent = next((record for record in files if record.get("id") == source_file_id), None)
+    if not parent:
+        return []
+    other_data = parent.get("other_data") or {}
+    raw_pages = other_data.get("pages")
+    if not isinstance(raw_pages, list):
+        return []
+    refs: list[dict[str, Any]] = []
+    for entry in raw_pages:
+        if not isinstance(entry, dict):
+            continue
+        file_id = entry.get("file_id")
+        page_number = entry.get("page_number")
+        if not file_id or page_number is None:
+            continue
+        try:
+            page_number_int = int(page_number)
+        except Exception:
+            continue
+        refs.append({"file_id": str(file_id), "page_number": page_number_int})
+    return sorted(refs, key=lambda p: int(p.get("page_number") or 0))
 
 
 @recon_bp.get("/reconciliation/firstcard/invoices/<invoice_id>/status")
@@ -59,32 +99,50 @@ def invoice_status(invoice_id: str) -> Any:
     source_file_id = metadata.get("source_file_id") or invoice_id
     files = list_invoice_files(source_file_id)
 
-    page_records: list[dict[str, Any]] = []
-    for record in files:
-        page_number = record["other_data"].get("page_number")
-        if page_number is None and record["id"] == source_file_id:
-            # Single-page uploads reuse the main file without explicit numbering.
-            page_number = 1 if metadata.get("detected_kind") != "pdf" else None
-        if page_number is None:
-            continue
-        page_records.append(
-            {
-                "file_id": record["id"],
-                "page_number": int(page_number),
-                "status": record.get("ai_status") or AiStatus.UPLOADED.value,
-            }
-        )
+    file_by_id = {record.get("id"): record for record in files if record.get("id")}
+    page_refs = _page_refs_from_parent(files, source_file_id)
 
-    if not page_records and files:
-        # Fallback for legacy metadata without page numbers.
-        for idx, record in enumerate(files, 1):
+    page_records: list[dict[str, Any]] = []
+    if page_refs:
+        for ref in page_refs:
+            fid = ref["file_id"]
+            rec = file_by_id.get(fid) or {}
+            page_records.append(
+                {
+                    "file_id": fid,
+                    "page_number": int(ref["page_number"]),
+                    "status": rec.get("ai_status") or AiStatus.UPLOADED.value,
+                    "url": _build_receipt_image_url(fid),
+                }
+            )
+    else:
+        for record in files:
+            page_number = record["other_data"].get("page_number")
+            if page_number is None and record["id"] == source_file_id:
+                # Single-page uploads reuse the main file without explicit numbering.
+                page_number = 1 if metadata.get("detected_kind") != "pdf" else None
+            if page_number is None:
+                continue
             page_records.append(
                 {
                     "file_id": record["id"],
-                    "page_number": idx,
+                    "page_number": int(page_number),
                     "status": record.get("ai_status") or AiStatus.UPLOADED.value,
+                    "url": _build_receipt_image_url(record["id"]),
                 }
             )
+
+        if not page_records and files:
+            # Fallback for legacy metadata without page numbers.
+            for idx, record in enumerate(files, 1):
+                page_records.append(
+                    {
+                        "file_id": record["id"],
+                        "page_number": idx,
+                        "status": record.get("ai_status") or AiStatus.UPLOADED.value,
+                        "url": _build_receipt_image_url(record["id"]),
+                    }
+                )
 
     total_pages = metadata.get("page_count") or len(page_records)
     if total_pages == 0 and page_records:
@@ -211,6 +269,55 @@ def invoice_detail(invoice_id: str) -> Any:
         "unmatched": unmatched_lines,
     }
     metadata["line_counts"] = line_counts
+
+    # Build page preview information for this invoice (used by the frontend preview modal).
+    source_file_id = metadata.get("source_file_id") or invoice_id
+    files = list_invoice_files(source_file_id)
+    file_by_id = {record.get("id"): record for record in files if record.get("id")}
+    page_refs = _page_refs_from_parent(files, source_file_id)
+
+    page_records: list[dict[str, Any]] = []
+    if page_refs:
+        for ref in page_refs:
+            fid = ref["file_id"]
+            rec = file_by_id.get(fid) or {}
+            page_records.append(
+                {
+                    "file_id": fid,
+                    "page_number": int(ref["page_number"]),
+                    "status": rec.get("ai_status") or AiStatus.UPLOADED.value,
+                    "url": _build_receipt_image_url(fid),
+                }
+            )
+    else:
+        for record in files:
+            page_number = (record.get("other_data") or {}).get("page_number")
+            if page_number is None and record.get("id") == source_file_id:
+                page_number = 1 if metadata.get("detected_kind") != "pdf" else None
+            if page_number is None:
+                continue
+            page_records.append(
+                {
+                    "file_id": record["id"],
+                    "page_number": int(page_number),
+                    "status": record.get("ai_status") or AiStatus.UPLOADED.value,
+                    "url": _build_receipt_image_url(record["id"]),
+                }
+            )
+
+        if not page_records and files:
+            for idx, record in enumerate(files, 1):
+                page_records.append(
+                    {
+                        "file_id": record["id"],
+                        "page_number": idx,
+                        "status": record.get("ai_status") or AiStatus.UPLOADED.value,
+                        "url": _build_receipt_image_url(record["id"]),
+                    }
+                )
+
+    page_records = sorted(page_records, key=lambda p: int(p.get("page_number") or 0))
+    metadata["pages"] = page_records
 
     creditcard_main_id = metadata.get("creditcard_main_id")
     card_details: dict[str, Any] | None = None
@@ -351,6 +458,7 @@ def invoice_detail(invoice_id: str) -> Any:
         "uploaded_at": str(uploaded_at) if uploaded_at else None,
         "submitted_by": metadata.get("submitted_by"),
         "line_counts": line_counts,
+        "pages": page_records,
         "invoice_summary": summary_payload,
         "overall_confidence": metadata.get("overall_confidence"),
         "creditcard_main_id": metadata.get("creditcard_main_id"),

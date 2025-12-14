@@ -216,10 +216,32 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
         converted_root = (fs.base / "converted" / file_id).resolve()
         converted_root.mkdir(parents=True, exist_ok=True)
 
-        # Convert PDF to PNG pages
+        # Convert PDF to PNG pages (configurable DPI + deterministic fallback ladder).
         conversion_started = time.perf_counter()
-        pages = pdf_to_png_pages(data, converted_root, file_id, dpi=300)
+        try:
+            pdf_dpi = int(os.getenv("OCR_PDF_DPI", "300") or "300")
+        except Exception:
+            pdf_dpi = 300
+
+        dpi_candidates = [pdf_dpi, 300, 250, 200, 150]
+        seen: set[int] = set()
+        pages = []
+        last_exc: Exception | None = None
+        for dpi_candidate in dpi_candidates:
+            if dpi_candidate in seen or dpi_candidate <= 0:
+                continue
+            seen.add(dpi_candidate)
+            try:
+                pages = pdf_to_png_pages(data, converted_root, file_id, dpi=dpi_candidate)
+                if pages:
+                    pdf_dpi = dpi_candidate
+                    break
+            except Exception as exc:
+                last_exc = exc
+
         if not pages:
+            if last_exc is not None:
+                raise last_exc
             raise RuntimeError("PDF conversion resulted in no pages.")
 
         page_refs: list[dict[str, Any]] = []
@@ -328,7 +350,7 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
             ),
             processing_time_ms=duration_ms,
             provider="pymupdf",
-            model_name="fitz-dpi-300",
+            model_name=f"fitz-dpi-{pdf_dpi}",
         )
 
         # Update the parent PDF unified_file with page info
@@ -391,7 +413,7 @@ def wf2_prepare_pdf_pages(workflow_run_id: int) -> int:
             error_message=str(e),
             processing_time_ms=duration_ms,
             provider="pymupdf",
-            model_name="fitz-dpi-300",
+            model_name=f"fitz-dpi-{pdf_dpi if 'pdf_dpi' in locals() else 300}",
         )
         mark_stage(workflow_run_id, "prepare_pages", "failed", message=str(e), end=True)
         raise

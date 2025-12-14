@@ -4,7 +4,7 @@
 
 > This file defines the AI roles used in Mind (AI1–AI6), their responsibilities, and the prompts they use. If AI behavior in code differs from what is written here, this file must be updated.
 >
-> Version: 2025-12-04
+> Version: 2025-12-14
 > Source: `backend/src/services/ai_service.py`, `backend/src/services/tasks/ai_pipeline_tasks.py`, `MIND_STATUS_DEFINITIONS.md`
 
 ## 1. Overview
@@ -140,9 +140,17 @@ Generate accounting proposals according to Swedish BAS 2025 chart of accounts.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `extracted_data` | object | Yes | From AI3 |
-| `company_id` | uuid | Yes | Company context |
-| `bas_kontoplan` | object | No | Account mappings |
+| `receipt_id` | string | Yes | File ID from unified_files |
+| `gross_amount` | decimal | Yes | Total including VAT |
+| `net_amount` | decimal | No | Total excluding VAT |
+| `vat_amount` | decimal | No | VAT amount |
+| `vendor_name` | string | No | Merchant name |
+| `receipt_items` | array | Yes | Line items from receipt_items table |
+| `document_type` | string | Yes | From AI1 |
+| `expense_type` | string | Yes | Expense category |
+| `chart_of_accounts` | array | Yes | BAS 2025 accounts (code + name) |
+
+> **Note:** `chart_of_accounts` is loaded from the `chart_of_accounts` table and passed to LLM to ensure valid account codes are used.
 
 ### 5.4 Output Contract
 
@@ -155,15 +163,27 @@ Generate accounting proposals according to Swedish BAS 2025 chart of accounts.
 
 ```json
 {
+  "receipt_id": "abc-123",
+  "item_id": 42,
   "account_code": "4010",
-  "account_name": "Kontorsmaterial",
   "debit": 100.00,
   "credit": 0.00,
-  "vat_code": "I25",
-  "description": "string",
-  "confidence": 0.95
+  "vat_rate": 25.00,
+  "notes": "Office supplies"
 }
 ```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `receipt_id` | string | Yes | References unified_files.id |
+| `item_id` | int | No | References receipt_items.id (null for settlement lines) |
+| `account_code` | string | Yes | BAS 2025 account code |
+| `debit` | decimal | Yes | Debit amount (0 if credit entry) |
+| `credit` | decimal | Yes | Credit amount (0 if debit entry) |
+| `vat_rate` | decimal | No | VAT percentage (0-100) |
+| `notes` | string | No | Entry description (max 255 chars) |
+
+> **Note:** Settlement/balancing lines (e.g., 2440 Leverantörsskulder) have `item_id: null` as they don't correspond to specific receipt line items.
 
 ### 5.6 VAT Codes
 

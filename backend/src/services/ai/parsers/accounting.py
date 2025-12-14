@@ -92,10 +92,11 @@ def _build_accounting_proposal(
             f"receipt_id mismatch (expected {expected_receipt_id}, got {receipt_id})"
         )
 
+    # item_id is optional - settlement/balancing lines may have null item_id
     raw_item_id = entry.get("item_id")
-    if raw_item_id is None:
-        raise AccountingProposalValidationError(f"{context}.item_id is missing")
-    item_id = _coerce_item_id(raw_item_id, f"{context}.item_id")
+    item_id: Optional[int] = None
+    if raw_item_id is not None:
+        item_id = _coerce_item_id(raw_item_id, f"{context}.item_id")
 
     account_code = _extract_account_code(entry)
     debit_raw = _first_present(entry, DEBIT_KEYS, "debit")
