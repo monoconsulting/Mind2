@@ -898,7 +898,10 @@ def list_receipts() -> Any:
     q_from = request.args.get("from")
     q_to = request.args.get("to")
     q_file_type = request.args.get("file_type")
-    include_credit = request.args.get("include_credit", "").lower() in {"1", "true", "yes"}
+    q_expense_type = request.args.get("expense_type")
+    q_payment_type = request.args.get("payment_type")
+    include_credit_raw = request.args.get("include_credit")
+    include_credit = True if include_credit_raw is None else str(include_credit_raw).lower() in {"1", "true", "yes"}
 
     # Simple pagination
     try:
@@ -926,6 +929,7 @@ def list_receipts() -> Any:
         "file_type": "u.file_type",
         "expense_type": "u.expense_type",
         "payment_type": "u.payment_type",
+        "credit_card_last_4_digits": "u.credit_card_last_4_digits",
     }
     sort_by = request.args.get("sort_by", "created_at")
     sort_order = request.args.get("sort_order", "desc").lower()
@@ -976,6 +980,12 @@ def list_receipts() -> Any:
             if q_file_type:
                 where.append("u.file_type = %s")
                 params.append(q_file_type)
+            if q_expense_type:
+                where.append("u.expense_type = %s")
+                params.append(q_expense_type)
+            if q_payment_type:
+                where.append("u.payment_type = %s")
+                params.append(q_payment_type)
             if q_tags:
                 # Simple ANY tag filter (comma-separated)
                 tag_list = [t.strip() for t in q_tags.split(",") if t.strip()]
@@ -1040,21 +1050,27 @@ def list_receipts() -> Any:
                 where.append("(LOWER(u.file_type) <> 'pdf_page')")
 
             if q_upload_stage:
-                # Treat upload stage as source channel or initial stage key (src_portal, src_ftp, etc.)
+                # Treat upload stage as source channel or initial stage key (src_portal, src_ftp, etc.).
+                # Backwards compatible: older rows may have source_channel='ftp' while UI sends upload_stage='src_ftp'.
+                stage_patterns: list[str] = [f"{q_upload_stage}%"]
+                if q_upload_stage.strip().lower() == "src_ftp":
+                    stage_patterns.append("ftp%")
+                source_clause = " OR ".join(["wr.source_channel LIKE %s"] * len(stage_patterns))
+                stage_clause = " OR ".join(["wsr2.stage_key LIKE %s"] * len(stage_patterns))
                 where.append(
-                    """u.id IN (
+                    f"""u.id IN (
                         SELECT wr.file_id
                         FROM workflow_runs wr
-                        WHERE wr.source_channel LIKE %s
+                        WHERE {source_clause}
                         UNION
                         SELECT wr2.file_id
                         FROM workflow_runs wr2
                         JOIN workflow_stage_runs wsr2 ON wsr2.workflow_run_id = wr2.id
-                        WHERE wsr2.stage_key LIKE %s
+                        WHERE {stage_clause}
                     )"""
                 )
-                like_stage = f"{q_upload_stage}%"
-                params.extend([like_stage, like_stage])
+                params.extend(stage_patterns)
+                params.extend(stage_patterns)
 
             where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
@@ -1239,6 +1255,99 @@ def list_receipts() -> Any:
     meta["total"] = int(total)
     meta["items"] = len(items)
     return jsonify({"items": items, "meta": meta}), 200
+
+
+@receipts_bp.route("/receipts/bulk", methods=["PATCH"])
+def bulk_update_receipts() -> Any:
+    if db_cursor is None:
+        return jsonify({"error": "Database not available"}), 503
+
+    payload = request.get_json(silent=True) or {}
+    ids = payload.get("ids")
+    patch = payload.get("set")
+
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "ids must be a non-empty list"}), 400
+    if len(ids) > 1000:
+        return jsonify({"error": "ids length must be <= 1000"}), 400
+
+    normalised_ids: list[str] = []
+    seen: set[str] = set()
+    for raw in ids:
+        if not isinstance(raw, str):
+            continue
+        rid = raw.strip()
+        if not rid or rid in seen:
+            continue
+        seen.add(rid)
+        normalised_ids.append(rid)
+
+    if not normalised_ids:
+        return jsonify({"error": "ids must contain at least one valid id"}), 400
+
+    if not isinstance(patch, dict):
+        return jsonify({"error": "set must be an object"}), 400
+
+    allowed_file_types = {"receipt", "invoice", "other"}
+    allowed_expense_types = {"personal", "corporate"}
+    allowed_payment_types = {"card", "swish", "cash"}
+
+    file_type = patch.get("file_type")
+    expense_type = patch.get("expense_type")
+    payment_type = patch.get("payment_type")
+
+    fields: list[str] = []
+    values: list[Any] = []
+
+    if isinstance(file_type, str) and file_type.strip():
+        file_type = file_type.strip().lower()
+        if file_type not in allowed_file_types:
+            return jsonify({"error": f"invalid file_type: {file_type}"}), 400
+        fields.append("file_type=%s")
+        values.append(file_type)
+
+    if isinstance(expense_type, str) and expense_type.strip():
+        expense_type = expense_type.strip().lower()
+        if expense_type not in allowed_expense_types:
+            return jsonify({"error": f"invalid expense_type: {expense_type}"}), 400
+        fields.append("expense_type=%s")
+        values.append(expense_type)
+
+    if isinstance(payment_type, str) and payment_type.strip():
+        payment_type = payment_type.strip().lower()
+        if payment_type not in allowed_payment_types:
+            return jsonify({"error": f"invalid payment_type: {payment_type}"}), 400
+        fields.append("payment_type=%s")
+        values.append(payment_type)
+
+    if not fields:
+        return jsonify({"error": "set must include at least one field to update"}), 400
+
+    placeholders = ",".join(["%s"] * len(normalised_ids))
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                f"SELECT id FROM unified_files WHERE deleted_at IS NULL AND id IN ({placeholders})",
+                tuple(normalised_ids),
+            )
+            existing = {row[0] for row in (cur.fetchall() or [])}
+
+            sql = (
+                "UPDATE unified_files SET "
+                + ", ".join(fields)
+                + ", updated_at=NOW() "
+                + f"WHERE deleted_at IS NULL AND id IN ({placeholders})"
+            )
+            cur.execute(sql, tuple(values + normalised_ids))
+            updated_count = int(cur.rowcount or 0)
+
+        not_found_ids = [rid for rid in normalised_ids if rid not in existing]
+        return jsonify({"updated_count": updated_count, "not_found_ids": not_found_ids}), 200
+    except Exception as exc:
+        if _is_lock_timeout(exc):
+            raise
+        logger.error("Bulk update failed: %s", exc)
+        return jsonify({"error": "bulk update failed"}), 500
 
 
 @receipts_bp.get("/receipts/<rid>")

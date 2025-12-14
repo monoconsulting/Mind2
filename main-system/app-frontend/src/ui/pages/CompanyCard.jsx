@@ -14,6 +14,7 @@ import {
   FiPercent,
 } from 'react-icons/fi'
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal'
+import DocumentPreviewModal from '../components/DocumentPreviewModal'
 import { api } from '../api'
 
 const MOJIBAKE_PATTERN = /\u00c3[\x80-\xBF]/;
@@ -414,6 +415,8 @@ export default function CompanyCard() {
   const [matchingDocumentId, setMatchingDocumentId] = React.useState(null)
 
   const [selectedDocumentId, setSelectedDocumentId] = React.useState(null)
+  const [previewOpen, setPreviewOpen] = React.useState(false)
+  const [previewInvoiceId, setPreviewInvoiceId] = React.useState(null)
   const selectedDocumentIdRef = React.useRef(null)
   const [selectedDocument, setSelectedDocument] = React.useState(null)
   const [documentLines, setDocumentLines] = React.useState([])
@@ -1902,6 +1905,23 @@ const renderStatementTable = () => {
                     >
                       Visa logg
                     </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm ml-2"
+                      onMouseDown={(event) => {
+                        event.stopPropagation()
+                        setPreviewInvoiceId(statement.id)
+                        setPreviewOpen(true)
+                      }}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setPreviewInvoiceId(statement.id)
+                        setPreviewOpen(true)
+                      }}
+                    >
+                      <FiEye className="mr-1" />
+                      Förhandsgranska
+                    </button>
                   </td>
                   <td className="px-4 py-3 text-center">
                     {hasUnmatchedRows && (
@@ -2175,6 +2195,12 @@ const renderStatementTable = () => {
       {candidatesContent}
       {renderLogModal()}
 
+      <DocumentPreviewModal
+        open={previewOpen}
+        documentId={previewInvoiceId}
+        onClose={() => setPreviewOpen(false)}
+      />
+
       <InvoiceUploadModal
         open={uploadModalOpen}
         onClose={() => setUploadModalOpen(false)}
@@ -2402,8 +2428,3 @@ function InvoiceUploadModal({ open, onClose, onUploaded }) {
     </div>
   )
 }
-
-
-
-
-

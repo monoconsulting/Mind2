@@ -20,6 +20,7 @@ from .common import (
     _persist_credit_card_match,
     db_cursor,
     create_unified_file,
+    get_unified_file_by_hash,
     log_event,
     parse_credit_card_statement,
     pdf_to_png_pages,
@@ -149,8 +150,30 @@ def _ensure_creditcard_pages_and_ocr(
 
         conversion_started = time.perf_counter()
         try:
-            pages = pdf_to_png_pages(data, converted_root, file_id, dpi=300)
+            try:
+                pdf_dpi = int(os.getenv("OCR_PDF_DPI", "300") or "300")
+            except Exception:
+                pdf_dpi = 300
+
+            dpi_candidates = [pdf_dpi, 300, 250, 200, 150]
+            seen: set[int] = set()
+            pages = []
+            last_exc: Exception | None = None
+            for dpi_candidate in dpi_candidates:
+                if dpi_candidate in seen or dpi_candidate <= 0:
+                    continue
+                seen.add(dpi_candidate)
+                try:
+                    pages = pdf_to_png_pages(data, converted_root, file_id, dpi=dpi_candidate)
+                    if pages:
+                        pdf_dpi = dpi_candidate
+                        break
+                except Exception as exc:
+                    last_exc = exc
+
             if not pages:
+                if last_exc is not None:
+                    raise last_exc
                 raise RuntimeError("PDF conversion resulted in no pages.")
 
             safe_filename = original_filename or original_path.name
@@ -166,6 +189,7 @@ def _ensure_creditcard_pages_and_ocr(
                         create_workflow=False,
                         content_hash=page_hash,
                         submitted_by="workflow",
+                        source=other_data.get("source"),
                         original_filename=f"{safe_filename}-page-{page_number:04d}.png",
                         initial_ai_status=AiStatus.UPLOADED.value,
                         mime_type="image/png",
@@ -187,15 +211,10 @@ def _ensure_creditcard_pages_and_ocr(
                         file_id=file_id,
                         page_number=page_number,
                     )
-                    # If a page already exists, reuse it by locating the ID
-                    with db_cursor() as cur:
-                        cur.execute(
-                            "SELECT id, other_data FROM unified_files WHERE original_file_id=%s AND other_data LIKE %s",
-                            (file_id, f'%\"page_number\": {page_number}%'),
-                        )
-                        row = cur.fetchone()
-                    if row:
-                        page_id = row[0]
+                    existing = get_unified_file_by_hash(page_hash)
+                    if not existing:
+                        raise
+                    page_id = existing.id
 
                 stored_page_name = f"page-{page_number:04d}.png"
                 fs.adopt(page_id, stored_page_name, page.path)
@@ -226,7 +245,7 @@ def _ensure_creditcard_pages_and_ocr(
                 error_message=error_msg,
                 processing_time_ms=duration_ms,
                 provider="pymupdf",
-                model_name="fitz-dpi-300",
+                model_name=f"fitz-dpi-{pdf_dpi if 'pdf_dpi' in locals() else 300}",
             )
             raise
 
@@ -251,7 +270,7 @@ def _ensure_creditcard_pages_and_ocr(
             ),
             processing_time_ms=duration_ms,
             provider="pymupdf",
-            model_name="fitz-dpi-300",
+            model_name=f"fitz-dpi-{pdf_dpi if 'pdf_dpi' in locals() else 300}",
         )
 
         logger.info(

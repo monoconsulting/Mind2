@@ -137,7 +137,8 @@ def _first_present(data: Dict[str, Any], keys: Iterable[str], field: str) -> Any
     raise AccountingProposalValidationError(f"{field} is missing")
 
 
-def _extract_account_code(entry: Dict[str, Any]) -> str:
+def _extract_account_code(entry: Dict[str, Any]) -> Optional[str]:
+    """Extract account_code from entry. Returns None if not found (for filtering)."""
     for key in ACCOUNT_CODE_KEYS:
         value = entry.get(key)
         if value is None:
@@ -148,7 +149,7 @@ def _extract_account_code(entry: Dict[str, Any]) -> str:
         if len(code) > 32:
             raise AccountingProposalValidationError("account_code exceeds 32 characters")
         return code
-    raise AccountingProposalValidationError("account_code is missing")
+    return None  # Let caller decide whether to skip or raise
 
 
 def _coerce_item_id(raw_value: Any, context: str) -> int:
@@ -191,7 +192,8 @@ def _build_accounting_proposal(
     expected_receipt_id: str,
     *,
     context: str,
-) -> AccountingProposal:
+) -> Optional[AccountingProposal]:
+    """Build an AccountingProposal from entry. Returns None if account_code is missing."""
     receipt_id = str(entry.get("receipt_id") or "").strip()
     if not receipt_id:
         receipt_id = expected_receipt_id
@@ -200,12 +202,22 @@ def _build_accounting_proposal(
             f"receipt_id mismatch (expected {expected_receipt_id}, got {receipt_id})"
         )
 
+    # item_id is optional - settlement/balancing lines may have null item_id
     raw_item_id = entry.get("item_id")
-    if raw_item_id is None:
-        raise AccountingProposalValidationError(f"{context}.item_id is missing")
-    item_id = _coerce_item_id(raw_item_id, f"{context}.item_id")
+    item_id: Optional[int] = None
+    if raw_item_id is not None:
+        item_id = _coerce_item_id(raw_item_id, f"{context}.item_id")
 
     account_code = _extract_account_code(entry)
+    if account_code is None:
+        # LLM couldn't determine account - skip this entry with warning
+        notes = entry.get("notes") or ""
+        logger.warning(
+            "AI4 skipped proposal %s: account_code is null. Notes: %s",
+            context, notes[:100]
+        )
+        return None
+
     debit_raw = _first_present(entry, DEBIT_KEYS, "debit")
     credit_raw = _first_present(entry, CREDIT_KEYS, "credit")
     debit = _ensure_decimal(debit_raw, "debit")
@@ -312,11 +324,19 @@ def parse_accounting_proposals(payload: Dict[str, Any], fallback_receipt_id: str
         )
 
     parsed: List[AccountingProposal] = []
+    skipped = 0
     for entry, context in raw_entries:
-        parsed.append(_build_accounting_proposal(entry, receipt_id, context=context))
+        proposal = _build_accounting_proposal(entry, receipt_id, context=context)
+        if proposal is not None:
+            parsed.append(proposal)
+        else:
+            skipped += 1
+
+    if skipped > 0:
+        logger.info("AI4 skipped %d proposals with missing account_code", skipped)
 
     if not parsed:
-        raise AccountingProposalValidationError("No accounting proposals generated from payload")
+        raise AccountingProposalValidationError("No valid accounting proposals generated from payload")
 
     return parsed
 
@@ -985,6 +1005,21 @@ class AIService:
     # ------------------------------------------------------------------
     # AI4 - Accounting classification
     # ------------------------------------------------------------------
+    def _format_chart_of_accounts(self, chart_of_accounts: List[Tuple[Any, ...]]) -> List[Dict[str, Any]]:
+        """Format chart_of_accounts for LLM consumption.
+
+        Input tuples: (sub_account, sub_account_description)
+        Output: Compact list of account objects for LLM.
+        """
+        formatted = []
+        for row in chart_of_accounts:
+            if len(row) >= 2 and row[0]:  # Must have sub_account
+                formatted.append({
+                    "code": str(row[0]),
+                    "name": str(row[1]) if row[1] else "",
+                })
+        return formatted
+
     def run_ai4_accounting_classification(
         self,
         request: AccountingClassificationRequest,
@@ -1022,6 +1057,14 @@ class AIService:
             request.net_amount
         )
 
+        # Format chart_of_accounts for LLM
+        formatted_accounts = self._format_chart_of_accounts(chart_of_accounts)
+        logger.info(
+            "AI4 chart_of_accounts for %s: %d accounts available",
+            request.file_id,
+            len(formatted_accounts)
+        )
+
         llm_result = self._provider_generate(
             "accounting_classification",
             {
@@ -1033,6 +1076,7 @@ class AIService:
                 "receipt_items": items_data,
                 "document_type": request.document_type,
                 "expense_type": request.expense_type,
+                "chart_of_accounts": formatted_accounts,
             },
             file_id=request.file_id,
         )
