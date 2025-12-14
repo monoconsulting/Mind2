@@ -1,5 +1,7 @@
 # ✅ 1. SYSTEM INSTRUCTIONS (GLOBALT BASELINE-DOKUMENT)
 
+> Version: 2025-12-14.1
+
 Denna fil gäller alla agenter och behövs i rotmappen. Namnförslag:
 
 ### **`/agents/SYSTEM_GOVERNANCE.md`**
@@ -17,6 +19,7 @@ Alla agenter (1, 2 och 3) ska följa dessa regler:
 1. Source of Truth (SoT) är den enda sanningen.
 2. Alla förändringar i arkitektur, schema, pipelines eller statusar måste dokumenteras i SoT innan eller samtidigt som kodändringar görs.
 3. Migreringar, kod och SoT får aldrig vara i konflikt – i konflikt fall ska SoT uppdateras först.
+4. Migrations får aldrig skriva över eller radera användardata (t.ex. prompt-innehåll i `ai_system_prompts`) vid omkörning.
 
 ### **B. Strukturkrav**
 
@@ -222,6 +225,7 @@ Varje dag ska du:
    - ändring i pipeline
    - nya endpoints
    - ändrade prompts
+   - destruktiva SQL-statement i migrations (DELETE/UPDATE mot `ai_system_prompts`, `ai_processing_history`, etc.)
 3. Jämföra mot samtliga SoT-filer:
    - 30_STATUS_MODEL.md
    - 40_DATA_MODEL.md

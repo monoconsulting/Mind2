@@ -4,7 +4,7 @@
 
 > This file describes how we ensure that Mind remains reliable as it evolves.
 >
-> Version: 2025-12-04
+> Version: 2025-12-14.1
 > Source: `docs/TEST_RULES.md`, `playwright.config.ts`, `playwright.dev.config.ts`
 
 ## 1. Test Types
@@ -174,6 +174,31 @@ SELECT wsr.* FROM workflow_stage_runs wsr
 LEFT JOIN workflow_runs wr ON wr.id = wsr.workflow_run_id
 WHERE wr.id IS NULL;
 ```
+
+### 6.4 Migration Idempotency and Data-Safety Tests (CRITICAL)
+
+Because Mind relies on SQL migrations and also stores **user-editable** prompt content in the database, the system must prove:
+
+1. Running the migration runner multiple times does not delete or overwrite user data.
+2. Prompt edits performed via API/UI persist across restarts and migration runs.
+
+#### 6.4.1 Required Automated Checks
+
+- **No destructive statements on user-editable tables** without explicit guards:
+  - Flag `DELETE FROM ai_system_prompts` (or similar) as test failure.
+  - Flag `UPDATE ai_system_prompts SET prompt_content = ...` (unconditional) as test failure.
+- **Prompt persistence E2E:**
+  1. Update a prompt via `PUT /ai-config/prompts/{id}` (change a unique marker string).
+  2. Trigger migration runner (or restart) in test environment.
+  3. Verify the marker string remains present in `ai_system_prompts.prompt_content`.
+
+#### 6.4.2 Manual Verification Checklist (when automated tests are not available)
+
+- Export `ai_system_prompts` before migration
+- Apply migrations
+- Re-export `ai_system_prompts` and diff:
+  - `prompt_content` must be unchanged unless the change was intentional and versioned
+
 
 ## 7. AI Testing
 
