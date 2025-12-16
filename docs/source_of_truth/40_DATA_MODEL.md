@@ -4,7 +4,7 @@
 
 > This file describes the canonical database schema used by Mind at **table + column level**.
 >
-> Version: 2025-12-14.1
+> Version: 2025-12-14.2
 > Schema snapshot source: `mind_db_dump.sql` (generated from MySQL) + `database/migrations/` (for change history)
 
 ## 1. Scope and Rules
@@ -15,7 +15,7 @@
 
 ## 2. Table Inventory (Canonical)
 
-Mind currently uses **27** tables (see detailed definitions below):
+Mind currently uses **28** tables + **2** views (see detailed definitions below):
 
 - `companies`
 - `unified_files`
@@ -32,6 +32,7 @@ Mind currently uses **27** tables (see detailed definitions below):
 - `ai_system_prompts`
 - `ai_llm`
 - `ai_llm_model`
+- `schema_migrations`
 - `chart_of_accounts`
 - `tags`
 - `tag_categories`
@@ -40,6 +41,7 @@ Mind currently uses **27** tables (see detailed definitions below):
 - `file_locations`
 - `file_suffix`
 - plus backup/helper tables used for FC cleanup (`*_fc_backup`) and workflow tracking (`workflow_runs`, `workflow_stage_runs`).
+- views used for workflow UI summaries (`v_workflow_overview`, `v_workflow_stages`).
 
 ## 3. Table Definitions
 
@@ -127,12 +129,14 @@ Mind currently uses **27** tables (see detailed definitions below):
 | `status` | `varchar(32)` | NO |  |  |
 | `created_at` | `timestamp` | YES | `CURRENT_TIMESTAMP` |  |
 | `ai_stage_name` | `varchar(64)` | YES | `NULL` | Human-readable AI stage name (AI1-DocumentClassification, AI2-ExpenseClassification, etc.) |
-| `log_text` | `text` | YES |  | Detailed log message explaining what happened in this stage |
+| `log_text` | `text` | YES |  | Short human-readable summary of the step (never includes prompt or response payloads) |
 | `error_message` | `text` | YES |  | Error message if the stage failed |
 | `confidence` | `float` | YES | `NULL` | Confidence score for this AI stage result |
 | `processing_time_ms` | `int` | YES | `NULL` | Processing time in milliseconds |
 | `provider` | `varchar(64)` | YES | `NULL` | AI provider used (rule-based, openai, azure, etc.) |
 | `model_name` | `varchar(128)` | YES | `NULL` | Model name used for this stage |
+| `prompt_text` | `longtext` | YES | `NULL` | Full prompt text used for this AI call (snapshot) |
+| `response_text` | `longtext` | YES | `NULL` | Full raw AI response text returned by the provider (snapshot) |
 
 **Indexes / Keys**
 
@@ -593,6 +597,16 @@ Mind currently uses **27** tables (see detailed definitions below):
 - `KEY `idx_unified_invoice_match` (`invoice_match_status`)`
 - `KEY `idx_unified_files_matched_invoice` (`matched_invoice_id`)`
 
+### `schema_migrations`
+
+Migration ledger used to ensure each SQL file in `database/migrations/` is applied only once per database.
+
+| Column | Type | Nullable | Default | Comment |
+|---|---|---|---|---|
+| `filename` | `varchar(255)` | NO |  | Primary key: migration filename. Reserved marker value: `__baseline__` (baseline completed). |
+| `checksum` | `char(64)` | YES | `NULL` | SHA-256 checksum of the migration file bytes (hex). |
+| `applied_at` | `datetime` | NO |  | Timestamp when the migration was marked applied. |
+
 ### `workflow_runs`
 
 | Column | Type | Nullable | Default | Comment |
@@ -660,4 +674,3 @@ The following `unified_files` fields are treated as **authoritative** for receip
 Prompts are stored in `ai_system_prompts`. The **prompt_key** is stable and must not be changed without a full migration plan.
 
 See `70_AI_PROMPTS_AND_ROLES.md` for prompt keys and behavioral contracts.
-

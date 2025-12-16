@@ -4,7 +4,7 @@
 
 > This file defines the AI roles used in Mind (AI1–AI6), their responsibilities, and the prompts they use. If AI behavior in code differs from what is written here, this file must be updated.
 >
-> Version: 2025-12-14.1
+> Version: 2025-12-14.2
 >
 > Version: 2025-12-14
 > Source: `backend/src/services/ai_service.py`, `backend/src/services/tasks/ai_pipeline_tasks.py`, `MIND_STATUS_DEFINITIONS.md`
@@ -135,6 +135,19 @@ Extract structured data from receipt OCR text.
 | `currency` | string | Currency code (SEK, EUR) |
 | `items` | array | Line items if available |
 | `org_number` | string | Seller's org number |
+
+**Additional receipt card metadata (when present in OCR):**
+
+AI3 must also populate the following `unified_files` fields when the OCR text contains them (never invent values; use `null` if not present):
+
+- `credit_card_number` (masked ok)
+- `credit_card_last_4_digits`
+- `credit_card_brand_full`
+- `credit_card_brand_short`
+- `credit_card_payment_variant`
+- `credit_card_type`
+- `credit_card_token`
+- `credit_card_entering_mode`
 
 ### 4.5 Item Schema
 

@@ -72,6 +72,52 @@ def test_parse_accounting_proposals_accepts_proposals_array():
     assert proposal.debit == Decimal("0.00")
 
 
+def test_parse_accounting_proposals_accepts_raw_array_payload():
+    payload = [
+        {
+            "receipt_id": "receipt-array",
+            "item_id": None,
+            "account_code": "2440",
+            "debit": 0,
+            "credit": "300.99",
+            "vat_rate": 0,
+            "notes": "Betalt med företagskort",
+        }
+    ]
+
+    proposals = parse_accounting_proposals(payload, "receipt-array")
+
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal.receipt_id == "receipt-array"
+    assert proposal.item_id is None
+    assert proposal.account_code == "2440"
+    assert proposal.credit == Decimal("300.99")
+    assert proposal.debit == Decimal("0.00")
+
+
+def test_parse_accounting_proposals_accepts_single_proposal_object_payload():
+    payload = {
+        "receipt_id": "receipt-single",
+        "item_id": None,
+        "account_code": "6110",
+        "debit": "800.00",
+        "credit": 0,
+        "vat_rate": 25,
+        "notes": "Kontorsmaterial exkl. moms",
+    }
+
+    proposals = parse_accounting_proposals(payload, "receipt-single")
+
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal.receipt_id == "receipt-single"
+    assert proposal.item_id is None
+    assert proposal.account_code == "6110"
+    assert proposal.debit == Decimal("800.00")
+    assert proposal.credit == Decimal("0.00")
+
+
 def test_parse_accounting_proposals_rejects_double_sided_entry():
     payload = {
         "receipt_id": "receipt-err",

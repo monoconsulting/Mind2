@@ -14,6 +14,8 @@ def _history(
     processing_time_ms: int | None = None,
     provider: str | None = None,
     model_name: str | None = None,
+    prompt_text: str | None = None,
+    response_text: str | None = None,
 ) -> None:
     """Thin wrapper for backward compatibility; uses unified log_ai_call helper."""
     log_ai_call(
@@ -27,6 +29,8 @@ def _history(
         processing_time_ms=processing_time_ms,
         provider=provider,
         model_name=model_name,
+        prompt_text=prompt_text,
+        response_text=response_text,
     )
 
 

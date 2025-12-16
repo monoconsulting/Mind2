@@ -261,6 +261,25 @@ def wf1_finalize(workflow_run_id: int) -> int:
                 extra={"workflow_run_id": workflow_run_id, "file_id": wfr.get("file_id")},
             )
 
+    # SoT alignment: do not leave unified_files.ai_status as 'completed' when workflow failed.
+    # If the pipeline already sent the file to manual_review, do not override it.
+    file_id = wfr.get("file_id")
+    if final_status != "succeeded" and file_id and db_cursor is not None:
+        try:
+            with db_cursor() as cur:
+                cur.execute("SELECT ai_status FROM unified_files WHERE id=%s", (file_id,))
+                row = cur.fetchone()
+            current_status = row[0] if row else None
+            if current_status not in (AiStatus.MANUAL_REVIEW.value, AiStatus.FAILED.value):
+                from services.db.files import set_ai_status
+
+                set_ai_status(file_id, AiStatus.FAILED.value)
+        except Exception:
+            logger.debug(
+                "wf1_finalize_ai_status_update_failed",
+                exc_info=True,
+                extra={"workflow_run_id": workflow_run_id, "file_id": file_id},
+            )
 
     mark_stage(
         workflow_run_id,
@@ -614,29 +633,26 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     start_time = time.time()
     ai6_provider = ai_service.prompt_provider_names.get("credit_card_invoice_parsing", "unknown")
     ai6_model = ai_service.prompt_model_names.get("credit_card_invoice_parsing", "unknown")
+    ai6_prompt = ai_service.prompts.get("credit_card_invoice_parsing", "")
+    raw_response = ""
     fc_coordinator.begin_fc_import_stage(workflow_run_id, "fc_parse", message="AI6 tolkning av faktura")
     try:
         extraction = ai_service.run_ai6_credit_card_invoice_parsing(request)
         elapsed = int((time.time() - start_time) * 1000)
 
-        ai6_prompt = ai_service.prompts.get("credit_card_invoice_parsing", "")
         raw_response = ai_service.last_raw_response or ""
-        log_parts = [
-            f"Successfully parsed credit card invoice.",
-            f"--- PROMPT ---\n{ai6_prompt}",
-            f"--- RAW RESPONSE ---\n{raw_response}",
-        ]
-
         _history(
             file_id,
             "ai6",
             "success",
             ai_stage_name="AI6-CreditCardInvoiceParsing",
-            log_text="; ".join(log_parts),
+            log_text=f"Successfully parsed credit card invoice ({len(extraction.lines)} lines)",
             confidence=extraction.overall_confidence,
             processing_time_ms=elapsed,
             provider=ai6_provider,
             model_name=ai6_model,
+            prompt_text=ai6_prompt,
+            response_text=raw_response,
         )
         fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
@@ -687,6 +703,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
         error_msg = f"{type(exc).__name__}: {exc}"
+        raw_response = ai_service.last_raw_response or ""
 
         _history(
             file_id,
@@ -698,6 +715,8 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             processing_time_ms=elapsed,
             provider=ai6_provider,
             model_name=ai6_model,
+            prompt_text=ai6_prompt,
+            response_text=raw_response,
         )
         fc_coordinator.complete_fc_import_stage(
             workflow_run_id,

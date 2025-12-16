@@ -29,6 +29,18 @@ logger = logging.getLogger(__name__)
 receipts_bp = Blueprint("receipts", __name__)
 
 
+_PROMPT_SECTION_RE = re.compile(r"--- PROMPT ---.*?(?=(--- RAW RESPONSE ---|$))", re.S)
+_RAW_RESPONSE_SECTION_RE = re.compile(r"--- RAW RESPONSE ---.*", re.S)
+
+
+def _strip_prompt_sections(text: str | None) -> str | None:
+    if not text:
+        return text
+    cleaned = _PROMPT_SECTION_RE.sub("", text)
+    cleaned = _RAW_RESPONSE_SECTION_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
 def _is_lock_timeout(exc: Exception) -> bool:
     return DBLockTimeout is not None and isinstance(exc, DBLockTimeout)
 
@@ -2044,6 +2056,8 @@ def get_receipt_log(rid: str) -> Any:
             }
         ), 200
 
+    latest_flag = request.args.get("latest") == "1"
+
     # Get file records (main file and any related files)
     file_records: list[dict[str, Any]] = []
     try:
@@ -2071,6 +2085,7 @@ def get_receipt_log(rid: str) -> Any:
         rows = []
 
     file_id_set: set[str] = set()
+
     for (
         file_id,
         file_type,
@@ -2113,8 +2128,9 @@ def get_receipt_log(rid: str) -> Any:
     workflow_runs: list[dict[str, Any]] = []
     try:
         with db_cursor() as cur:
+            limit_clause = " LIMIT 1" if latest_flag else ""
             cur.execute(
-                """
+                f"""
                 SELECT
                     id,
                     workflow_key,
@@ -2125,13 +2141,17 @@ def get_receipt_log(rid: str) -> Any:
                     updated_at
                 FROM workflow_runs
                 WHERE file_id = %s AND workflow_key <> 'WF2_PDF_SPLIT'
-                ORDER BY created_at DESC, id DESC
+                ORDER BY created_at DESC, id DESC{limit_clause}
                 """,
                 (rid,),
             )
             run_rows = cur.fetchall() or []
     except Exception:
         run_rows = []
+
+    latest_run_created_at = None
+    if latest_flag and run_rows:
+        latest_run_created_at = run_rows[0][5]
 
     for (
         workflow_run_id,
@@ -2219,14 +2239,20 @@ def get_receipt_log(rid: str) -> Any:
                 confidence,
                 processing_time_ms,
                 provider,
-                model_name
+                model_name,
+                prompt_text,
+                response_text
             FROM ai_processing_history
             WHERE file_id IN ({placeholders})
-            ORDER BY created_at ASC, id ASC
         """
+        params = list(related_file_ids)
+        if latest_run_created_at:
+            query += " AND created_at >= %s"
+            params.append(latest_run_created_at)
+        query += "\n            ORDER BY created_at ASC, id ASC"
         try:
             with db_cursor() as cur:
-                cur.execute(query, tuple(related_file_ids))
+                cur.execute(query, tuple(params))
                 history_rows = cur.fetchall() or []
         except Exception:
             history_rows = []
@@ -2244,6 +2270,8 @@ def get_receipt_log(rid: str) -> Any:
             processing_time_ms,
             provider,
             model_name,
+            prompt_text,
+            response_text,
         ) in history_rows:
             ai_history.append(
                 {
@@ -2253,12 +2281,14 @@ def get_receipt_log(rid: str) -> Any:
                     "status": status,
                     "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
                     "ai_stage_name": ai_stage_name,
-                    "log_text": log_text,
+                    "log_text": _strip_prompt_sections(log_text),
                     "error_message": error_message,
                     "confidence": float(confidence) if confidence is not None else None,
                     "processing_time_ms": processing_time_ms,
                     "provider": provider,
                     "model": model_name,
+                    "prompt_text": prompt_text,
+                    "response_text": response_text,
                 }
             )
 

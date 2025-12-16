@@ -4,7 +4,7 @@
 
 > This file documents all major technical pipelines and scheduled jobs in Mind. It focuses on **what** each pipeline does and **how data flows**.
 >
-> Version: 2025-12-14.1
+> Version: 2025-12-14.2
 > Source: `docs/WORKFLOWS/*.md`, `backend/src/services/tasks/*.py`
 
 ## 1. Overview of Workflows
@@ -63,7 +63,7 @@ flowchart TD
 | `r_ocr` | `wf1_run_ocr()` | OCR text extraction | `unified_files.ocr_raw` |
 | `detect_type` | `classify_and_route_receipt_v3()` | AI1: Document classification | Document type |
 | `expense_classification` | `classify_expense_internal()` | AI2: Expense type detection (personal/corporate) | `unified_files.expense_type` |
-| `r_ai3` | `extract_receipt_data_ai3()` | AI3: Data extraction | Amounts, dates, merchant |
+| `r_ai3` | `extract_receipt_data_ai3()` | AI3: Data extraction | Amounts, dates, merchant + card metadata (when present) |
 | `r_ai4` | `normalize_receipt_data_ai4()` | AI4: Accounting classification | Account codes, VAT |
 | `r_persist` | Implicit | Save structured data | `unified_files` + `receipt_items` |
 | `r_queue_match` | - | Queue for AI5 matching | - |
