@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 INSERT_HISTORY_SQL = """
     INSERT INTO ai_processing_history
     (file_id, job_type, status, ai_stage_name, log_text, error_message,
-     confidence, processing_time_ms, provider, model_name)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+     confidence, processing_time_ms, provider, model_name, prompt_text, response_text)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 
@@ -27,6 +27,8 @@ def log_ai_call(
     processing_time_ms: Optional[int] = None,
     provider: Optional[str] = None,
     model_name: Optional[str] = None,
+    prompt_text: Optional[str] = None,
+    response_text: Optional[str] = None,
     *,
     cursor=None,
 ) -> bool:
@@ -43,36 +45,40 @@ def log_ai_call(
         if cursor is not None:
             cursor.execute(
                 INSERT_HISTORY_SQL,
-                (
-                    file_id,
-                    job,
-                    status,
-                    ai_stage_name,
-                    log_text,
-                    error_message,
-                    confidence,
-                    processing_time_ms,
-                    provider,
-                    model_name,
-                ),
+                    (
+                        file_id,
+                        job,
+                        status,
+                        ai_stage_name,
+                        log_text,
+                        error_message,
+                        confidence,
+                        processing_time_ms,
+                        provider,
+                        model_name,
+                        prompt_text,
+                        response_text,
+                    ),
             )
             return True
 
         with db_cursor() as cur:
             cur.execute(
                 INSERT_HISTORY_SQL,
-                (
-                    file_id,
-                    job,
-                    status,
-                    ai_stage_name,
-                    log_text,
-                    error_message,
-                    confidence,
-                    processing_time_ms,
-                    provider,
-                    model_name,
-                ),
+                    (
+                        file_id,
+                        job,
+                        status,
+                        ai_stage_name,
+                        log_text,
+                        error_message,
+                        confidence,
+                        processing_time_ms,
+                        provider,
+                        model_name,
+                        prompt_text,
+                        response_text,
+                    ),
             )
             return True
     except Exception as exc:

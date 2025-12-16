@@ -2,6 +2,243 @@ Below is a **very explicit agent instruction** (English), with **hard boundaries
 
 ---
 
+# Extra prompt:
+Agent Prompt: Implement schema_migrations + Baseline Bootstrap (Stop Migration Replay)
+Goal
+
+Stop “migration replay” by adding a migration ledger (schema_migrations) and changing the migration runner so each SQL file is applied only once per database. Also add a baseline bootstrap mode for existing databases so we do not execute old migrations again.
+
+Hard Boundaries
+
+Do not change unrelated code.
+
+Do not delete old SQL logic; if something must be disabled, comment it out with a reason.
+
+Each task in its own branch; commit, merge to dev, push.
+
+Migrations must be idempotent and safe.
+
+No user-edited prompts in ai_system_prompts may be overwritten by migrations after this change.
+
+Step 1 — Add the Ledger Table
+1.1 Create a new migration file
+
+Create a NEW migration SQL file (do not edit old ones) named with the next available prefix, e.g.:
+
+database/migrations/00XX_create_schema_migrations.sql
+
+SQL content (copy/paste):
+
+-- 00XX_create_schema_migrations.sql
+-- Purpose: Migration ledger to prevent replay of database/migrations/*.sql
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  filename VARCHAR(255) NOT NULL,
+  checksum CHAR(64) NULL,
+  applied_at DATETIME NOT NULL,
+  PRIMARY KEY (filename)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+Acceptance: Table exists in DB after applying this new migration.
+
+Branch: fix/migrations-ledger-table
+
+Step 2 — Update Migration Runner to Apply-Once
+2.1 Update backend migration runner
+
+Modify:
+
+backend/src/services/db/migrations.py
+
+Required behavior
+
+Ensure schema_migrations exists (create it if missing; same SQL as above).
+
+List database/migrations/*.sql sorted by prefix.
+
+Load applied filenames from schema_migrations.
+
+Apply only files not present in ledger.
+
+After successful apply, insert (filename, checksum, applied_at).
+
+Checksum
+
+Compute SHA-256 over the SQL file content (bytes), store as hex string.
+
+Pseudocode (must match implementation)
+def ensure_schema_migrations_table(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (...same as SQL...)""")
+
+def get_applied_migrations(conn) -> dict[str, str]:
+    # returns {filename: checksum}
+    rows = conn.query("SELECT filename, checksum FROM schema_migrations")
+    return {r["filename"]: r["checksum"] for r in rows}
+
+def compute_checksum(sql_bytes: bytes) -> str:
+    return sha256(sql_bytes).hexdigest()
+
+def apply_migrations(conn, migrations_dir):
+    ensure_schema_migrations_table(conn)
+
+    applied = get_applied_migrations(conn)
+    files = sorted(list_sql_files(migrations_dir))  # sorted by prefix/filename
+
+    for file in files:
+        sql_bytes = read_bytes(file)
+        checksum = compute_checksum(sql_bytes)
+
+        if file.name in applied:
+            # If checksums differ: log warning. Do NOT reapply automatically.
+            if applied[file.name] and applied[file.name] != checksum:
+                log_warning("Migration file changed after being applied", file.name)
+            continue
+
+        run_sql(conn, sql_bytes.decode("utf-8"))  # must preserve correct encoding
+        conn.execute(
+          "INSERT INTO schema_migrations (filename, checksum, applied_at) VALUES (%s, %s, NOW())",
+          (file.name, checksum)
+        )
+
+
+Acceptance:
+
+Running apply twice results in “0 migrations applied” the second time.
+
+Existing destructive migrations (DELETE/UPDATE in old files) do not run again.
+
+Branch: fix/migrations-ledger-runner
+
+Step 3 — Ledger Bootstrap for Existing Databases (Baseline Marking)
+3.1 Add “baseline” mode to stop replay on an already-existing DB
+
+We need a safe first-run behavior for environments where the DB already has all tables/columns.
+
+Required behavior
+
+If schema_migrations is empty, offer a baseline operation that:
+
+Inserts all current database/migrations/*.sql filenames into schema_migrations
+
+Stores checksum + applied_at
+
+Does NOT execute those migration SQL files
+
+Trigger
+
+Implement baseline mode using one of these (pick the one consistent with your codebase):
+
+An environment variable: DB_MIGRATIONS_BASELINE=1
+
+OR a dedicated admin-only endpoint (recommended only if already secured)
+
+OR a CLI command inside the container
+
+Baseline algorithm (strict)
+
+Ensure schema_migrations exists.
+
+Check if schema_migrations has any rows:
+
+If rows exist: baseline mode does nothing.
+
+If empty: insert all migration filenames as applied.
+
+Baseline SQL insertion
+
+Use parameterized inserts from code. Example behavior:
+
+if baseline_enabled and schema_migrations_is_empty(conn):
+    for file in sorted_migration_files:
+        checksum = compute_checksum(read_bytes(file))
+        conn.execute(
+          "INSERT INTO schema_migrations (filename, checksum, applied_at) VALUES (%s, %s, NOW())",
+          (file.name, checksum)
+        )
+    log_info("Baseline completed. No migrations executed.")
+    return
+
+3.2 Safety check before baseline (must be implemented)
+
+Before baseline-marking, run a minimal schema sanity check so we don’t baseline a DB that is missing critical schema.
+
+Implement at least these checks (based on known risk areas in this project):
+
+Table unified_files exists
+
+Column unified_files.credit_card_last_4_digits exists
+
+Table ai_system_prompts exists
+
+Table receipt_items exists
+
+Example query pattern:
+
+SELECT COUNT(*) AS c
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'unified_files'
+  AND COLUMN_NAME = 'credit_card_last_4_digits';
+
+
+If any critical check fails:
+
+Do not baseline.
+
+Instead, run the normal apply logic (apply missing migrations once) OR fail loudly with an error stating which requirement is missing.
+
+Acceptance:
+
+On an existing “fully built” DB: baseline marks all migrations and prevents replay.
+
+On an incomplete DB: baseline refuses and prints a clear error.
+
+Branch: fix/migrations-ledger-baseline
+
+Step 4 — Update /system/apply-migrations (or equivalent) to Use the Same Logic
+
+Find the endpoint/command used in dev/prod (example: /system/apply-migrations) and ensure it calls the updated apply-once runner. No alternative “legacy” path may remain that replays all SQL.
+
+Acceptance: The endpoint cannot cause replay anymore.
+
+Branch: fix/apply-migrations-endpoint-safe
+
+Step 5 — Proof & Regression Tests
+5.1 Evidence script (must be included in PR description)
+
+Provide a short reproducible proof:
+
+Run migrations (first time) → N applied
+
+Run migrations again → 0 applied
+
+Edit ai_system_prompts.prompt_content via UI/API
+
+Run migrations again → prompt remains unchanged
+
+5.2 Add tests if a test framework exists
+
+Test “apply twice → second is zero”
+
+Test “baseline mode populates schema_migrations without executing SQL”
+
+Test “checksum mismatch logs warning but does not reapply”
+
+Branch: test/migrations-ledger
+
+Deliverables
+
+New migration file 00XX_create_schema_migrations.sql
+
+Updated migration runner with ledger + checksum + apply-once
+
+Baseline mode + schema sanity checks
+
+Updated endpoint/command path to use safe runner
+
+Proof in PR description (+ tests if present)
+
 # Agent Instruction: Fix Migration Replay + Prompt Persistence + Restore Credit-Card Extraction
 
 ## Objective

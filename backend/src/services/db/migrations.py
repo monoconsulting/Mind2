@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import re
 
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, Iterator
 
 from .connection import db_cursor
 
@@ -115,32 +117,406 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def apply_migrations(seed_demo: bool = True) -> None:
-    MIGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
-    for sql_file in list_migration_files():
-        logger.info(f"Applying migration: {sql_file.name}")
-        with open(sql_file, "r", encoding="utf-8") as f:
-            sql = f.read()
-        if not sql.strip():
+_BASELINE_MARKER_FILENAME = "__baseline__"
+
+_LEDGER_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  filename VARCHAR(255) NOT NULL,
+  checksum CHAR(64) NULL,
+  applied_at DATETIME NOT NULL,
+  PRIMARY KEY (filename)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_sv_0900_ai_ci
+"""
+
+
+def _compute_checksum(sql_bytes: bytes) -> str:
+    return hashlib.sha256(sql_bytes).hexdigest()
+
+
+def _truthy_env(name: str) -> bool:
+    return str(os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _table_exists(cur: Any, table_name: str) -> bool:
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+        """,
+        (table_name,),
+    )
+    row = cur.fetchone() or (0,)
+    return int(row[0] or 0) > 0
+
+
+def _column_exists(cur: Any, table_name: str, column_name: str) -> bool:
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+          AND COLUMN_NAME = %s
+        """,
+        (table_name, column_name),
+    )
+    row = cur.fetchone() or (0,)
+    return int(row[0] or 0) > 0
+
+
+def _column_type(cur: Any, table_name: str, column_name: str) -> str | None:
+    cur.execute(
+        """
+        SELECT DATA_TYPE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+          AND COLUMN_NAME = %s
+        """,
+        (table_name, column_name),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return str(row[0] or "").lower() if row[0] is not None else None
+
+
+def _ensure_schema_migrations(cur: Any) -> None:
+    cur.execute(_LEDGER_CREATE_SQL)
+
+
+def _get_applied(cur: Any) -> dict[str, str | None]:
+    _ensure_schema_migrations(cur)
+    cur.execute("SELECT filename, checksum FROM schema_migrations")
+    rows = cur.fetchall() or []
+    applied: dict[str, str | None] = {}
+    for filename, checksum in rows:
+        if filename:
+            applied[str(filename)] = str(checksum) if checksum is not None else None
+    return applied
+
+
+def _schema_migrations_is_empty(cur: Any) -> bool:
+    _ensure_schema_migrations(cur)
+    cur.execute("SELECT COUNT(*) FROM schema_migrations")
+    row = cur.fetchone() or (0,)
+    return int(row[0] or 0) == 0
+
+
+def _schema_migrations_has_baseline_marker(cur: Any) -> bool:
+    _ensure_schema_migrations(cur)
+    cur.execute("SELECT COUNT(*) FROM schema_migrations WHERE filename = %s", (_BASELINE_MARKER_FILENAME,))
+    row = cur.fetchone() or (0,)
+    return int(row[0] or 0) > 0
+
+
+def _ensure_baseline_marker(cur: Any) -> None:
+    _ensure_schema_migrations(cur)
+    cur.execute(
+        """
+        INSERT INTO schema_migrations (filename, checksum, applied_at)
+        VALUES (%s, NULL, NOW())
+        ON DUPLICATE KEY UPDATE filename=filename
+        """,
+        (_BASELINE_MARKER_FILENAME,),
+    )
+
+
+def _db_is_provisioned(cur: Any) -> tuple[bool, list[str]]:
+    """Heuristic sanity-check used to decide if baseline is safe.
+
+    Baseline is only safe when the DB already contains the schema changes represented
+    by the migrations directory (i.e., an existing/provisioned environment).
+    """
+    missing: list[str] = []
+
+    required_tables = [
+        "unified_files",
+        "invoice_documents",
+        "ai_system_prompts",
+        # Newer “latest” signature tables
+        "ai_llm",
+        "workflow_runs",
+        "workflow_stage_runs",
+    ]
+    for table in required_tables:
+        if not _table_exists(cur, table):
+            missing.append(f"table:{table}")
+
+    # Recent-signature columns
+    if not _column_exists(cur, "invoice_documents", "updated_at"):
+        missing.append("column:invoice_documents.updated_at")
+
+    prompt_type = _column_type(cur, "ai_system_prompts", "prompt_content")
+    if prompt_type != "mediumtext":
+        missing.append("column:ai_system_prompts.prompt_content (expected mediumtext)")
+
+    return (len(missing) == 0, missing)
+
+
+def _baseline_mark(cur: Any, files: list[Path]) -> list[str]:
+    applied_files: list[str] = []
+    for sql_file in files:
+        try:
+            sql_bytes = sql_file.read_bytes()
+        except Exception:
+            # If unreadable, store NULL checksum and continue.
+            sql_bytes = b""
+        checksum = _compute_checksum(sql_bytes) if sql_bytes else None
+        cur.execute(
+            """
+            INSERT INTO schema_migrations (filename, checksum, applied_at)
+            VALUES (%s, %s, NOW())
+            ON DUPLICATE KEY UPDATE filename=filename
+            """,
+            (sql_file.name, checksum),
+        )
+        applied_files.append(sql_file.name)
+    return applied_files
+
+
+def _iter_sql_statements(sql: str) -> Iterator[str]:
+    """Split SQL script into statements, respecting quotes and comments.
+
+    This is required because many migrations embed large prompt strings where semicolons
+    may appear inside quoted text.
+    """
+    if sql and sql[0] == "\ufeff":
+        sql = sql[1:]
+
+    buf: list[str] = []
+    in_single = False
+    in_double = False
+    in_backtick = False
+    in_line_comment = False
+    in_block_comment = False
+    escape = False
+
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        nxt = sql[i + 1] if i + 1 < len(sql) else ""
+
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+                buf.append(ch)
+            i += 1
             continue
-        with db_cursor() as cur:
-            for statement in _split_sql(sql):
-                try:
-                    cur.execute(statement)
-                    cur.fetchall()
-                except Exception as e:  # pragma: no cover
-                    msg = str(e)
-                    logger.error(f"Error applying statement from {sql_file.name}: {statement}")
-                    logger.error(f"Error message: {msg}")
-                    # Ignore idempotency errors
-                    if (
-                        "Duplicate column name" in msg
-                        or "already exists" in msg
-                        or "exists" in msg and "constraint" in msg.lower()
-                    ):
-                        logger.warning(f"Ignoring idempotency error: {msg}")
+
+        if in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
+                i += 2
+                continue
+            i += 1
+            continue
+
+        if not in_single and not in_double and not in_backtick:
+            if ch == "-" and nxt == "-":
+                in_line_comment = True
+                i += 2
+                continue
+            if ch == "/" and nxt == "*":
+                in_block_comment = True
+                i += 2
+                continue
+
+        if ch == "\\" and (in_single or in_double):
+            buf.append(ch)
+            escape = not escape
+            i += 1
+            continue
+
+        if ch == "'" and not in_double and not in_backtick and not escape:
+            in_single = not in_single
+        elif ch == '"' and not in_single and not in_backtick and not escape:
+            in_double = not in_double
+        elif ch == "`" and not in_single and not in_double:
+            in_backtick = not in_backtick
+
+        escape = False
+
+        if ch == ";" and not in_single and not in_double and not in_backtick:
+            statement = "".join(buf).strip()
+            buf.clear()
+            if statement:
+                yield statement
+            i += 1
+            continue
+
+        buf.append(ch)
+        i += 1
+
+    tail = "".join(buf).strip()
+    if tail:
+        yield tail
+
+
+def _has_rows(cur: Any, table_name: str) -> bool:
+    if not _table_exists(cur, table_name):
+        return False
+    cur.execute(f"SELECT COUNT(*) FROM `{table_name}`")
+    row = cur.fetchone() or (0,)
+    return int(row[0] or 0) > 0
+
+
+def _transform_prompt_statement(statement: str) -> str | None:
+    """Return a safe statement for ai_system_prompts, or None to skip."""
+    stripped = statement.lstrip()
+    lower = stripped.lower()
+    if "ai_system_prompts" not in lower:
+        return statement
+    if lower.startswith("delete"):
+        return None
+    if lower.startswith("update"):
+        # Never overwrite prompt rows via migrations; prompts are user data.
+        return None
+    if lower.startswith("insert"):
+        # Allow seeding only-if-missing.
+        return re.sub(r"(?is)^\s*insert\s+into\s+`?ai_system_prompts`?\b", "INSERT IGNORE INTO ai_system_prompts", stripped)
+    return statement
+
+
+def apply_migrations(seed_demo: bool = True) -> dict[str, Any]:
+    """Apply database/migrations/*.sql safely with ledger + baseline support."""
+    MIGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    files = list(list_migration_files())
+
+    baseline_requested = _truthy_env("DB_MIGRATIONS_BASELINE")
+    allow_destructive = _truthy_env("DB_MIGRATIONS_ALLOW_DESTRUCTIVE")
+    applied_now: list[str] = []
+    skipped_changed: list[str] = []
+    skipped_destructive: list[str] = []
+    baseline_marked: list[str] = []
+
+    with db_cursor() as cur:
+        _ensure_schema_migrations(cur)
+        marker_present = _schema_migrations_has_baseline_marker(cur)
+        applied = _get_applied(cur)
+
+        schema_empty = _schema_migrations_is_empty(cur)
+        provisioned, missing_signatures = _db_is_provisioned(cur)
+        schema_uninitialized = schema_empty or not marker_present
+        auto_baseline = schema_uninitialized and provisioned
+
+        if schema_uninitialized and (baseline_requested or auto_baseline):
+            if not provisioned:
+                raise RuntimeError(
+                    "Baseline requested but DB does not appear fully provisioned; "
+                    f"missing signatures: {', '.join(missing_signatures) or 'unknown'}"
+                )
+            logger.warning(
+                "schema_migrations not initialized; baselining %d migrations (baseline_requested=%s, auto_baseline=%s)",
+                len(files),
+                baseline_requested,
+                auto_baseline,
+            )
+            baseline_marked = _baseline_mark(cur, files)
+            _ensure_baseline_marker(cur)
+            return {
+                "ok": True,
+                "mode": "baseline",
+                "baseline_marked": baseline_marked,
+                "applied": [],
+                "skipped_changed": [],
+            }
+
+        if schema_uninitialized and not provisioned and _table_exists(cur, "unified_files"):
+            # Existing DB without a migration ledger: we must not replay old migrations.
+            # Operator must run missing catch-up migrations manually, then baseline/auto-baseline.
+            hints: list[str] = []
+            if "column:invoice_documents.updated_at" in missing_signatures:
+                hints.append("Run migration file: 0040_add_updated_at_to_invoice_documents.sql")
+            raise RuntimeError(
+                "schema_migrations is not initialized and DB appears partially migrated; refusing to replay migrations. "
+                f"Missing signatures: {', '.join(missing_signatures) or 'unknown'}. "
+                + ("Hints: " + "; ".join(hints) + ". " if hints else "")
+                + "After catch-up, run baseline (DB_MIGRATIONS_BASELINE=1) or re-run apply-migrations to allow auto-baseline."
+            )
+
+        for sql_file in files:
+            sql_bytes = sql_file.read_bytes()
+            checksum = _compute_checksum(sql_bytes)
+            already = applied.get(sql_file.name)
+            if already is not None:
+                if already and already != checksum:
+                    logger.warning(
+                        "Migration file changed after being applied: %s (stored=%s, current=%s). "
+                        "Do NOT modify migrations in-place; create a new migration instead.",
+                        sql_file.name,
+                        already,
+                        checksum,
+                    )
+                    skipped_changed.append(sql_file.name)
+                continue
+
+            sql_text = sql_bytes.decode("utf-8-sig")
+            if not sql_text.strip():
+                cur.execute(
+                    """
+                    INSERT INTO schema_migrations (filename, checksum, applied_at)
+                    VALUES (%s, %s, NOW())
+                    """,
+                    (sql_file.name, checksum),
+                )
+                applied_now.append(sql_file.name)
+                continue
+
+            if not allow_destructive and sql_file.name in {
+                "0035_cleanup_fc_receipt_items.sql",
+                "0036_reset_fc_processing.sql",
+            }:
+                logger.warning(
+                    "Skipping destructive one-off migration %s (set DB_MIGRATIONS_ALLOW_DESTRUCTIVE=1 to run manually).",
+                    sql_file.name,
+                )
+                skipped_destructive.append(sql_file.name)
+                cur.execute(
+                    """
+                    INSERT INTO schema_migrations (filename, checksum, applied_at)
+                    VALUES (%s, %s, NOW())
+                    """,
+                    (sql_file.name, checksum),
+                )
+                applied_now.append(sql_file.name)
+                continue
+
+            prompt_safe_mode = (
+                ("ai_system_prompts" in sql_text.lower())
+                and _table_exists(cur, "ai_system_prompts")
+                and _has_rows(cur, "ai_system_prompts")
+            )
+
+            logger.info("Applying migration: %s (prompt_safe=%s)", sql_file.name, prompt_safe_mode)
+            try:
+                for statement in _iter_sql_statements(sql_text):
+                    safe_stmt = _transform_prompt_statement(statement) if prompt_safe_mode else statement
+                    if safe_stmt is None:
                         continue
-                    raise
+                    cur.execute(safe_stmt)
+                    try:
+                        cur.fetchall()
+                    except Exception:
+                        pass
+            except Exception as exc:  # pragma: no cover
+                msg = str(exc)
+                logger.error("Error applying migration %s: %s", sql_file.name, msg)
+                raise
+
+            cur.execute(
+                """
+                INSERT INTO schema_migrations (filename, checksum, applied_at)
+                VALUES (%s, %s, NOW())
+                """,
+                (sql_file.name, checksum),
+            )
+            applied_now.append(sql_file.name)
+
+        if not marker_present:
+            _ensure_baseline_marker(cur)
 
     # Optional seed of a few demo rows for instant UI sanity
     # NOTE: Seed data disabled - mock data is forbidden per CLAUDE.md
@@ -178,3 +554,12 @@ def apply_migrations(seed_demo: bool = True) -> None:
         except Exception:
             # best-effort; ignore seeding errors
             pass
+
+    return {
+        "ok": True,
+        "mode": "apply",
+        "baseline_marked": baseline_marked,
+        "applied": applied_now,
+        "skipped_changed": skipped_changed,
+        "skipped_destructive": skipped_destructive,
+    }

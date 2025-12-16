@@ -57,12 +57,39 @@
 
 | Time | Title | Change Type | Scope | Files Touched |
 |---|---|---|---|---|
+| 21:20 | Stop migration replay + prompt overwrite | fix | `db/migrations` | `backend/src/services/db/migrations.py`, `backend/src/api/ai_config.py`, `backend/src/api/app.py`, `database/migrations/0044_create_schema_migrations.sql`, `web/tests/ai.spec.ts`, `docs/source_of_truth/*`, `docker-compose.yml` |
 | 14:00 | SoT documentation update | docs | `docs/sot` | `docs/source_of_truth/70_AI_PROMPTS_AND_ROLES.md` |
 | 13:30 | AI4 null account_code handling | fix | `ai4/parser` | `backend/src/services/ai_service.py`, `backend/src/services/ai/parsers/accounting.py` |
 | 13:00 | AI4 item_id optional fix | fix | `ai4/parser` | `backend/src/services/ai_service.py`, `backend/src/services/ai/parsers/accounting.py` |
 | 12:30 | AI4 chart_of_accounts fix | fix | `ai4` | `backend/src/services/ai_service.py` |
 | 11:00 | Chart of accounts repair | data | `database` | `chart_of_accounts` table (1318 rows) |
 | 10:00 | Backup script fixes | ops | `scripts` | `create_codebase_archive_db.ps1` |
+
+#### [21:20] Fix: Stop migration replay + prompt overwrite
+- **Change type:** fix
+- **Scope (component/module):** `db/migrations`
+- **Tickets/PRs:** `MISC_REPAIR_PLAN_2025-12-14`
+- **Branch:** `fix/misc-repair-plan-2025-12-14`
+- **Commit range:** `WORKING_TREE` (uncommitted)
+- **Environment:** Docker Compose (main) + MySQL 8 + nginx (8008)
+- **Commands run:**
+  ```bash
+  pytest -q backend/tests/unit/test_migrations_apply_once.py
+  npm run test:e2e:report -- web/tests/ai.spec.ts -g "@migrations"
+  ```
+- **Result summary:** Implemented a migration ledger (`schema_migrations`) with baseline support to stop replay; added guards so legacy migrations cannot overwrite UI-edited prompts; added regression tests (pytest + Playwright) and saved Playwright HTML report with video/screenshot artifacts.
+- **Files changed (exact):**
+  - `backend/src/services/db/migrations.py` - migration ledger, baseline marker, prompt-safe execution, destructive migration opt-in guard
+  - `database/migrations/0044_create_schema_migrations.sql` - creates `schema_migrations`
+  - `backend/src/api/app.py` - `/system/apply-migrations` returns `mode`, `baseline_marked`, `available`, etc.
+  - `backend/src/api/ai_config.py` - `GET /ai-config/prompts` is read-only (no implicit DB updates)
+  - `backend/tests/unit/test_migrations_apply_once.py` - migration runner idempotency + baseline + prompt safety tests
+  - `web/tests/ai.spec.ts` - `@migrations` Playwright regression: prompt persistence + idempotent apply-migrations
+  - `docs/source_of_truth/40_DATA_MODEL.md`, `50_PIPELINES_AND_JOBS.md`, `55_API_AND_ENDPOINTS.md`, `70_AI_PROMPTS_AND_ROLES.md`, `80_OPERATIONS_RUNBOOK.md`
+  - `docker-compose.yml`, `backend/src/database/.gitkeep` - mount `./database` into `ai-api` container as `/app/database` (read-only) for migrations access
+- **Tests executed:** `pytest` (pass) + Playwright `@migrations` (pass)
+- **Artifacts:** `web/test-reports/2025-12-14_211123/html/index.html`
+- **Next action:** Update the active AI3 `data_extraction` prompt via UI to include the credit-card fields (`credit_card_*`) and re-run AI3 on affected receipts (existing rows currently have NULL card metadata).
 
 #### [14:00] Docs: SoT documentation update
 - **Change type:** docs

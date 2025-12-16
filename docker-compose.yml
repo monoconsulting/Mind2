@@ -9,6 +9,7 @@ services:
       - ./inbox:/data/inbox
       - G:\Dropbox\MINDUPLOAD:/data/upload
       - ./backend/src:/app:ro
+      - ./database:/app/database:ro
     environment:
       - PYTHONPATH=/app
       - DB_HOST=mysql
@@ -137,7 +138,7 @@ services:
   mysql:
     image: mysql:8
     healthcheck:
-      test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -192,20 +193,15 @@ services:
       dockerfile: main-system/app-frontend/Dockerfile.dev
     image: mind2-admin-frontend:dev-hotreload
     volumes:
-      # Mount source code for hot-reload
       - ./main-system/app-frontend/src:/app/src:ro
       - ./main-system/app-frontend/index.html:/app/index.html:ro
       - ./main-system/app-frontend/vite.config.js:/app/vite.config.js:ro
-      # Mount shared status definitions for hot-reload
       - ./shared:/shared:ro
-      # Use named volume for node_modules to avoid platform conflicts
       - mind-frontend-node-modules:/app/node_modules
     environment:
-      # Proxy API requests directly to backend service (not through nginx)
       - VITE_API_PROXY_TARGET=http://ai-api:5000
       - VITE_REFRESH_INTERVAL_SECONDS=${VITE_REFRESH_INTERVAL_SECONDS}
     ports:
-      # Expose Vite dev server on host port 5169
       - "5169:5169"
     depends_on: [ai-api]
     networks: [main]

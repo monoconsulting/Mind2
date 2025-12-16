@@ -44,7 +44,9 @@ bp = Blueprint("ai_processing", __name__, url_prefix="/ai")
 _AI_STAGE_STATUS = {
     "AI1": AiStatus.PROCESSING.value,
     "AI2": AiStatus.PROCESSING.value,
-    "AI3": AiStatus.COMPLETED.value,
+    # AI3 completes data extraction, but the overall document must not be marked completed
+    # until the workflow finalizes successfully (finalize_ok/KLAR). See SoT 30_STATUS_MODEL.md.
+    "AI3": AiStatus.PROCESSING.value,
     "AI4": AiStatus.PROCESSING.value,
     "AI5_TRUE": AiStatus.PROCESSING.value,
     "AI5_FALSE": AiStatus.PROCESSING.value,

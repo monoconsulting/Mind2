@@ -4,7 +4,7 @@
 
 > This runbook is for operators and developers responsible for keeping Mind healthy in daily operations.
 >
-> Version: 2025-12-14.1
+> Version: 2025-12-14.2
 > Source: `docs/OPS/*.md`, `docs/DEVELOPMENT/*.md`, `CLAUDE.md`
 
 ## 1. Environments
@@ -75,9 +75,11 @@ mind_docker_compose_build_ai-api_celery-worker.bat
 
 Mind currently includes a migration runner (`backend/src/services/db/migrations.py`) that executes SQL files in `database/migrations/`.
 
-**Critical detail:** The runner does not track “already applied” migrations and will replay **all** `.sql` files every time it is invoked. The API endpoint `POST /system/apply-migrations` directly triggers this runner.
+**Current behavior (safe runner):** The runner tracks applied migrations in `schema_migrations` and executes only migrations that are not yet in the ledger.
 
-Because some migrations contain **destructive statements** (`DELETE` / unconditional `UPDATE`) against user-editable tables, repeated runs can overwrite or remove data.
+For existing databases created before the ledger existed, the runner supports **baseline marking** (marking existing migration files as applied without executing them).
+
+Because some legacy migrations contain destructive statements (`DELETE` / unconditional `UPDATE`) against user-editable tables, the runner includes guards to prevent prompt overwrites and to require explicit opt-in before running known one-off cleanup migrations.
 
 ### 2.5.2 Tables at Risk
 
@@ -104,7 +106,7 @@ These files contain statements that can overwrite or delete data on re-run:
 
 ### 2.5.4 Operational Rules
 
-- Do **not** call `POST /system/apply-migrations` on a running environment unless you fully understand the impact above.
+- Prefer running `POST /system/apply-migrations` during a maintenance window.
 - Treat prompt content in `ai_system_prompts.prompt_content` as **user data**. It must survive restarts and migrations.
 - Before any migration run in a real environment, export:
   - `ai_system_prompts`
@@ -113,12 +115,13 @@ These files contain statements that can overwrite or delete data on re-run:
 
 ### 2.5.5 Required Engineering Fix (SoT Requirement)
 
-The migration mechanism must be updated to one of these safe designs:
+The migration mechanism is implemented using this safe design:
 
-- Track applied migrations in a `schema_migrations` table and execute only pending migrations, **or**
-- Make every migration strictly idempotent and forbid destructive statements without explicit guards.
+- Track applied migrations in a `schema_migrations` table and execute only pending migrations.
+- Baseline marking is supported for pre-ledger databases (`DB_MIGRATIONS_BASELINE=1` or auto-baseline when the DB passes the provisioned sanity-check).
+- Known one-off destructive migrations require explicit opt-in (`DB_MIGRATIONS_ALLOW_DESTRUCTIVE=1`).
 
-This requirement is normative: the system is considered **non-compliant** while migrations can overwrite prompt edits.
+If the runner refuses to baseline because schema signatures are missing (partially migrated DB), run the required catch-up migration(s) first (example: `0040_add_updated_at_to_invoice_documents.sql`), then re-run apply-migrations to allow baseline/apply.
 
 
 ## 3. Health Checks

@@ -18,6 +18,7 @@ import {
   FiMapPin,
   FiUpload,
   FiClock,
+  FiCopy,
   FiFile,
   FiCpu,
   FiTrash2
@@ -1269,6 +1270,7 @@ export default function Receipts() {
   const [sortColumn, setSortColumn] = React.useState('created_at')
   const [sortDirection, setSortDirection] = React.useState('desc')
   const [logState, setLogState] = React.useState(INITIAL_LOG_STATE)
+  const [showPrompts, setShowPrompts] = React.useState(false)
   const [logActionState, setLogActionState] = React.useState({ clearing: false, error: '', success: '' })
 
   const fetchReceiptLog = React.useCallback(async (receiptId) => {
@@ -1283,7 +1285,7 @@ export default function Receipts() {
       receiptId,
     }))
     try {
-      const res = await api.fetch(`/ai/api/receipts/${receiptId}/log`)
+      const res = await api.fetch(`/ai/api/receipts/${receiptId}/log?latest=1`)
       if (!res.ok) {
         throw new Error(`Status ${res.status}`)
       }
@@ -1310,6 +1312,7 @@ export default function Receipts() {
   const closeLogViewer = React.useCallback(() => {
     setLogState(INITIAL_LOG_STATE)
     setLogActionState({ clearing: false, error: '', success: '' })
+    setShowPrompts(false)
   }, [])
 
   const handleClearReceiptLog = React.useCallback(async (receiptId) => {
@@ -1336,6 +1339,32 @@ export default function Receipts() {
       })
     }
   }, [fetchReceiptLog, logActionState.clearing])
+
+  const handleCopyAll = React.useCallback(() => {
+    const logData = logState.data ?? {}
+    const historyEntries = Array.isArray(logData.ai_history) ? logData.ai_history : []
+    const run = Array.isArray(logData.workflow_runs) ? logData.workflow_runs[0] : null
+    const sections = []
+    sections.push(`Kvitto: ${logData.receipt_id || logState.receiptId || 'okänt'}`)
+    if (run) {
+      sections.push(`Workflow: ${run.workflow_key} ${run.status} (Run-ID: ${run.id})`)
+    }
+    historyEntries.forEach((entry, index) => {
+      sections.push(`--- AI-entry ${index + 1} ---`)
+      sections.push(`Stage: ${entry.ai_stage_name || entry.job_type || 'Okänt'} (${entry.status})`)
+      sections.push(`Log: ${entry.log_text ?? ''}`)
+      sections.push(`Error: ${entry.error_message ?? ''}`)
+      sections.push(`Response: ${entry.response_text ?? ''}`)
+      if (showPrompts) {
+        sections.push(`Prompt: ${entry.prompt_text ?? ''}`)
+      }
+    })
+    try {
+      navigator.clipboard.writeText(sections.join('\n\n'))
+    } catch (error) {
+      console.error('Failed to copy receipt log', error)
+    }
+  }, [logState.data, logState.receiptId, showPrompts])
 
   const resetReceiptForResume = React.useCallback((fileId) => {
     resumePending.current.add(fileId)
@@ -1884,7 +1913,25 @@ export default function Receipts() {
                 Kvitto: {receiptIdForModal || 'okänt'}
               </p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1 text-xs text-gray-200">
+                <input
+                  type="checkbox"
+                  className="form-checkbox rounded border-gray-600"
+                  checked={showPrompts}
+                  onChange={(event) => setShowPrompts(event.target.checked)}
+                />
+                <span>Visa prompts</span>
+              </label>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm flex items-center gap-1"
+                onClick={handleCopyAll}
+                disabled={logState.loading || !logState.data}
+              >
+                <FiCopy />
+                Kopiera allt
+              </button>
               <button
                 type="button"
                 className="btn btn-danger btn-sm"
@@ -2047,6 +2094,22 @@ export default function Receipts() {
                           {entry.error_message && (
                             <div className="text-xs text-red-300 bg-red-900/30 border border-red-800/40 rounded-md p-2 whitespace-pre-wrap font-mono">
                               {entry.error_message}
+                            </div>
+                          )}
+                          {entry.response_text && (
+                            <div className="text-xs text-gray-300 bg-gray-900/60 border border-gray-700/70 rounded-md p-2">
+                              <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Response</div>
+                              <pre className="whitespace-pre-wrap font-mono max-h-48 overflow-y-auto">
+                                {entry.response_text}
+                              </pre>
+                            </div>
+                          )}
+                          {showPrompts && entry.prompt_text && (
+                            <div className="text-xs text-gray-100 bg-blue-900/30 border border-blue-800/40 rounded-md p-2">
+                              <div className="text-[10px] uppercase tracking-wide text-blue-200 mb-1">Prompt</div>
+                              <pre className="whitespace-pre-wrap font-mono max-h-48 overflow-y-auto text-blue-100">
+                                {entry.prompt_text}
+                              </pre>
                             </div>
                           )}
                         </div>

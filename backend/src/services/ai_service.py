@@ -242,8 +242,22 @@ def _build_accounting_proposal(
     )
 
 
-def parse_accounting_proposals(payload: Dict[str, Any], fallback_receipt_id: str) -> List[AccountingProposal]:
+def _looks_like_single_proposal_object(payload: Dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    has_account = any(key in payload and payload.get(key) not in (None, "") for key in ACCOUNT_CODE_KEYS)
+    has_debit = any(key in payload and payload.get(key) not in (None, "") for key in DEBIT_KEYS)
+    has_credit = any(key in payload and payload.get(key) not in (None, "") for key in CREDIT_KEYS)
+    return bool(has_account and (has_debit or has_credit))
+
+
+def parse_accounting_proposals(payload: Any, fallback_receipt_id: str) -> List[AccountingProposal]:
     """Parse and validate AI4 payload into accounting proposals."""
+
+    # Some prompts instruct the model to return a JSON array; some providers enforce json_object.
+    # Accept list payloads by treating them as a proposals array.
+    if isinstance(payload, list):
+        payload = {"proposals": payload, "receipt_id": fallback_receipt_id}
 
     if not isinstance(payload, dict):
         raise AccountingProposalValidationError("LLM response must be a JSON object")
@@ -253,6 +267,11 @@ def parse_accounting_proposals(payload: Dict[str, Any], fallback_receipt_id: str
         raise AccountingProposalValidationError("receipt_id is missing from payload")
 
     raw_entries: List[Tuple[Dict[str, Any], str]] = []
+
+    # If the model returned a single proposal object at top-level (common when json_object is enforced),
+    # normalize it into proposals=[...].
+    if _looks_like_single_proposal_object(payload):
+        payload = {"proposals": [payload], "receipt_id": receipt_id}
 
     if payload.get("items") is not None:
         items = payload.get("items")
@@ -318,6 +337,30 @@ def parse_accounting_proposals(payload: Dict[str, Any], fallback_receipt_id: str
             normalized = dict(entry)
             normalized.setdefault("receipt_id", receipt_id)
             raw_entries.append((normalized, f"accounting_entries[{idx}]"))
+    elif payload.get("accounting_proposals") is not None:
+        accounting_proposals = payload.get("accounting_proposals")
+        if isinstance(accounting_proposals, dict):
+            accounting_proposals = [accounting_proposals]
+        if not isinstance(accounting_proposals, list) or not accounting_proposals:
+            raise AccountingProposalValidationError("accounting_proposals must be a non-empty array")
+        for idx, entry in enumerate(accounting_proposals, start=1):
+            if not isinstance(entry, dict):
+                raise AccountingProposalValidationError(f"accounting_proposals[{idx}] must be an object")
+            normalized = dict(entry)
+            normalized.setdefault("receipt_id", receipt_id)
+            raw_entries.append((normalized, f"accounting_proposals[{idx}]"))
+    elif payload.get("proposal") is not None:
+        proposal = payload.get("proposal")
+        if isinstance(proposal, dict):
+            proposal = [proposal]
+        if not isinstance(proposal, list) or not proposal:
+            raise AccountingProposalValidationError("proposal must be a non-empty array")
+        for idx, entry in enumerate(proposal, start=1):
+            if not isinstance(entry, dict):
+                raise AccountingProposalValidationError(f"proposal[{idx}] must be an object")
+            normalized = dict(entry)
+            normalized.setdefault("receipt_id", receipt_id)
+            raw_entries.append((normalized, f"proposal[{idx}]"))
     else:
         raise AccountingProposalValidationError(
             "Payload must include either 'items', 'proposals', 'entries', or 'accounting_entries'"

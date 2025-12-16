@@ -4,7 +4,7 @@
 
 > This file documents all API endpoints, their contracts, and authentication requirements. If an endpoint exists in code but is not documented here, it must be added.
 >
-> Version: 2025-12-14.1
+> Version: 2025-12-14.2
 
 ## 1. Overview
 
@@ -110,11 +110,12 @@ Manually triggers the database migration runner.
 ```json
 {
   "ok": true,
-  "applied": [
-    "0001_initial_schema.sql",
-    "0002_add_indexes.sql",
-    "...etc..."
-  ]
+  "mode": "apply",
+  "applied": ["0044_create_schema_migrations.sql"],
+  "baseline_marked": [],
+  "skipped_changed": [],
+  "skipped_destructive": [],
+  "available": ["0001_...", "..."]
 }
 ```
 
@@ -134,7 +135,13 @@ Manually triggers the database migration runner.
 
 #### Current Implementation Note (Critical)
 
-As of 2025-12-14, the migration runner does **not** track “already applied” migrations and will replay **all** `.sql` files each time it is called. This means any migration that contains `DELETE` / `UPDATE` against user-editable tables can cause data loss.
+As of 2025-12-14, the migration runner **tracks applied migrations** in `schema_migrations` and will only execute migrations that are not yet recorded in the ledger.
+
+For existing databases created before the ledger existed, the runner supports **baseline marking**:
+- **Explicit baseline:** set `DB_MIGRATIONS_BASELINE=1` and call this endpoint once.
+- **Auto baseline:** allowed only when `schema_migrations` is missing/uninitialized **and** the DB passes the provisioned sanity-check.
+
+If the DB is partially migrated (ledger missing/uninitialized but schema signatures are missing), the runner will **refuse to replay** migrations and return an error with the missing signatures and a hint for the required catch-up migration(s).
 
 See `80_OPERATIONS_RUNBOOK.md` → “Migrations & Prompt Persistence” for the current list of known destructive migrations and operational mitigations.
 
@@ -370,6 +377,49 @@ Rules:
   "not_found_ids": []
 }
 ```
+
+### 6.7 Receipt Log (`/receipts/{id}/log`)
+
+```
+GET /receipts/{id}/log?latest=1
+```
+
+Returns workflow runs, workflow stage history and AI processing history for the requested receipt. Without `latest=1` the endpoint retains its previous behaviour (all workflow runs and AI history). When `latest=1`:
+
+- Only the single most recent `workflow_runs` entry (excluding `WF2_PDF_SPLIT`) is returned.
+- Only the stages for that run are included.
+- `ai_processing_history` rows are filtered to `created_at >= latest_workflow_run.created_at`.
+
+AI history entries now expose the new `prompt_text` and `response_text` columns (alongside the existing `log_text`, `error_message`, `confidence`, `provider`, `model`, etc.) so callers can display both the short summary and the raw payloads.
+
+Sample response snippet:
+
+```json
+{
+  "receipt_id": "<uuid>",
+  "workflow_runs": [
+    {
+      "id": 123,
+      "workflow_key": "WF1_RECEIPT",
+      ...
+    }
+  ],
+  "ai_history": [
+    {
+      "id": 42,
+      "job_type": "ai3",
+      "status": "success",
+      "created_at": "2025-12-04T15:00:00Z",
+      "ai_stage_name": "AI3-DataExtraction",
+      "log_text": "Extracted 3 items; items summary: ...",
+      "prompt_text": "{... full AI3 prompt ...}",
+      "response_text": "{... raw AI3 response ...}"
+    }
+  ]
+}
+```
+
+Frontend components should call this endpoint with `latest=1` so the Process log modal can show only the newest run along with its prompt/response payloads.
 
 ## 7. FirstCard/Reconciliation Endpoints (`/reconciliation/firstcard`)
 

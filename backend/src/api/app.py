@@ -301,9 +301,17 @@ def apply_migrations_route():
     except Exception as e:  # pragma: no cover
         return jsonify({"ok": False, "error": f"import_failed: {e}"}), 500
     try:
-        apply_migrations(seed_demo=True)
+        result = apply_migrations(seed_demo=True)
         files = [p.name for p in list_migration_files()]
-        return jsonify({"ok": True, "applied": files}), 200
+        payload = {
+            "ok": True,
+            "applied": result.get("applied") or [],
+            "baseline_marked": result.get("baseline_marked") or [],
+            "skipped_changed": result.get("skipped_changed") or [],
+            "mode": result.get("mode") or "apply",
+            "available": files,
+        }
+        return jsonify(payload), 200
     except Exception as e:  # pragma: no cover
         return jsonify({"ok": False, "error": str(e)}), 500
 

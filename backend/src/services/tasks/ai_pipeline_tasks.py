@@ -85,7 +85,9 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
     start_time = time.time()
     ai1_provider = ai_service.prompt_provider_names.get("document_analysis", "unknown")
     ai1_model = ai_service.prompt_model_names.get("document_analysis", "unknown")
-    begin_import_stage(workflow_run_id, "detect_type", message=f"AI1 klassificering f├╢r fil {file_id}")
+    ai1_prompt = ai_service.prompts.get("document_analysis", "")
+    raw_response = ""
+    begin_import_stage(workflow_run_id, "detect_type", message=f"AI1 klassificering för fil {file_id}")
     try:
         result = classify_document_internal(
             DocumentClassificationRequest(file_id=file_id, ocr_text=ocr_text or "")
@@ -93,13 +95,10 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
         elapsed = int((time.time() - start_time) * 1000)
         steps.append("AI1")
 
-        ai1_prompt = ai_service.prompts.get("document_analysis", "")
         raw_response = ai_service.last_raw_response or ""
         log_parts = [
             f"Classified document as '{result.document_type}'",
             f"OCR text length: {len(ocr_text or '')} characters",
-            f"--- PROMPT ---\n{ai1_prompt}",
-            f"--- RAW RESPONSE ---\n{raw_response}",
         ]
         if result.reasoning:
             log_parts.append(f"Reasoning: {result.reasoning}")
@@ -114,6 +113,8 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             processing_time_ms=elapsed,
             provider=ai1_provider,
             model_name=ai1_model,
+            prompt_text=ai1_prompt,
+            response_text=raw_response,
         )
 
         # Update file_type column with classified document_type
@@ -131,7 +132,7 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
         if doc_type_norm not in allowed_doc_types:
             reason = (
                 f"AI1 kunde inte kategorisera dokumentet (fick '{result.document_type}' "
-                "utanf├╢r till├Ñtna typer)."
+                "utanför tillåtna typer)."
             )
             complete_import_stage(workflow_run_id, "detect_type", success=False, message=reason)
             log_import_event(workflow_run_id, AiStatus.MANUAL_REVIEW.value, message=reason)
@@ -146,6 +147,7 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
         error_msg = f"{type(exc).__name__}: {str(exc)}"
+        raw_response = ai_service.last_raw_response or ""
         _history(
             file_id,
             "ai1",
@@ -156,6 +158,8 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             processing_time_ms=elapsed,
             provider=ai1_provider,
             model_name=ai1_model,
+            prompt_text=ai1_prompt,
+            response_text=raw_response,
         )
         complete_import_stage(
             workflow_run_id,
@@ -169,10 +173,12 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
     context = _load_ai_context(file_id) or context
     ocr_text, document_type, expense_type = context
 
-    # AI2 - Expense Classification
+# AI2 - Expense Classification
     start_time = time.time()
     ai2_provider = ai_service.prompt_provider_names.get("expense_classification", "unknown")
     ai2_model = ai_service.prompt_model_names.get("expense_classification", "unknown")
+    ai2_prompt = ai_service.prompts.get("expense_classification", "")
+    raw_response = ""
     try:
         result = classify_expense_internal(
             ExpenseClassificationRequest(
@@ -184,13 +190,10 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
         elapsed = int((time.time() - start_time) * 1000)
         steps.append("AI2")
 
-        ai2_prompt = ai_service.prompts.get("expense_classification", "")
         raw_response = ai_service.last_raw_response or ""
         log_parts = [
             f"Classified expense as '{result.expense_type}'",
             f"Document type: {document_type or 'other'}",
-            f"--- PROMPT ---\n{ai2_prompt}",
-            f"--- RAW RESPONSE ---\n{raw_response}",
         ]
         if result.card_identifier:
             log_parts.append(f"Card identifier: {result.card_identifier}")
@@ -207,10 +210,13 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             processing_time_ms=elapsed,
             provider=ai2_provider,
             model_name=ai2_model,
+            prompt_text=ai2_prompt,
+            response_text=raw_response,
         )
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
         error_msg = f"{type(exc).__name__}: {str(exc)}"
+        raw_response = ai_service.last_raw_response or ""
         _history(
             file_id,
             "ai2",
@@ -221,6 +227,8 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             processing_time_ms=elapsed,
             provider=ai2_provider,
             model_name=ai2_model,
+            prompt_text=ai2_prompt,
+            response_text=raw_response,
         )
         raise
 
@@ -228,10 +236,12 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
     context = _load_ai_context(file_id) or context
     ocr_text, document_type, expense_type = context
 
-    # AI3 - Data Extraction
+# AI3 - Data Extraction
     start_time = time.time()
     ai3_provider = ai_service.prompt_provider_names.get("data_extraction", "unknown")
     ai3_model = ai_service.prompt_model_names.get("data_extraction", "unknown")
+    ai3_prompt = ai_service.prompts.get("data_extraction", "")
+    raw_response = ""
     begin_import_stage(workflow_run_id, "r_ai3", message="AI3 dataextraktion startar")
     try:
         result = extract_data_internal(
@@ -293,19 +303,14 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
                 company_details.append(f"country='{result.company.country}'")
 
         # Receipt items summary
-        items_summary = []
+        item_samples = []
         if result.receipt_items and len(result.receipt_items) > 0:
-            for idx, item in enumerate(result.receipt_items[:3], 1):  # Show first 3 items
-                items_summary.append(f"{item.name}@{item.item_total_price_inc_vat}")
-            if len(result.receipt_items) > 3:
-                items_summary.append(f"... +{len(result.receipt_items) - 3} more")
+            for item in result.receipt_items[:3]:
+                item_samples.append(f"{item.name}@{item.item_total_price_inc_vat}")
 
-        ai3_prompt = ai_service.prompts.get("data_extraction", "")
         raw_response = ai_service.last_raw_response or ""
         log_parts = [
             f"Extracted data: {', '.join(extracted) if extracted else 'NO DATA'}",
-            f"--- PROMPT ---\n{ai3_prompt}",
-            f"--- RAW RESPONSE ---\n{raw_response}",
         ]
         if company_details:
             log_parts.append(f"Company: {'; '.join(company_details)}")
@@ -317,8 +322,10 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             log_parts.append("WARNING: 0 receipt_items extracted from LLM - check prompt and LLM response!")
         else:
             log_parts.append(f"Items: {item_count} total")
-            if items_summary:
-                log_parts.append(f"Sample items: [{', '.join(items_summary)}]")
+            if item_samples:
+                log_parts.append(
+                    f"Sample items (first {len(item_samples)}): [{', '.join(item_samples)}]"
+                )
 
         _history(
             file_id,
@@ -330,6 +337,8 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             processing_time_ms=elapsed,
             provider=ai3_provider,
             model_name=ai3_model,
+            prompt_text=ai3_prompt,
+            response_text=raw_response,
         )
         complete_import_stage(
             workflow_run_id,
@@ -360,6 +369,7 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
         error_msg = f"{type(exc).__name__}: {str(exc)}"
+        raw_response = ai_service.last_raw_response or ""
         _history(
             file_id,
             "ai3",
@@ -370,6 +380,8 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             processing_time_ms=elapsed,
             provider=ai3_provider,
             model_name=ai3_model,
+            prompt_text=ai3_prompt,
+            response_text=raw_response,
         )
         complete_import_stage(
             workflow_run_id,
@@ -389,6 +401,8 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
         start_time = time.time()
         ai4_provider = ai_service.prompt_provider_names.get("accounting_classification", "unknown")
         ai4_model = ai_service.prompt_model_names.get("accounting_classification", "unknown")
+        ai4_prompt = ai_service.prompts.get("accounting_classification", "")
+        raw_response = ""
         try:
             result = classify_accounting_internal(
                 AccountingClassificationRequest(
@@ -419,28 +433,27 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             proposal_count = len(result.proposals or [])
 
             # Add detailed proposal breakdown
-            proposal_details = []
-            for proposal in (result.proposals or [])[:5]:  # Show first 5 proposals
-                proposal_details.append(
+            proposal_samples = []
+            for proposal in (result.proposals or [])[:5]:
+                proposal_samples.append(
                     f"account={proposal.account_code}, "
                     f"debit={proposal.debit}, credit={proposal.credit}"
                 )
-            if len(result.proposals or []) > 5:
-                proposal_details.append(f"... +{len(result.proposals) - 5} more")
 
-            ai4_prompt = ai_service.prompts.get("accounting_classification", "")
             raw_response = ai_service.last_raw_response or ""
             log_parts = [
                 f"Generated {proposal_count} accounting proposals",
                 f"Vendor: {vendor_name or 'N/A'}",
                 f"Amounts: gross={gross}, net={net}, vat={vat_amount}",
-                f"--- PROMPT ---\n{ai4_prompt}",
-                f"--- RAW RESPONSE ---\n{raw_response}",
             ]
             if result.based_on_bas2025:
                 log_parts.append("Based on BAS 2025 chart of accounts")
-            if proposal_details:
-                log_parts.append(f"Proposals: [{'; '.join(proposal_details)}]")
+            if proposal_count > 0:
+                log_parts.append(f"Proposals: {proposal_count} total")
+                if proposal_samples:
+                    log_parts.append(
+                        f"Sample proposals (first {len(proposal_samples)}): [{'; '.join(proposal_samples)}]"
+                    )
 
             _history(
                 file_id,
@@ -452,16 +465,19 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
                 processing_time_ms=elapsed,
                 provider=ai4_provider,
                 model_name=ai4_model,
+                prompt_text=ai4_prompt,
+                response_text=raw_response,
             )
             complete_import_stage(
                 workflow_run_id,
                 "r_ai4",
                 success=True,
-                message=f"AI4 skapade {proposal_count} konteringsf├╢rslag",
+                message=f"AI4 skapade {proposal_count} konteringsförslag",
             )
         except Exception as exc:
             elapsed = int((time.time() - start_time) * 1000)
             error_msg = f"{type(exc).__name__}: {str(exc)}"
+            raw_response = ai_service.last_raw_response or ""
             _history(
                 file_id,
                 "ai4",
@@ -472,6 +488,8 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
                 processing_time_ms=elapsed,
                 provider=ai4_provider,
                 model_name=ai4_model,
+                prompt_text=ai4_prompt,
+                response_text=raw_response,
             )
             complete_import_stage(
                 workflow_run_id,
@@ -479,6 +497,7 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
                 success=False,
                 message=error_msg,
             )
+            _move_to_manual_review(file_id, error_msg)
             raise
     else:
         _history(
