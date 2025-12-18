@@ -105,14 +105,22 @@ def upload_invoice() -> Any:
         workflow_run_id = unified_file.workflow_run_id
     except DuplicateFileError:
         existing_id = find_file_id_by_hash(file_hash)
+        logger.info(
+            "FirstCard upload already imported (hash=%s...): %s -> %s",
+            file_hash[:16],
+            safe_name,
+            existing_id,
+        )
         return (
             jsonify(
                 {
-                    "error": "duplicate_file",
                     "invoice_id": existing_id,
+                    "status": "already_imported",
+                    "processing_status": InvoiceProcessingStatus.UPLOADED.value,
+                    "workflow_run_id": None,
                 }
             ),
-            409,
+            201,
         )
 
     fs.save_original(invoice_id, safe_name, data)

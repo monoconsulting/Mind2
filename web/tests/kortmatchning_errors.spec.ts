@@ -7,14 +7,17 @@ import { test, expect } from '@playwright/test';
  * Tests error handling in the card matching module:
  * - Navigation to card matching page
  * - File upload functionality
- * - Duplicate file error handling (409)
- * - Error message display and dismissal
+ * - Duplicate file handling ("already imported")
  */
 
 test.use({
   viewport: {
-    height: 1440,
-    width: 2560
+    height: 1200,
+    width: 1900
+  },
+  recordVideo: {
+    dir: 'web/test-results/media/video',
+    size: { width: 1900, height: 1200 },
   }
 });
 
@@ -35,36 +38,29 @@ test.describe('Card Matching Error Handling', () => {
     await page.waitForLoadState('networkidle');
   });
 
-  test('should handle duplicate file upload error (409)', async ({ page }) => {
+  test('should treat duplicate upload as already imported (non-fatal)', async ({ page }) => {
     // Verify we're on the card matching page
     await expect(page.getByRole('heading', { name: 'Kontoutdrag' })).toBeVisible();
 
-    // Click upload button
-    await page.getByRole('button', { name: 'Ladda upp utdrag' }).click();
+    const uploadOnce = async () => {
+      await page.getByRole('button', { name: 'Ladda upp utdrag' }).click();
+      const uploadDialog = page.getByRole('dialog', { name: 'Ladda upp kontoutdrag' });
+      await expect(uploadDialog).toBeVisible();
 
-    // Upload file
-    await page.getByRole('button', { name: 'Choose File' }).setInputFiles('FC_2505.pdf');
+      await page.getByRole('button', { name: 'Choose File' }).setInputFiles('web/FC_2505.pdf');
+      await page.getByRole('button', { name: 'Ladda upp', exact: true }).click();
 
-    // Click upload
-    await page.getByRole('button', { name: 'Ladda upp', exact: true }).click();
+      // Duplicate uploads should not be treated as a hard error in the UI.
+      // The upload dialog closes automatically on success paths.
+      await expect(uploadDialog).toBeHidden({ timeout: 15000 });
+    };
 
-    // Wait for error message to appear
-    await page.waitForTimeout(1000);
+    // Upload once (creates or reuses record), then upload again (should be treated as already imported).
+    await uploadOnce();
+    await uploadOnce();
 
-    // Verify error message is displayed (409 - file already exists)
-    const errorMessage = page.locator('div').filter({
-      hasText: /^Kunde inte ladda upp 1 fil: FC_2505\.pdf \(Fel 409\.\)\.$/
-    });
-    await expect(errorMessage).toBeVisible();
-
-    // Click on error message to acknowledge
-    await errorMessage.click();
-
-    // Close upload dialog
-    await page.getByRole('button', { name: 'Avbryt' }).click();
-
-    // Verify dialog is closed
-    await page.waitForTimeout(500);
+    // Verify we are still on the card matching page (no crash / no blocking error).
+    await expect(page.getByRole('heading', { name: 'Kontoutdrag' })).toBeVisible();
   });
 
   test('should be able to cancel upload dialog', async ({ page }) => {

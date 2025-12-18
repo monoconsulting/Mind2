@@ -36,18 +36,21 @@ logger = logging.getLogger(__name__)
 # Deprecated local history helper; uses unified log_ai_call in services.ai_logging
 _history = log_ai_call
 
-def _hash_exists(content_hash: str) -> bool:
+def _find_file_id_by_hash(content_hash: str) -> str | None:
     if db_cursor is None:
-        return False
+        return None
     try:
         with db_cursor() as cur:
             cur.execute(
                 "SELECT id FROM unified_files WHERE content_hash = %s LIMIT 1",
                 (content_hash,),
             )
-            return cur.fetchone() is not None
+            row = cur.fetchone()
+            if not row:
+                return None
+            return str(row[0])
     except Exception:
-        return False
+        return None
 
 ingest_bp = Blueprint("ingest", __name__)
 
@@ -62,6 +65,7 @@ def upload_files() -> Any:
 
     uploaded_count = 0
     skipped_count = 0
+    duplicates: list[dict[str, Any]] = []
     errors = []
 
     storage_dir = os.getenv('STORAGE_DIR', '/data/storage')
@@ -80,8 +84,22 @@ def upload_files() -> Any:
             file_id = str(uuid.uuid4())
             safe_filename = secure_filename(file.filename)
 
-            if _hash_exists(file_hash):
-                logger.warning(f"File {idx}: SKIPPED - Duplicate detected: {safe_filename}")
+            existing_file_id = _find_file_id_by_hash(file_hash)
+            if existing_file_id:
+                logger.info(
+                    "File %s: Already imported (duplicate hash=%s...): %s -> %s",
+                    idx,
+                    file_hash[:16],
+                    safe_filename,
+                    existing_file_id,
+                )
+                duplicates.append(
+                    {
+                        "status": "already_imported",
+                        "original_filename": safe_filename,
+                        "file_id": existing_file_id,
+                    }
+                )
                 skipped_count += 1
                 continue
 
@@ -200,7 +218,21 @@ def upload_files() -> Any:
                 raise RuntimeError(f"Failed to create or dispatch workflow for file {file_id}")
 
         except DuplicateFileError:
-            logger.warning(f"File {idx}: SKIPPED - Duplicate file (hash={file_hash[:16]}...)")
+            existing_file_id = _find_file_id_by_hash(file_hash)
+            logger.info(
+                "File %s: Already imported (duplicate hash=%s...): %s -> %s",
+                idx,
+                file_hash[:16],
+                safe_filename,
+                existing_file_id,
+            )
+            duplicates.append(
+                {
+                    "status": "already_imported",
+                    "original_filename": safe_filename,
+                    "file_id": existing_file_id,
+                }
+            )
             skipped_count += 1
         except Exception as e:
             error_msg = f"File processing error for {file.filename}: {str(e)}"
@@ -211,9 +243,20 @@ def upload_files() -> Any:
     logger.info(f"=== UPLOAD REQUEST COMPLETE === Uploaded: {uploaded_count}, Skipped: {skipped_count}, Errors: {len(errors)}")
 
     if errors:
-        return jsonify({"ok": False, "uploaded": uploaded_count, "skipped": skipped_count, "errors": errors}), 500
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "uploaded": uploaded_count,
+                    "skipped": skipped_count,
+                    "duplicates": duplicates,
+                    "errors": errors,
+                }
+            ),
+            500,
+        )
 
-    return jsonify({"ok": True, "uploaded": uploaded_count, "skipped": skipped_count}), 200
+    return jsonify({"ok": True, "uploaded": uploaded_count, "skipped": skipped_count, "duplicates": duplicates}), 200
 
 
 def _parse_other_data(raw: Any) -> dict[str, Any]:
