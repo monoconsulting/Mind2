@@ -1272,6 +1272,7 @@ export default function Receipts() {
   const [logState, setLogState] = React.useState(INITIAL_LOG_STATE)
   const [showPrompts, setShowPrompts] = React.useState(false)
   const [logActionState, setLogActionState] = React.useState({ clearing: false, error: '', success: '' })
+  const [copyState, setCopyState] = React.useState({ status: '', message: '' })
 
   const fetchReceiptLog = React.useCallback(async (receiptId) => {
     if (!receiptId) {
@@ -1313,6 +1314,7 @@ export default function Receipts() {
     setLogState(INITIAL_LOG_STATE)
     setLogActionState({ clearing: false, error: '', success: '' })
     setShowPrompts(false)
+    setCopyState({ status: '', message: '' })
   }, [])
 
   const handleClearReceiptLog = React.useCallback(async (receiptId) => {
@@ -1340,7 +1342,7 @@ export default function Receipts() {
     }
   }, [fetchReceiptLog, logActionState.clearing])
 
-  const handleCopyAll = React.useCallback(() => {
+  const handleCopyAll = React.useCallback(async () => {
     const logData = logState.data ?? {}
     const historyEntries = Array.isArray(logData.ai_history) ? logData.ai_history : []
     const run = Array.isArray(logData.workflow_runs) ? logData.workflow_runs[0] : null
@@ -1350,7 +1352,7 @@ export default function Receipts() {
       sections.push(`Workflow: ${run.workflow_key} ${run.status} (Run-ID: ${run.id})`)
     }
     historyEntries.forEach((entry, index) => {
-      sections.push(`--- AI-entry ${index + 1} ---`)
+      sections.push(`--- ${entry.ai_stage_name || entry.job_type || 'Okänt steg'} ---`)
       sections.push(`Stage: ${entry.ai_stage_name || entry.job_type || 'Okänt'} (${entry.status})`)
       sections.push(`Log: ${entry.log_text ?? ''}`)
       sections.push(`Error: ${entry.error_message ?? ''}`)
@@ -1359,10 +1361,23 @@ export default function Receipts() {
         sections.push(`Prompt: ${entry.prompt_text ?? ''}`)
       }
     })
+    const normalize = (value) => String(value ?? '').replace(/\s+/g, ' ').trim()
+    const text = showPrompts ? sections.join('\n\n') : normalize(sections.join(' '))
+
+    setCopyState({ status: 'copying', message: '' })
     try {
-      navigator.clipboard.writeText(sections.join('\n\n'))
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('clipboard unavailable')
+      }
+      await navigator.clipboard.writeText(text)
+      setCopyState({ status: 'success', message: 'Copied!' })
     } catch (error) {
       console.error('Failed to copy receipt log', error)
+      setCopyState({ status: 'error', message: 'Copy failed' })
+    } finally {
+      window.setTimeout(() => {
+        setCopyState({ status: '', message: '' })
+      }, 2000)
     }
   }, [logState.data, logState.receiptId, showPrompts])
 
@@ -1927,10 +1942,10 @@ export default function Receipts() {
                 type="button"
                 className="btn btn-secondary btn-sm flex items-center gap-1"
                 onClick={handleCopyAll}
-                disabled={logState.loading || !logState.data}
+                disabled={logState.loading || !logState.data || copyState.status === 'copying'}
               >
                 <FiCopy />
-                Kopiera allt
+                {copyState.message || (copyState.status === 'copying' ? 'Kopierar...' : 'Kopiera allt')}
               </button>
               <button
                 type="button"
