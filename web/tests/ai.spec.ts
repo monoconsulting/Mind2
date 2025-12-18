@@ -260,3 +260,64 @@ test.describe('@company-resolution-fallback', () => {
     })
   })
 })
+
+test.describe('@ai4-validation-nonfatal', () => {
+  test.use({
+    viewport: { width: 1900, height: 1200 },
+    recordVideo: {
+      dir: 'web/test-results/media/video',
+      size: { width: 1900, height: 1200 },
+    },
+  })
+
+  test('AI4 validation errors degrade to manual review (not fatal) @ai4-validation-nonfatal', async ({ page }, testInfo) => {
+    test.setTimeout(2 * 60_000)
+    await loginAsAdmin(page)
+    const token = await page.evaluate(() => localStorage.getItem('mind.jwt'))
+    expect(token).toBeTruthy()
+    const authHeaders = { Authorization: `Bearer ${token}` }
+
+    // Known failure-case file_id where AI4 previously produced AccountingProposalValidationError.
+    const fileId = 'b8479106-3887-464c-b4af-c13aa0728ac7'
+
+    // Reset totals so AI4 uses a known-bad input state (gross/net missing => 0).
+    const resetResponse = await page.request.patch(`/ai/api/receipts/${fileId}`, {
+      data: {
+        gross_amount_sek: null,
+        net_amount_sek: null,
+        exchange_rate: 0,
+        currency: 'SEK',
+      },
+    })
+    expect(resetResponse.ok()).toBeTruthy()
+
+    const runAi4 = await page.request.post('/ai/api/ai/process/batch', {
+      headers: authHeaders,
+      data: {
+        file_ids: [fileId],
+        processing_steps: ['AI4'],
+        stop_on_error: true,
+      },
+    })
+    expect(runAi4.ok()).toBeTruthy()
+    const runAi4Json = await runAi4.json()
+
+    const result = Array.isArray(runAi4Json?.results) ? runAi4Json.results[0] : null
+    expect(result?.file_id).toBe(fileId)
+    expect(result?.error ?? null).toBeNull()
+    expect(result?.ai4_status).toBe('needs_review')
+    expect(String(result?.ai4_error || '')).toContain('AccountingProposalValidationError')
+
+    const receiptResponse = await page.request.get(`/ai/api/receipts/${fileId}`)
+    expect(receiptResponse.ok()).toBeTruthy()
+    const receipt = await receiptResponse.json()
+    expect(receipt?.ai_status).toBe('manual_review')
+
+    await page.goto('/process')
+    await page.waitForLoadState('networkidle')
+    await testInfo.attach('process-snapshot', {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    })
+  })
+})

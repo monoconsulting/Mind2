@@ -423,6 +423,7 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
         ai4_model = ai_service.prompt_model_names.get("accounting_classification", "unknown")
         ai4_prompt = ai_service.prompts.get("accounting_classification", "")
         raw_response = ""
+        from services.ai_service import AccountingProposalValidationError
         try:
             result = classify_accounting_internal(
                 AccountingClassificationRequest(
@@ -494,6 +495,35 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
                 success=True,
                 message=f"AI4 skapade {proposal_count} konteringsförslag",
             )
+        except AccountingProposalValidationError as exc:
+            # Non-fatal: validator errors must degrade to manual review and the batch must continue.
+            elapsed = int((time.time() - start_time) * 1000)
+            error_msg = f"{type(exc).__name__}: {str(exc)}"
+            raw_response = ai_service.last_raw_response or ""
+            _history(
+                file_id,
+                "ai4",
+                "error",
+                ai_stage_name="AI4-AccountingClassification",
+                log_text=(
+                    "Needs review: AI4 validation failed for "
+                    f"vendor='{vendor_name}', gross={gross}, net={net}, vat={vat_amount}"
+                ),
+                error_message=error_msg,
+                processing_time_ms=elapsed,
+                provider=ai4_provider,
+                model_name=ai4_model,
+                prompt_text=ai4_prompt,
+                response_text=raw_response,
+            )
+            complete_import_stage(
+                workflow_run_id,
+                "r_ai4",
+                success=True,
+                message=error_msg,
+            )
+            log_import_event(workflow_run_id, AiStatus.MANUAL_REVIEW.value, message=error_msg)
+            _move_to_manual_review(file_id, error_msg)
         except Exception as exc:
             elapsed = int((time.time() - start_time) * 1000)
             error_msg = f"{type(exc).__name__}: {str(exc)}"
