@@ -898,78 +898,48 @@ def process_batch() -> Any:
                         )
                         file_result["steps_completed"].append("AI3")
                     elif step == "AI4":
-                        with db_cursor() as cursor:
-                            cursor.execute(
-                                """
-                                SELECT gross_amount_sek, net_amount_sek,
-                                       (gross_amount_sek - net_amount_sek) AS vat_amount,
-                                       c.name AS vendor_name
-                                  FROM unified_files uf
-                             LEFT JOIN companies c ON uf.company_id = c.id
-                                 WHERE uf.id = %s
-                                """,
-                                (file_id,),
-                            )
-                            amounts = cursor.fetchone()
-                            # Fetch receipt_items from database with their IDs
-                            cursor.execute(
-                                """
-                                SELECT id, main_id, article_id, name, number,
-                                       item_price_ex_vat, item_price_inc_vat,
-                                       item_total_price_ex_vat, item_total_price_inc_vat,
-                                       currency, vat, vat_percentage
-                                  FROM receipt_items
-                                 WHERE main_id = %s
-                                 ORDER BY id
-                                """,
-                                (file_id,),
-                            )
-                            items_rows = cursor.fetchall()
+                        from services.tasks.file_management_tasks import _load_accounting_inputs, _load_receipt_items, _move_to_manual_review
 
-                        receipt_items_for_ai4: List[ReceiptItem] = []
-                        for row in items_rows:
-                            receipt_items_for_ai4.append(ReceiptItem(
-                                id=row[0],
-                                main_id=row[1],
-                                article_id=row[2] or "",
-                                name=row[3],
-                                number=row[4],
-                                item_price_ex_vat=row[5],
-                                item_price_inc_vat=row[6],
-                                item_total_price_ex_vat=row[7],
-                                item_total_price_inc_vat=row[8],
-                                currency=row[9],
-                                vat=row[10],
-                                vat_percentage=row[11],
-                            ))
+                        accounting = _load_accounting_inputs(file_id)
+                        if not accounting:
+                            continue
 
-                        if amounts:
-                            logger.info(
-                                "AI4 processing %s with %d receipt_items (IDs: %s)",
-                                file_id,
-                                len(receipt_items_for_ai4),
-                                [item.id for item in receipt_items_for_ai4]
+                        if accounting.get("ai4_ready") is False:
+                            reason = str(accounting.get("reason") or "missing totals for accounting")
+                            file_result["ai4_status"] = "needs_review"
+                            file_result["ai4_reason"] = reason
+                            _move_to_manual_review(file_id, reason)
+                            continue
+
+                        receipt_items_for_ai4 = _load_receipt_items(file_id)
+                        vendor_name = accounting.get("vendor_name") or ""
+
+                        logger.info(
+                            "AI4 processing %s with %d receipt_items",
+                            file_id,
+                            len(receipt_items_for_ai4),
+                        )
+
+                        classify_accounting_internal(
+                            AccountingClassificationRequest(
+                                file_id=file_id,
+                                document_type=document_type or "other",
+                                expense_type=expense_type or "personal",
+                                gross_amount=Decimal(str(accounting.get("gross_amount_sek") or 0)),
+                                net_amount=Decimal(str(accounting.get("net_amount_sek") or 0)),
+                                vat_amount=Decimal(str(accounting.get("vat_amount_sek") or 0)),
+                                vendor_name=vendor_name,
+                                receipt_items=receipt_items_for_ai4,
                             )
-                            classify_accounting_internal(
-                                AccountingClassificationRequest(
-                                    file_id=file_id,
-                                    document_type=document_type or "other",
-                                    expense_type=expense_type or "personal",
-                                    gross_amount=Decimal(str(amounts[0] or 0)),
-                                    net_amount=Decimal(str(amounts[1] or 0)),
-                                    vat_amount=Decimal(str(amounts[2] or 0)),
-                                    vendor_name=amounts[3] or "",
-                                    receipt_items=receipt_items_for_ai4,
-                                )
-                            )
-                            file_result["steps_completed"].append("AI4")
-                            stats = run_box_enrichment(file_id)
-                            if stats.get("success"):
-                                if "AI7" not in file_result["steps_completed"]:
-                                    file_result["steps_completed"].append("AI7")
-                                file_result["ai7"] = stats
-                            else:
-                                file_result["ai7_error"] = stats.get("error", "unknown")
+                        )
+                        file_result["steps_completed"].append("AI4")
+                        stats = run_box_enrichment(file_id)
+                        if stats.get("success"):
+                            if "AI7" not in file_result["steps_completed"]:
+                                file_result["steps_completed"].append("AI7")
+                            file_result["ai7"] = stats
+                        else:
+                            file_result["ai7_error"] = stats.get("error", "unknown")
                     elif step == "AI5":
                         match_info = _load_match_context(file_id)
                         if match_info and match_info[0]:

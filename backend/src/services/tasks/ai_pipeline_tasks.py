@@ -395,8 +395,28 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
     # AI4 - Accounting Classification
     accounting_inputs = _load_accounting_inputs(file_id)
     begin_import_stage(workflow_run_id, "r_ai4", message="AI4 normalisering startar")
-    if accounting_inputs:
-        gross, net, vat_amount, vendor_name = accounting_inputs
+    if accounting_inputs and accounting_inputs.get("ai4_ready") is False:
+        reason = str(accounting_inputs.get("reason") or "missing totals for accounting")
+        _history(
+            file_id,
+            "ai4",
+            "skipped",
+            ai_stage_name="AI4-AccountingClassification",
+            log_text=f"Needs review: {reason}",
+        )
+        complete_import_stage(
+            workflow_run_id,
+            "r_ai4",
+            success=True,
+            message=reason,
+        )
+        log_import_event(workflow_run_id, AiStatus.MANUAL_REVIEW.value, message=reason)
+        _move_to_manual_review(file_id, reason)
+    elif accounting_inputs and accounting_inputs.get("ai4_ready"):
+        gross = accounting_inputs.get("gross_amount_sek")
+        net = accounting_inputs.get("net_amount_sek")
+        vat_amount = accounting_inputs.get("vat_amount_sek")
+        vendor_name = accounting_inputs.get("vendor_name")
         receipt_items = _load_receipt_items(file_id)
         start_time = time.time()
         ai4_provider = ai_service.prompt_provider_names.get("accounting_classification", "unknown")

@@ -392,23 +392,140 @@ def _load_ai_context(file_id: str):
         return None
 
 
-def _load_accounting_inputs(file_id: str):
+def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
+    """Load and normalize deterministic accounting inputs for AI4.
+
+    Returns a dict with normalized values and a boolean gate `ai4_ready`.
+
+    IMPORTANT: AI4 must not run when totals are missing/invalid. When deterministic
+    inputs exist (e.g. currency=SEK and *_original is set), this function fills
+    missing SEK totals and exchange_rate and persists them back to unified_files.
+    """
+
     if db_cursor is None:
         return None
+
     try:
         with db_cursor() as cur:
             cur.execute(
                 """
-                SELECT gross_amount_sek, net_amount_sek,
-                       (gross_amount_sek - net_amount_sek) AS vat_amount,
-                       c.name AS vendor_name
-                  FROM unified_files uf
-             LEFT JOIN companies c ON uf.company_id = c.id
-                 WHERE uf.id = %s
+                SELECT
+                    uf.gross_amount_sek,
+                    uf.net_amount_sek,
+                    uf.gross_amount_original,
+                    uf.net_amount_original,
+                    uf.currency,
+                    uf.exchange_rate,
+                    c.name AS vendor_name
+                FROM unified_files uf
+                LEFT JOIN companies c ON uf.company_id = c.id
+                WHERE uf.id = %s
                 """,
                 (file_id,),
             )
-            return cur.fetchone()
+            row = cur.fetchone()
+            if not row:
+                return None
+
+            gross_amount_sek, net_amount_sek, gross_amount_original, net_amount_original, currency, exchange_rate, vendor_name = row
+
+            currency_norm = str(currency or "").strip().upper()
+            updates: list[str] = []
+            params: list[Any] = []
+
+            if currency_norm == "SEK":
+                if gross_amount_sek is None and gross_amount_original is not None:
+                    gross_amount_sek = gross_amount_original
+                    updates.append("gross_amount_sek=%s")
+                    params.append(gross_amount_sek)
+
+                if net_amount_sek is None and net_amount_original is not None:
+                    net_amount_sek = net_amount_original
+                    updates.append("net_amount_sek=%s")
+                    params.append(net_amount_sek)
+
+                if exchange_rate in (None, 0):
+                    exchange_rate = 1.0
+                    updates.append("exchange_rate=%s")
+                    params.append(exchange_rate)
+
+            if updates:
+                updates.append("updated_at=NOW()")
+                params.append(file_id)
+                cur.execute(
+                    f"UPDATE unified_files SET {', '.join(updates)} WHERE id=%s",
+                    tuple(params),
+                )
+
+            vat_amount_sek = None
+            if gross_amount_sek is not None and net_amount_sek is not None:
+                try:
+                    vat_amount_sek = gross_amount_sek - net_amount_sek
+                except Exception:
+                    vat_amount_sek = None
+
+            has_sek_totals = gross_amount_sek is not None and net_amount_sek is not None
+            has_original_totals = gross_amount_original is not None and net_amount_original is not None
+
+            ai4_ready = has_sek_totals
+            if not ai4_ready:
+                # Controlled indicator for the caller to mark needs_review and skip AI4.
+                return {
+                    "ai4_ready": False,
+                    "reason": "missing totals for accounting",
+                    "gross_amount_sek": gross_amount_sek,
+                    "net_amount_sek": net_amount_sek,
+                    "vat_amount_sek": vat_amount_sek,
+                    "gross_amount_original": gross_amount_original,
+                    "net_amount_original": net_amount_original,
+                    "currency": currency_norm or None,
+                    "exchange_rate": exchange_rate,
+                    "vendor_name": vendor_name,
+                    "missing_totals": not has_sek_totals and not has_original_totals,
+                }
+
+            # Guard obvious invalid totals to avoid sending nonsense to AI4.
+            try:
+                if gross_amount_sek is not None and net_amount_sek is not None and gross_amount_sek < net_amount_sek:
+                    return {
+                        "ai4_ready": False,
+                        "reason": "missing totals for accounting",
+                        "gross_amount_sek": gross_amount_sek,
+                        "net_amount_sek": net_amount_sek,
+                        "vat_amount_sek": vat_amount_sek,
+                        "gross_amount_original": gross_amount_original,
+                        "net_amount_original": net_amount_original,
+                        "currency": currency_norm or None,
+                        "exchange_rate": exchange_rate,
+                        "vendor_name": vendor_name,
+                        "missing_totals": False,
+                    }
+            except Exception:
+                return {
+                    "ai4_ready": False,
+                    "reason": "missing totals for accounting",
+                    "gross_amount_sek": gross_amount_sek,
+                    "net_amount_sek": net_amount_sek,
+                    "vat_amount_sek": vat_amount_sek,
+                    "gross_amount_original": gross_amount_original,
+                    "net_amount_original": net_amount_original,
+                    "currency": currency_norm or None,
+                    "exchange_rate": exchange_rate,
+                    "vendor_name": vendor_name,
+                    "missing_totals": False,
+                }
+
+            return {
+                "ai4_ready": True,
+                "gross_amount_sek": gross_amount_sek,
+                "net_amount_sek": net_amount_sek,
+                "vat_amount_sek": vat_amount_sek,
+                "gross_amount_original": gross_amount_original,
+                "net_amount_original": net_amount_original,
+                "currency": currency_norm or None,
+                "exchange_rate": exchange_rate,
+                "vendor_name": vendor_name,
+            }
     except Exception:
         return None
 
