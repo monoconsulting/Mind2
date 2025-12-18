@@ -937,26 +937,44 @@ def process_batch() -> Any:
                             len(receipt_items_for_ai4),
                         )
 
-                        classify_accounting_internal(
-                            AccountingClassificationRequest(
-                                file_id=file_id,
-                                document_type=document_type or "other",
-                                expense_type=expense_type or "personal",
-                                gross_amount=Decimal(str(accounting.get("gross_amount_sek") or 0)),
-                                net_amount=Decimal(str(accounting.get("net_amount_sek") or 0)),
-                                vat_amount=Decimal(str(accounting.get("vat_amount_sek") or 0)),
-                                vendor_name=vendor_name,
-                                receipt_items=receipt_items_for_ai4,
+                        try:
+                            from services.ai_service import AccountingProposalValidationError
+                            from services.ai_logging import log_ai_call
+
+                            classify_accounting_internal(
+                                AccountingClassificationRequest(
+                                    file_id=file_id,
+                                    document_type=document_type or "other",
+                                    expense_type=expense_type or "personal",
+                                    gross_amount=Decimal(str(accounting.get("gross_amount_sek") or 0)),
+                                    net_amount=Decimal(str(accounting.get("net_amount_sek") or 0)),
+                                    vat_amount=Decimal(str(accounting.get("vat_amount_sek") or 0)),
+                                    vendor_name=vendor_name,
+                                    receipt_items=receipt_items_for_ai4,
+                                )
                             )
-                        )
-                        file_result["steps_completed"].append("AI4")
-                        stats = run_box_enrichment(file_id)
-                        if stats.get("success"):
-                            if "AI7" not in file_result["steps_completed"]:
-                                file_result["steps_completed"].append("AI7")
-                            file_result["ai7"] = stats
+                        except AccountingProposalValidationError as exc:
+                            error_msg = f"{type(exc).__name__}: {str(exc)}"
+                            file_result["ai4_status"] = "needs_review"
+                            file_result["ai4_error"] = error_msg
+                            _move_to_manual_review(file_id, error_msg)
+                            log_ai_call(
+                                file_id=file_id,
+                                job="ai4",
+                                status="error",
+                                ai_stage_name="AI4-AccountingClassification",
+                                log_text="Needs review: AI4 validation failed",
+                                error_message=error_msg,
+                            )
                         else:
-                            file_result["ai7_error"] = stats.get("error", "unknown")
+                            file_result["steps_completed"].append("AI4")
+                            stats = run_box_enrichment(file_id)
+                            if stats.get("success"):
+                                if "AI7" not in file_result["steps_completed"]:
+                                    file_result["steps_completed"].append("AI7")
+                                file_result["ai7"] = stats
+                            else:
+                                file_result["ai7_error"] = stats.get("error", "unknown")
                     elif step == "AI5":
                         match_info = _load_match_context(file_id)
                         if match_info and match_info[0]:
