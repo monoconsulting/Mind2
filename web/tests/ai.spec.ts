@@ -97,10 +97,92 @@ test.describe('@migrations', () => {
   })
 })
 
+test.describe('@accounting-input-gate', () => {
+  test.use({
+    viewport: { width: 1900, height: 1200 },
+    recordVideo: {
+      dir: 'web/test-results/media/video',
+      size: { width: 1900, height: 1200 },
+    },
+  })
+
+  test('AI4 normalization fills missing SEK totals from original totals @accounting-input-gate', async ({ page }, testInfo) => {
+    test.setTimeout(2 * 60_000)
+    await loginAsAdmin(page)
+
+    const token = await page.evaluate(() => localStorage.getItem('mind.jwt'))
+    expect(token).toBeTruthy()
+    const authHeaders = { Authorization: `Bearer ${token}` }
+
+    // This file_id is expected to exist in the local dev database and to have
+    // gross_amount_original + net_amount_original set (currency=SEK), while *_sek may be NULL.
+    // The test resets *_sek + exchange_rate to a broken state and asserts the pipeline
+    // deterministically normalizes it during AI4.
+    const fileId = '7ab12bb6-a15e-4a84-993a-ad41754f457b'
+
+    const resetResponse = await page.request.patch(`/ai/api/receipts/${fileId}`, {
+      data: {
+        currency: 'SEK',
+        gross_amount_sek: null,
+        net_amount_sek: null,
+        exchange_rate: 0,
+      },
+    })
+    expect(resetResponse.ok()).toBeTruthy()
+
+    const before = await page.request.get(`/ai/api/receipts/${fileId}`)
+    expect(before.ok()).toBeTruthy()
+    const beforeJson = await before.json()
+    expect(beforeJson?.gross_amount_sek ?? null).toBeNull()
+    expect(beforeJson?.net_amount_sek ?? null).toBeNull()
+    expect(beforeJson?.exchange_rate ?? null).toBeNull()
+
+    const runAi4 = await page.request.post('/ai/api/ai/process/batch', {
+      headers: authHeaders,
+      data: {
+        file_ids: [fileId],
+        processing_steps: ['AI4'],
+      },
+    })
+    expect(runAi4.ok()).toBeTruthy()
+    const runAi4Json = await runAi4.json().catch(() => null)
+    expect(Array.isArray(runAi4Json?.results) || Array.isArray(runAi4Json?.items)).toBeTruthy()
+
+    await expect
+      .poll(
+        async () => {
+          const response = await page.request.get(`/ai/api/receipts/${fileId}`)
+          if (!response.ok()) return null
+          const payload = await response.json()
+          if (!payload) return null
+          return {
+            gross: payload.gross_amount_sek ?? null,
+            net: payload.net_amount_sek ?? null,
+            exchange_rate: payload.exchange_rate ?? null,
+          }
+        },
+        { timeout: 30_000 },
+      )
+      .toEqual({
+        gross: expect.any(Number),
+        net: expect.any(Number),
+        exchange_rate: 1,
+      })
+
+    await page.goto('/process')
+    await page.waitForLoadState('networkidle')
+
+    await testInfo.attach('process-snapshot', {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    })
+  })
+})
+
 test('test', async ({ page }) => {
   await page.goto('http://localhost:8008/login')
-  await page.getByRole('textbox', { name: 'L”senord' }).click()
-  await page.getByRole('textbox', { name: 'L”senord' }).fill('adminadmin')
+  await page.getByRole('textbox', { name: 'L"senord' }).click()
+  await page.getByRole('textbox', { name: 'L"senord' }).fill('adminadmin')
   await page.getByRole('button', { name: 'Logga in' }).click()
   await page.getByRole('button', { name: 'AI' }).click()
   await expect(page).toHaveScreenshot('AI001.png')
