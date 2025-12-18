@@ -325,7 +325,22 @@ def _persist_extraction_result(
         if owns_connection:
             conn.start_transaction()
 
-        resolved_company_id, resolved_match_type, created = _ensure_company(cursor, result.company)
+        needs_review_reason: str | None = None
+        resolved_company_id: int | None = None
+        resolved_match_type: str | None = None
+        created = False
+        try:
+            resolved_company_id, resolved_match_type, created = _ensure_company(cursor, result.company)
+        except ValueError as exc:
+            # Controlled handling: missing vendor identity must degrade to needs_review, never crash.
+            # This error happens when OCR/AI3 did not provide enough vendor identity (vat/orgnr + name).
+            if str(exc).startswith("Company resolution failed:"):
+                needs_review_reason = "missing_vendor_identity_in_ocr"
+                resolved_company_id = None
+                resolved_match_type = needs_review_reason
+                created = False
+            else:
+                raise
         unified = result.unified_file
         # Reflect resolved company metadata back on the response model
         result.company_match_type = resolved_match_type
@@ -340,6 +355,8 @@ def _persist_extraction_result(
                 other_data_payload = {"raw_other_data": unified.other_data}
         other_data_payload["company_match_type"] = resolved_match_type
         other_data_payload["company_create_needed"] = created or bool(result.company_create_needed)
+        if needs_review_reason:
+            other_data_payload["needs_review_reason"] = needs_review_reason
         other_data_json = json.dumps(other_data_payload, ensure_ascii=False)
 
         updates: Dict[str, Any] = {
@@ -367,7 +384,7 @@ def _persist_extraction_result(
             "credit_card_type": unified.credit_card_type,
             "credit_card_token": unified.credit_card_token,
             "credit_card_entering_mode": unified.credit_card_entering_mode,
-            "ai_status": AiStatus.COMPLETED.value,
+            "ai_status": AiStatus.MANUAL_REVIEW.value if needs_review_reason else AiStatus.COMPLETED.value,
             "ai_confidence": result.confidence,
         }
 

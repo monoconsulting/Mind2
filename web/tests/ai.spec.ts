@@ -205,3 +205,58 @@ test.describe('@accounting-input-gate', () => {
 //   await page.getByRole('button', { name: 'Spara' }).click()
 //   await expect(page).toHaveScreenshot('AI005.png')
 // })
+test.describe('@company-resolution-fallback', () => {
+  test.use({
+    viewport: { width: 1900, height: 1200 },
+    recordVideo: {
+      dir: 'web/test-results/media/video',
+      size: { width: 1900, height: 1200 },
+    },
+  })
+
+  test('missing vendor identity degrades to manual review (not a crash) @company-resolution-fallback', async ({ page }, testInfo) => {
+    test.setTimeout(2 * 60_000)
+    await loginAsAdmin(page)
+    const token = await page.evaluate(() => localStorage.getItem('mind.jwt'))
+    expect(token).toBeTruthy()
+    const authHeaders = { Authorization: `Bearer ${token}` }
+
+    // Known failure-case file_id from ai_processing_history where AI3 previously crashed on:
+    // "Company resolution failed: both vat/orgnr and name are missing"
+    const fileId = '10c33ec7-7a0c-4729-8e37-e68811c772b8'
+
+    const runAi3 = await page.request.post('/ai/api/ai/process/batch', {
+      headers: authHeaders,
+      data: {
+        file_ids: [fileId],
+        processing_steps: ['AI3'],
+        stop_on_error: true,
+      },
+    })
+    expect(runAi3.ok()).toBeTruthy()
+    const runAi3Json = await runAi3.json()
+
+    const result = Array.isArray(runAi3Json?.results) ? runAi3Json.results[0] : null
+    expect(result?.file_id).toBe(fileId)
+    expect(Array.isArray(result?.steps_completed)).toBeTruthy()
+    expect(result?.steps_completed || []).toContain('AI3')
+    expect(result?.error ?? null).toBeNull()
+
+    const receiptResponse = await page.request.get(`/ai/api/receipts/${fileId}`)
+    expect(receiptResponse.ok()).toBeTruthy()
+    const receipt = await receiptResponse.json()
+    expect(receipt?.ai_status).toBe('manual_review')
+
+    const otherDataRaw = receipt?.other_data ?? null
+    expect(typeof otherDataRaw).toBe('string')
+    const otherData = JSON.parse(otherDataRaw)
+    expect(otherData?.needs_review_reason).toBe('missing_vendor_identity_in_ocr')
+
+    await page.goto('/process')
+    await page.waitForLoadState('networkidle')
+    await testInfo.attach('process-snapshot', {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    })
+  })
+})
