@@ -312,6 +312,78 @@ test.describe('@ai-history', () => {
       contentType: 'image/png',
     })
   })
+
+  test('SEK exchange_rate must be normalized to 1.0 on AI3 save @ai3-sek-exchange-rate', async ({ page }, testInfo) => {
+    test.setTimeout(6 * 60_000)
+
+    const envText = fs.readFileSync(path.join(__dirname, '../../.env'), 'utf8')
+    const envLines = envText.split(/\r?\n/)
+    const envMap: Record<string, string> = {}
+    for (const line of envLines) {
+      const match = line.match(/^([A-Z0-9_]+)=(.*)$/)
+      if (!match) continue
+      envMap[match[1]] = match[2]
+    }
+    const dbName = envMap.DB_NAME
+    const dbUser = envMap.DB_USER
+    const dbPass = envMap.DB_PASS
+    expect(dbName).toBeTruthy()
+    expect(dbUser).toBeTruthy()
+    expect(dbPass).toBeTruthy()
+
+    const mysqlQuery = (sql: string) =>
+      execFileSync(
+        'docker',
+        ['exec', '-e', `MYSQL_PWD=${dbPass}`, 'mind2-mysql-1', 'mysql', '-u', dbUser, '-D', dbName, '-N', '-B', '-e', sql],
+        { encoding: 'utf8' },
+      ).trim()
+
+    const fileId = mysqlQuery(
+      "SELECT id FROM unified_files WHERE file_type='pdf_page' AND currency='SEK' AND (exchange_rate IS NULL OR exchange_rate=0) AND ai_status='completed' AND ocr_raw LIKE '%Kvitto%' ORDER BY updated_at DESC LIMIT 1;",
+    )
+    expect(fileId).toBeTruthy()
+
+    const ocrText = mysqlQuery(`SELECT COALESCE(ocr_raw,'') FROM unified_files WHERE id='${fileId}' LIMIT 1;`)
+    expect(ocrText.length).toBeGreaterThan(50)
+
+    await loginAsAdmin(page)
+    const token = await page.evaluate(() => localStorage.getItem('mind.jwt'))
+    expect(token).toBeTruthy()
+    const authHeaders = { Authorization: `Bearer ${token}` }
+
+    const extractResponse = await page.request.post('/ai/api/ai/extract', {
+      headers: authHeaders,
+      data: {
+        file_id: fileId,
+        ocr_text: ocrText,
+        document_type: 'receipt',
+        expense_type: 'personal',
+      },
+    })
+    if (!extractResponse.ok()) {
+      await testInfo.attach('extract-response.txt', {
+        body: Buffer.from(await extractResponse.text(), 'utf8'),
+        contentType: 'text/plain',
+      })
+    }
+    expect(extractResponse.ok()).toBeTruthy()
+
+    const afterRow = mysqlQuery(
+      `SELECT COALESCE(currency,''), COALESCE(exchange_rate,0) FROM unified_files WHERE id='${fileId}' LIMIT 1;`,
+    )
+    const parts = String(afterRow).split('\t')
+    expect(parts[0]).toBe('SEK')
+    expect(Number(parts[1] || 0)).toBe(1)
+
+    await testInfo.attach('unified-files-sek-exchange-rate.tsv', {
+      body: Buffer.from(String(afterRow), 'utf8'),
+      contentType: 'text/plain',
+    })
+    await testInfo.attach('ai-page', {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    })
+  })
 })
 
 test.describe('@migrations', () => {

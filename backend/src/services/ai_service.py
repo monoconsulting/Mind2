@@ -947,6 +947,23 @@ class AIService:
         if isinstance(card_last_4, str) and not card_last_4.strip():
             card_last_4 = None
 
+        # Deterministic normalization for SEK (2025-12-19):
+        # AI prompts can regress, so we must never persist exchange_rate=0 for SEK, and when originals exist
+        # but SEK totals are missing we fill SEK totals from originals.
+        currency_value = str(unified_data.get("currency") or "").strip().upper()
+        if currency_value == "SEK":
+            ex = unified_data.get("exchange_rate")
+            if ex in (None, "", 0, 0.0, "0", "0.0"):
+                unified_data["exchange_rate"] = 1.0
+            if unified_data.get("gross_amount_sek") in (None, "", 0, 0.0, "0", "0.0") and unified_data.get(
+                "gross_amount_original"
+            ) not in (None, "", 0, 0.0, "0", "0.0"):
+                unified_data["gross_amount_sek"] = unified_data.get("gross_amount_original")
+            if unified_data.get("net_amount_sek") in (None, "", 0, 0.0, "0", "0.0") and unified_data.get(
+                "net_amount_original"
+            ) not in (None, "", 0, 0.0, "0", "0.0"):
+                unified_data["net_amount_sek"] = unified_data.get("net_amount_original")
+
         unified_file = UnifiedFileBase(
             file_type=request.document_type,
             vat=unified_data.get("vat") or unified_data.get("orgnr"),
