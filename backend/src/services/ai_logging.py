@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from services.db.connection import db_cursor
@@ -14,6 +15,36 @@ INSERT_HISTORY_SQL = """
      confidence, processing_time_ms, provider, model_name, prompt_text, response_text)
     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
+
+
+def _sanitize_log_text(
+    log_text: Optional[str],
+    *,
+    prompt_text: Optional[str],
+    response_text: Optional[str],
+) -> Optional[str]:
+    """Prevent accidental prompt/response leakage into ai_processing_history.log_text."""
+    if not log_text:
+        return log_text
+
+    sanitized = log_text
+    removed_any = False
+
+    for candidate in (prompt_text, response_text):
+        if not candidate:
+            continue
+        # Guard against over-eager removals on tiny strings.
+        if len(candidate) < 50:
+            continue
+        if candidate in sanitized:
+            sanitized = sanitized.replace(candidate, "")
+            removed_any = True
+
+    if not removed_any:
+        return log_text
+
+    sanitized = re.sub(r"[ \t]+", " ", sanitized).strip()
+    return sanitized or "Sanitized: removed prompt/response content from log_text"
 
 
 def log_ai_call(
@@ -40,6 +71,8 @@ def log_ai_call(
             file_id,
         )
         return False
+
+    log_text = _sanitize_log_text(log_text, prompt_text=prompt_text, response_text=response_text)
 
     try:
         if cursor is not None:
