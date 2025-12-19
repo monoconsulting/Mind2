@@ -319,41 +319,81 @@ test.describe('@ai4-validation-nonfatal', () => {
     expect(token).toBeTruthy()
     const authHeaders = { Authorization: `Bearer ${token}` }
 
-    // Known failure-case file_id where AI4 previously produced AccountingProposalValidationError.
-    const fileId = 'b8479106-3887-464c-b4af-c13aa0728ac7'
+    const promptsResponse = await page.request.get('/ai/api/ai-config/prompts', { headers: authHeaders })
+    expect(promptsResponse.ok()).toBeTruthy()
+    const promptsPayload = (await promptsResponse.json()) as { prompts: any[] }
+    const prompt = promptsPayload.prompts.find((p) => p.prompt_key === 'accounting_classification')
+    expect(prompt).toBeTruthy()
 
-    // Reset totals so AI4 uses a known-bad input state (gross/net missing => 0).
-    const resetResponse = await page.request.patch(`/ai/api/receipts/${fileId}`, {
-      data: {
-        gross_amount_sek: null,
-        net_amount_sek: null,
-        exchange_rate: 0,
-        currency: 'SEK',
-      },
-    })
-    expect(resetResponse.ok()).toBeTruthy()
+    const originalPrompt = String(prompt.prompt_content ?? '')
+    const forcedPrompt = 'Return ONLY the word NOT_JSON. Do not output JSON.'
 
-    const runAi4 = await page.request.post('/ai/api/ai/process/batch', {
-      headers: authHeaders,
-      data: {
-        file_ids: [fileId],
-        processing_steps: ['AI4'],
-        stop_on_error: true,
-      },
-    })
-    expect(runAi4.ok()).toBeTruthy()
-    const runAi4Json = await runAi4.json()
+    try {
+      const updateResponse = await page.request.put(`/ai/api/ai-config/prompts/${prompt.id}`, {
+        headers: authHeaders,
+        data: {
+          title: prompt.title,
+          description: prompt.description,
+          prompt_content: forcedPrompt,
+          selected_model_id: prompt.selected_model_id ?? null,
+        },
+      })
+      expect(updateResponse.ok()).toBeTruthy()
 
-    const result = Array.isArray(runAi4Json?.results) ? runAi4Json.results[0] : null
-    expect(result?.file_id).toBe(fileId)
-    expect(result?.error ?? null).toBeNull()
-    expect(result?.ai4_status).toBe('needs_review')
-    expect(String(result?.ai4_error || '')).toContain('AccountingProposalValidationError')
+      const fileId = mysqlQuery(
+        "SELECT id FROM unified_files WHERE currency='SEK' AND gross_amount_original IS NOT NULL AND net_amount_original IS NOT NULL ORDER BY updated_at DESC LIMIT 1;",
+      )
+      expect(fileId).toBeTruthy()
 
-    const receiptResponse = await page.request.get(`/ai/api/receipts/${fileId}`)
-    expect(receiptResponse.ok()).toBeTruthy()
-    const receipt = await receiptResponse.json()
-    expect(receipt?.ai_status).toBe('manual_review')
+      const resetResponse = await page.request.patch(`/ai/api/receipts/${fileId}`, {
+        data: {
+          gross_amount_sek: null,
+          net_amount_sek: null,
+          exchange_rate: 0,
+          currency: 'SEK',
+        },
+      })
+      expect(resetResponse.ok()).toBeTruthy()
+
+      const runAi4 = await page.request.post('/ai/api/ai/process/batch', {
+        headers: authHeaders,
+        data: {
+          file_ids: [fileId],
+          processing_steps: ['AI4'],
+          stop_on_error: true,
+        },
+      })
+      expect(runAi4.ok()).toBeTruthy()
+      const runAi4Json = await runAi4.json()
+
+      const result = Array.isArray(runAi4Json?.results) ? runAi4Json.results[0] : null
+      expect(result?.file_id).toBe(fileId)
+      expect(result?.error ?? null).toBeNull()
+      expect(result?.ai4_status).toBe('needs_review')
+      expect(String(result?.ai4_error || '')).toContain('AccountingProposalValidationError')
+
+      const receiptResponse = await page.request.get(`/ai/api/receipts/${fileId}`)
+      expect(receiptResponse.ok()).toBeTruthy()
+      const receipt = await receiptResponse.json()
+      expect(receipt?.ai_status).toBe('manual_review')
+
+      const historyRow = mysqlQuery(
+        `SELECT status, error_message FROM ai_processing_history WHERE file_id='${fileId}' AND job_type='ai4' ORDER BY created_at DESC LIMIT 1;`,
+      )
+      const [status, errorMessage] = historyRow.split('\t')
+      expect(status).toBe('error')
+      expect(String(errorMessage || '')).toContain('AccountingProposalValidationError')
+    } finally {
+      await page.request.put(`/ai/api/ai-config/prompts/${prompt.id}`, {
+        headers: authHeaders,
+        data: {
+          title: prompt.title,
+          description: prompt.description,
+          prompt_content: originalPrompt,
+          selected_model_id: prompt.selected_model_id ?? null,
+        },
+      })
+    }
 
     await page.goto('/process')
     await page.waitForLoadState('networkidle')
