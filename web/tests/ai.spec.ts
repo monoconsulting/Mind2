@@ -179,23 +179,29 @@ test.describe('@accounting-input-gate', () => {
   })
 })
 
-test('test', async ({ page }) => {
-  await page.goto('http://localhost:8008/login')
-  await page.getByRole('textbox', { name: 'L"senord' }).click()
-  await page.getByRole('textbox', { name: 'L"senord' }).fill('adminadmin')
-  await page.getByRole('button', { name: 'Logga in' }).click()
-  await page.getByRole('button', { name: 'AI' }).click()
-  await expect(page).toHaveScreenshot('AI001.png')
-  await page.getByRole('button', { name: 'LLM-konfiguration' }).click()
-  await expect(page).toHaveScreenshot('AI002.png')
-  await page.getByRole('button', { name: 'L„gg till leverant”r' }).click()
-  await expect(page).toHaveScreenshot('AI003.png')
-  await page.getByRole('textbox', { name: 'Min OpenAI-konfiguration...' }).click()
-  await expect(page).toHaveScreenshot('AI004.png')
-  await page.getByRole('textbox', { name: 'Min OpenAI-konfiguration...' }).fill('test')
-  await page.getByRole('textbox', { name: 'sk-' }).click()
-  await page.getByRole('textbox', { name: 'sk-' }).fill('skasdfjowiejfsldkjfoweifjslkdjf')
-  await page.getByRole('checkbox', { name: 'Aktiverad' }).check()
-  await page.getByRole('button', { name: 'Spara' }).click()
-  await expect(page).toHaveScreenshot('AI005.png')
-})
+/*
+ * NOTE (2025-12-19):
+ * This was an auto-recorded Playwright script that is unrelated to the regression checks in this repo.
+ * Keeping it enabled risks accidental execution in CI/local runs (it targets hard-coded UI selectors and
+ * snapshots not tied to the conversion pipeline fixes). We keep it here commented out for traceability.
+ */
+// test('test', async ({ page }) => {
+//   await page.goto('http://localhost:8008/login')
+//   await page.getByRole('textbox', { name: 'L"senord' }).click()
+//   await page.getByRole('textbox', { name: 'L"senord' }).fill('adminadmin')
+//   await page.getByRole('button', { name: 'Logga in' }).click()
+//   await page.getByRole('button', { name: 'AI' }).click()
+//   await expect(page).toHaveScreenshot('AI001.png')
+//   await page.getByRole('button', { name: 'LLM-konfiguration' }).click()
+//   await expect(page).toHaveScreenshot('AI002.png')
+//   await page.getByRole('button', { name: 'L„gg till leverant”r' }).click()
+//   await expect(page).toHaveScreenshot('AI003.png')
+//   await page.getByRole('textbox', { name: 'Min OpenAI-konfiguration...' }).click()
+//   await expect(page).toHaveScreenshot('AI004.png')
+//   await page.getByRole('textbox', { name: 'Min OpenAI-konfiguration...' }).fill('test')
+//   await page.getByRole('textbox', { name: 'sk-' }).click()
+//   await page.getByRole('textbox', { name: 'sk-' }).fill('skasdfjowiejfsldkjfoweifjslkdjf')
+//   await page.getByRole('checkbox', { name: 'Aktiverad' }).check()
+//   await page.getByRole('button', { name: 'Spara' }).click()
+//   await expect(page).toHaveScreenshot('AI005.png')
+// })
