@@ -184,6 +184,81 @@ test.describe('@ai-history', () => {
       contentType: 'image/png',
     })
   })
+
+  test('exactly one canonical AI1 history row per run @ai-history-single-row', async ({ page }, testInfo) => {
+    test.setTimeout(6 * 60_000)
+
+    const envText = fs.readFileSync(path.join(__dirname, '../../.env'), 'utf8')
+    const envLines = envText.split(/\r?\n/)
+    const envMap: Record<string, string> = {}
+    for (const line of envLines) {
+      const match = line.match(/^([A-Z0-9_]+)=(.*)$/)
+      if (!match) continue
+      envMap[match[1]] = match[2]
+    }
+    const dbName = envMap.DB_NAME
+    const dbUser = envMap.DB_USER
+    const dbPass = envMap.DB_PASS
+    expect(dbName).toBeTruthy()
+    expect(dbUser).toBeTruthy()
+    expect(dbPass).toBeTruthy()
+
+    const mysqlQuery = (sql: string) =>
+      execFileSync(
+        'docker',
+        ['exec', '-e', `MYSQL_PWD=${dbPass}`, 'mind2-mysql-1', 'mysql', '-u', dbUser, '-D', dbName, '-N', '-B', '-e', sql],
+        { encoding: 'utf8' },
+      ).trim()
+
+    const fileId = mysqlQuery(
+      "SELECT file_id FROM ai_processing_history WHERE job_type='ai1' AND status='success' AND COALESCE(prompt_text,'') <> '' AND COALESCE(response_text,'') <> '' ORDER BY created_at DESC LIMIT 1;",
+    )
+    expect(fileId).toBeTruthy()
+
+    const beforeMaxIdRaw = mysqlQuery(
+      `SELECT COALESCE(MAX(id), 0) FROM ai_processing_history WHERE file_id='${fileId}' AND job_type='ai1' AND status='success';`,
+    )
+    const beforeMaxId = Number(beforeMaxIdRaw)
+    expect(Number.isFinite(beforeMaxId)).toBeTruthy()
+
+    await loginAsAdmin(page)
+    const token = await page.evaluate(() => localStorage.getItem('mind.jwt'))
+    expect(token).toBeTruthy()
+    const authHeaders = { Authorization: `Bearer ${token}` }
+
+    const restartResponse = await page.request.post(`/ai/api/receipts/${fileId}/restart-ai`, { headers: authHeaders })
+    expect(restartResponse.ok()).toBeTruthy()
+
+    const deadline = Date.now() + 4 * 60_000
+    let countRaw: string | null = null
+    while (Date.now() < deadline) {
+      const afterMaxIdRaw = mysqlQuery(
+        `SELECT COALESCE(MAX(id), 0) FROM ai_processing_history WHERE file_id='${fileId}' AND job_type='ai1' AND status='success' AND id > ${beforeMaxId};`,
+      )
+      const afterMaxId = Number(afterMaxIdRaw)
+      if (Number.isFinite(afterMaxId) && afterMaxId > beforeMaxId) {
+        countRaw = mysqlQuery(
+          `SELECT COUNT(*) FROM ai_processing_history WHERE file_id='${fileId}' AND job_type='ai1' AND status='success' AND id > ${beforeMaxId};`,
+        )
+        break
+      }
+      await page.waitForTimeout(3000)
+    }
+
+    expect(countRaw).toBeTruthy()
+    const count = Number(countRaw)
+    expect(Number.isFinite(count)).toBeTruthy()
+    expect(count).toBe(1)
+
+    await testInfo.attach('ai1-success-count-since-beforeMaxId.txt', {
+      body: Buffer.from(`file_id=${fileId}\nbeforeMaxId=${beforeMaxId}\ncount=${count}\n`, 'utf8'),
+      contentType: 'text/plain',
+    })
+    await testInfo.attach('ai-page', {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    })
+  })
 })
 
 test.describe('@migrations', () => {

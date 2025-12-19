@@ -103,19 +103,22 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
         if result.reasoning:
             log_parts.append(f"Reasoning: {result.reasoning}")
 
-        _history(
-            file_id,
-            "ai1",
-            "success",
-            ai_stage_name="AI1-DocumentClassification",
-            log_text="; ".join(log_parts),
-            confidence=result.confidence,
-            processing_time_ms=elapsed,
-            provider=ai1_provider,
-            model_name=ai1_model,
-            prompt_text=ai1_prompt,
-            response_text=raw_response,
-        )
+        # NOTE (2025-12-19): ai_processing_history is now owned by AIService._provider_generate
+        # to ensure prompt/response pairing and canonical stage naming. Pipeline-level _history
+        # inserts created duplicate rows and often empty/incorrect response_text (wrong AIService instance).
+        # _history(
+        #     file_id,
+        #     "ai1",
+        #     "success",
+        #     ai_stage_name="AI1-DocumentClassification",
+        #     log_text="; ".join(log_parts),
+        #     confidence=result.confidence,
+        #     processing_time_ms=elapsed,
+        #     provider=ai1_provider,
+        #     model_name=ai1_model,
+        #     prompt_text=ai1_prompt,
+        #     response_text=raw_response,
+        # )
 
         # Update file_type column with classified document_type
         if db_cursor is not None and result.document_type:
@@ -148,19 +151,20 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
         elapsed = int((time.time() - start_time) * 1000)
         error_msg = f"{type(exc).__name__}: {str(exc)}"
         raw_response = ai_service.last_raw_response or ""
-        _history(
-            file_id,
-            "ai1",
-            "error",
-            ai_stage_name="AI1-DocumentClassification",
-            log_text=f"Failed to classify document type from OCR text ({len(ocr_text or '')} chars)",
-            error_message=error_msg,
-            processing_time_ms=elapsed,
-            provider=ai1_provider,
-            model_name=ai1_model,
-            prompt_text=ai1_prompt,
-            response_text=raw_response,
-        )
+        # NOTE (2025-12-19): disabled pipeline-level ai_processing_history insert (see note above).
+        # _history(
+        #     file_id,
+        #     "ai1",
+        #     "error",
+        #     ai_stage_name="AI1-DocumentClassification",
+        #     log_text=f"Failed to classify document type from OCR text ({len(ocr_text or '')} chars)",
+        #     error_message=error_msg,
+        #     processing_time_ms=elapsed,
+        #     provider=ai1_provider,
+        #     model_name=ai1_model,
+        #     prompt_text=ai1_prompt,
+        #     response_text=raw_response,
+        # )
         complete_import_stage(
             workflow_run_id,
             "detect_type",
@@ -200,36 +204,38 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
         if result.reasoning:
             log_parts.append(f"Reasoning: {result.reasoning}")
 
-        _history(
-            file_id,
-            "ai2",
-            "success",
-            ai_stage_name="AI2-ExpenseClassification",
-            log_text="; ".join(log_parts),
-            confidence=result.confidence,
-            processing_time_ms=elapsed,
-            provider=ai2_provider,
-            model_name=ai2_model,
-            prompt_text=ai2_prompt,
-            response_text=raw_response,
-        )
+        # NOTE (2025-12-19): disabled pipeline-level ai_processing_history insert (see AI1 note above).
+        # _history(
+        #     file_id,
+        #     "ai2",
+        #     "success",
+        #     ai_stage_name="AI2-ExpenseClassification",
+        #     log_text="; ".join(log_parts),
+        #     confidence=result.confidence,
+        #     processing_time_ms=elapsed,
+        #     provider=ai2_provider,
+        #     model_name=ai2_model,
+        #     prompt_text=ai2_prompt,
+        #     response_text=raw_response,
+        # )
     except Exception as exc:
         elapsed = int((time.time() - start_time) * 1000)
         error_msg = f"{type(exc).__name__}: {str(exc)}"
         raw_response = ai_service.last_raw_response or ""
-        _history(
-            file_id,
-            "ai2",
-            "error",
-            ai_stage_name="AI2-ExpenseClassification",
-            log_text=f"Failed to classify expense type for document_type='{document_type}'",
-            error_message=error_msg,
-            processing_time_ms=elapsed,
-            provider=ai2_provider,
-            model_name=ai2_model,
-            prompt_text=ai2_prompt,
-            response_text=raw_response,
-        )
+        # NOTE (2025-12-19): disabled pipeline-level ai_processing_history insert (see AI1 note above).
+        # _history(
+        #     file_id,
+        #     "ai2",
+        #     "error",
+        #     ai_stage_name="AI2-ExpenseClassification",
+        #     log_text=f"Failed to classify expense type for document_type='{document_type}'",
+        #     error_message=error_msg,
+        #     processing_time_ms=elapsed,
+        #     provider=ai2_provider,
+        #     model_name=ai2_model,
+        #     prompt_text=ai2_prompt,
+        #     response_text=raw_response,
+        # )
         raise
 
     # Reload context after AI2
@@ -327,19 +333,20 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
                     f"Sample items (first {len(item_samples)}): [{', '.join(item_samples)}]"
                 )
 
-        _history(
-            file_id,
-            "ai3",
-            "success",
-            ai_stage_name="AI3-DataExtraction",
-            log_text="; ".join(log_parts),
-            confidence=result.confidence,
-            processing_time_ms=elapsed,
-            provider=ai3_provider,
-            model_name=ai3_model,
-            prompt_text=ai3_prompt,
-            response_text=raw_response,
-        )
+        # NOTE (2025-12-19): disabled pipeline-level ai_processing_history insert (see AI1 note above).
+        # _history(
+        #     file_id,
+        #     "ai3",
+        #     "success",
+        #     ai_stage_name="AI3-DataExtraction",
+        #     log_text="; ".join(log_parts),
+        #     confidence=result.confidence,
+        #     processing_time_ms=elapsed,
+        #     provider=ai3_provider,
+        #     model_name=ai3_model,
+        #     prompt_text=ai3_prompt,
+        #     response_text=raw_response,
+        # )
         complete_import_stage(
             workflow_run_id,
             "r_ai3",
@@ -370,19 +377,20 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
         elapsed = int((time.time() - start_time) * 1000)
         error_msg = f"{type(exc).__name__}: {str(exc)}"
         raw_response = ai_service.last_raw_response or ""
-        _history(
-            file_id,
-            "ai3",
-            "error",
-            ai_stage_name="AI3-DataExtraction",
-            log_text=f"Failed to extract structured data from document_type='{document_type}', expense_type='{expense_type}'",
-            error_message=error_msg,
-            processing_time_ms=elapsed,
-            provider=ai3_provider,
-            model_name=ai3_model,
-            prompt_text=ai3_prompt,
-            response_text=raw_response,
-        )
+        # NOTE (2025-12-19): disabled pipeline-level ai_processing_history insert (see AI1 note above).
+        # _history(
+        #     file_id,
+        #     "ai3",
+        #     "error",
+        #     ai_stage_name="AI3-DataExtraction",
+        #     log_text=f"Failed to extract structured data from document_type='{document_type}', expense_type='{expense_type}'",
+        #     error_message=error_msg,
+        #     processing_time_ms=elapsed,
+        #     provider=ai3_provider,
+        #     model_name=ai3_model,
+        #     prompt_text=ai3_prompt,
+        #     response_text=raw_response,
+        # )
         complete_import_stage(
             workflow_run_id,
             "r_ai3",
@@ -455,19 +463,20 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
                         f"Sample proposals (first {len(proposal_samples)}): [{'; '.join(proposal_samples)}]"
                     )
 
-            _history(
-                file_id,
-                "ai4",
-                "success",
-                ai_stage_name="AI4-AccountingClassification",
-                log_text="; ".join(log_parts),
-                confidence=result.confidence,
-                processing_time_ms=elapsed,
-                provider=ai4_provider,
-                model_name=ai4_model,
-                prompt_text=ai4_prompt,
-                response_text=raw_response,
-            )
+            # NOTE (2025-12-19): disabled pipeline-level ai_processing_history insert (see AI1 note above).
+            # _history(
+            #     file_id,
+            #     "ai4",
+            #     "success",
+            #     ai_stage_name="AI4-AccountingClassification",
+            #     log_text="; ".join(log_parts),
+            #     confidence=result.confidence,
+            #     processing_time_ms=elapsed,
+            #     provider=ai4_provider,
+            #     model_name=ai4_model,
+            #     prompt_text=ai4_prompt,
+            #     response_text=raw_response,
+            # )
             complete_import_stage(
                 workflow_run_id,
                 "r_ai4",
@@ -478,19 +487,20 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             elapsed = int((time.time() - start_time) * 1000)
             error_msg = f"{type(exc).__name__}: {str(exc)}"
             raw_response = ai_service.last_raw_response or ""
-            _history(
-                file_id,
-                "ai4",
-                "error",
-                ai_stage_name="AI4-AccountingClassification",
-                log_text=f"Failed to classify accounting for vendor='{vendor_name}', gross={gross}, net={net}, vat={vat_amount}",
-                error_message=error_msg,
-                processing_time_ms=elapsed,
-                provider=ai4_provider,
-                model_name=ai4_model,
-                prompt_text=ai4_prompt,
-                response_text=raw_response,
-            )
+            # NOTE (2025-12-19): disabled pipeline-level ai_processing_history insert (see AI1 note above).
+            # _history(
+            #     file_id,
+            #     "ai4",
+            #     "error",
+            #     ai_stage_name="AI4-AccountingClassification",
+            #     log_text=f"Failed to classify accounting for vendor='{vendor_name}', gross={gross}, net={net}, vat={vat_amount}",
+            #     error_message=error_msg,
+            #     processing_time_ms=elapsed,
+            #     provider=ai4_provider,
+            #     model_name=ai4_model,
+            #     prompt_text=ai4_prompt,
+            #     response_text=raw_response,
+            # )
             complete_import_stage(
                 workflow_run_id,
                 "r_ai4",
@@ -500,13 +510,14 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             _move_to_manual_review(file_id, error_msg)
             raise
     else:
-        _history(
-            file_id,
-            "ai4",
-            "skipped",
-            ai_stage_name="AI4-AccountingClassification",
-            log_text="Skipped: No accounting inputs available (missing gross_amount_sek, net_amount_sek, or company_id)",
-        )
+        # NOTE (2025-12-19): disabled pipeline-level ai_processing_history insert (see AI1 note above).
+        # _history(
+        #     file_id,
+        #     "ai4",
+        #     "skipped",
+        #     ai_stage_name="AI4-AccountingClassification",
+        #     log_text="Skipped: No accounting inputs available (missing gross_amount_sek, net_amount_sek, or company_id)",
+        # )
         complete_import_stage(
             workflow_run_id,
             "r_ai4",
