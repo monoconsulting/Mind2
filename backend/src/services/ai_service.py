@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -557,6 +558,14 @@ class AIService:
     def _provider_generate(
         self, stage_key: str, payload: Dict[str, Any], *, file_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
+        canonical = {
+            "document_analysis": ("ai1", "AI1-DocumentClassification"),
+            "expense_classification": ("ai2", "AI2-ExpenseClassification"),
+            "data_extraction": ("ai3", "AI3-DataExtraction"),
+            "accounting_classification": ("ai4", "AI4-AccountingProposals"),
+        }
+        job_type, stage_name = canonical.get(stage_key, (stage_key, stage_key))
+
         # ONLY use the prompt-specific provider - NO fallback
         provider = self.prompt_providers.get(stage_key)
         provider_name = self.prompt_provider_names.get(stage_key, "unknown")
@@ -568,6 +577,9 @@ class AIService:
             or ""
         )
 
+        prompt = self.prompts.get(stage_key, "")
+        started = time.perf_counter()
+
         if not provider:
             logger.error(
                 f"No provider configured for {stage_key}. "
@@ -577,20 +589,26 @@ class AIService:
             if target_file_id:
                 log_ai_call(
                     file_id=target_file_id,
-                    job=stage_key,
+                    job=job_type,
                     status="error",
-                    ai_stage_name=stage_key,
+                    ai_stage_name=stage_name,
+                    log_text="Provider not configured for this stage",
                     error_message="provider_not_configured",
                     provider=provider_name,
                     model_name=model_name,
+                    prompt_text=prompt or None,
+                    processing_time_ms=int((time.perf_counter() - started) * 1000),
                 )
             return None
 
-        prompt = self.prompts.get(stage_key, "")
         try:
             logger.debug(f"Calling {stage_key} with provider={provider_name}, model={model_name}")
             response = provider.generate(prompt=prompt, payload=payload)
             self.last_raw_response = response.raw
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            response_text = response.raw or (
+                json.dumps(response.parsed, ensure_ascii=False) if response.parsed is not None else None
+            )
 
             # Log raw response for AI4 debugging
             if stage_key == "accounting_classification":
@@ -607,23 +625,31 @@ class AIService:
                 if target_file_id:
                     log_ai_call(
                         file_id=target_file_id,
-                        job=stage_key,
+                        job=job_type,
                         status="error",
-                        ai_stage_name=stage_key,
+                        ai_stage_name=stage_name,
+                        log_text="Provider returned empty response",
                         error_message="empty_response",
                         provider=provider_name,
                         model_name=model_name,
+                        prompt_text=prompt or None,
+                        response_text=response_text,
+                        processing_time_ms=elapsed_ms,
                     )
                 return None
             if response.parsed is not None:
                 if target_file_id:
                     log_ai_call(
                         file_id=target_file_id,
-                        job=stage_key,
+                        job=job_type,
                         status="success",
-                        ai_stage_name=stage_key,
+                        ai_stage_name=stage_name,
+                        log_text=f"{stage_name} completed",
                         provider=provider_name,
                         model_name=model_name,
+                        prompt_text=prompt or None,
+                        response_text=response_text,
+                        processing_time_ms=elapsed_ms,
                     )
                 return response.parsed
 
@@ -633,11 +659,15 @@ class AIService:
                 if target_file_id:
                     log_ai_call(
                         file_id=target_file_id,
-                        job=stage_key,
+                        job=job_type,
                         status="success",
-                        ai_stage_name=stage_key,
+                        ai_stage_name=stage_name,
+                        log_text=f"{stage_name} completed",
                         provider=provider_name,
                         model_name=model_name,
+                        prompt_text=prompt or None,
+                        response_text=response_text,
+                        processing_time_ms=elapsed_ms,
                     )
                 return parsed_raw
             except json.JSONDecodeError:
@@ -646,38 +676,50 @@ class AIService:
                     if target_file_id:
                         log_ai_call(
                             file_id=target_file_id,
-                            job=stage_key,
+                            job=job_type,
                             status="success",
-                            ai_stage_name=stage_key,
+                            ai_stage_name=stage_name,
+                            log_text=f"{stage_name} completed",
                             provider=provider_name,
                             model_name=model_name,
+                            prompt_text=prompt or None,
+                            response_text=response_text,
+                            processing_time_ms=elapsed_ms,
                         )
                     return {"document_type": raw_text, "confidence": 0.8}
                 elif stage_key == "expense_classification":
                     if target_file_id:
                         log_ai_call(
                             file_id=target_file_id,
-                            job=stage_key,
+                            job=job_type,
                             status="success",
-                            ai_stage_name=stage_key,
+                            ai_stage_name=stage_name,
+                            log_text=f"{stage_name} completed",
                             provider=provider_name,
                             model_name=model_name,
+                            prompt_text=prompt or None,
+                            response_text=response_text,
+                            processing_time_ms=elapsed_ms,
                         )
                     return {"expense_type": raw_text, "confidence": 0.8}
                 else:
                     logger.warning(f"Provider {provider_name}/{model_name} returned raw text for {stage_key}, expected JSON: {raw_text[:100]}")
                     return None
         except Exception as exc:  # pragma: no cover - network/parse errors
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
             logger.error("Provider call for %s failed (provider=%s, model=%s): %s", stage_key, provider_name, model_name, exc, exc_info=True)
             if target_file_id:
                 log_ai_call(
                     file_id=target_file_id,
-                    job=stage_key,
+                    job=job_type,
                     status="error",
-                    ai_stage_name=stage_key,
+                    ai_stage_name=stage_name,
+                    log_text="Provider call failed",
                     error_message=str(exc),
                     provider=provider_name,
                     model_name=model_name,
+                    prompt_text=prompt or None,
+                    processing_time_ms=elapsed_ms,
                 )
             raise AiProviderError("provider_failed", str(exc))
 

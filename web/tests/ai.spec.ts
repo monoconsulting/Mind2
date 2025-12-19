@@ -105,6 +105,85 @@ test.describe('@ai-history', () => {
       contentType: 'image/png',
     })
   })
+
+  test('prompt_text/response_text must be logged for the actual AI call @ai-prompt-response-pairing', async ({ page }, testInfo) => {
+    test.setTimeout(6 * 60_000)
+
+    const envText = fs.readFileSync(path.join(__dirname, '../../.env'), 'utf8')
+    const envLines = envText.split(/\r?\n/)
+    const envMap: Record<string, string> = {}
+    for (const line of envLines) {
+      const match = line.match(/^([A-Z0-9_]+)=(.*)$/)
+      if (!match) continue
+      envMap[match[1]] = match[2]
+    }
+    const dbName = envMap.DB_NAME
+    const dbUser = envMap.DB_USER
+    const dbPass = envMap.DB_PASS
+    expect(dbName).toBeTruthy()
+    expect(dbUser).toBeTruthy()
+    expect(dbPass).toBeTruthy()
+
+    const mysqlQuery = (sql: string) =>
+      execFileSync(
+        'docker',
+        ['exec', '-e', `MYSQL_PWD=${dbPass}`, 'mind2-mysql-1', 'mysql', '-u', dbUser, '-D', dbName, '-N', '-B', '-e', sql],
+        { encoding: 'utf8' },
+      ).trim()
+
+    const fileId = mysqlQuery(
+      "SELECT file_id FROM ai_processing_history WHERE job_type='document_analysis' AND prompt_text IS NULL AND response_text IS NULL ORDER BY created_at DESC LIMIT 1;",
+    )
+    expect(fileId).toBeTruthy()
+
+    const beforeMaxIdRaw = mysqlQuery(
+      `SELECT COALESCE(MAX(id), 0) FROM ai_processing_history WHERE file_id='${fileId}' AND job_type='ai1' AND status='success' AND COALESCE(prompt_text,'') <> '' AND COALESCE(response_text,'') <> '';`,
+    )
+    const beforeMaxId = Number(beforeMaxIdRaw)
+    expect(Number.isFinite(beforeMaxId)).toBeTruthy()
+
+    await loginAsAdmin(page)
+    const token = await page.evaluate(() => localStorage.getItem('mind.jwt'))
+    expect(token).toBeTruthy()
+    const authHeaders = { Authorization: `Bearer ${token}` }
+
+    const restartResponse = await page.request.post(`/ai/api/receipts/${fileId}/restart-ai`, { headers: authHeaders })
+    expect(restartResponse.ok()).toBeTruthy()
+
+    const deadline = Date.now() + 4 * 60_000
+    let latestRow: string | null = null
+    while (Date.now() < deadline) {
+      const afterMaxIdRaw = mysqlQuery(
+        `SELECT COALESCE(MAX(id), 0) FROM ai_processing_history WHERE file_id='${fileId}' AND job_type='ai1' AND status='success' AND COALESCE(prompt_text,'') <> '' AND COALESCE(response_text,'') <> '';`,
+      )
+      const afterMaxId = Number(afterMaxIdRaw)
+      if (Number.isFinite(afterMaxId) && afterMaxId > beforeMaxId) {
+        latestRow = mysqlQuery(
+          `SELECT id, job_type, ai_stage_name, CHAR_LENGTH(prompt_text), CHAR_LENGTH(response_text), COALESCE(log_text,'') FROM ai_processing_history WHERE id=${afterMaxId} LIMIT 1;`,
+        )
+        break
+      }
+      await page.waitForTimeout(3000)
+    }
+
+    expect(latestRow).toBeTruthy()
+    const parts = String(latestRow).split('\t')
+    expect(parts.length).toBeGreaterThanOrEqual(6)
+    expect(parts[1]).toBe('ai1')
+    expect(parts[2]).toBe('AI1-DocumentClassification')
+    expect(Number(parts[3] || 0)).toBeGreaterThan(0)
+    expect(Number(parts[4] || 0)).toBeGreaterThan(0)
+    expect(String(parts[5] || '').length).toBeGreaterThan(0)
+
+    await testInfo.attach('ai-processing-history-latest-ai1-success.tsv', {
+      body: Buffer.from(String(latestRow), 'utf8'),
+      contentType: 'text/plain',
+    })
+    await testInfo.attach('ai-page', {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    })
+  })
 })
 
 test.describe('@migrations', () => {
