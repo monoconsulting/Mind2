@@ -2257,6 +2257,13 @@ def get_receipt_log(rid: str) -> Any:
         except Exception:
             history_rows = []
 
+        legacy_stage_keys = {
+            "document_analysis",
+            "expense_classification",
+            "data_extraction",
+            "accounting_classification",
+        }
+
         for (
             history_id,
             file_id,
@@ -2273,6 +2280,13 @@ def get_receipt_log(rid: str) -> Any:
             prompt_text,
             response_text,
         ) in history_rows:
+            has_dialog = bool(str(prompt_text or "").strip()) or bool(str(response_text or "").strip())
+            if not has_dialog and (
+                str(job_type or "") in legacy_stage_keys or str(ai_stage_name or "") in legacy_stage_keys
+            ):
+                # Temporary filtering (2025-12-19): hide legacy/dupe rows that were created by older code paths
+                # without prompt/response pairing and with stage_key naming.
+                continue
             ai_history.append(
                 {
                     "id": int(history_id),

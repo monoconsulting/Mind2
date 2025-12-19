@@ -259,6 +259,59 @@ test.describe('@ai-history', () => {
       contentType: 'image/png',
     })
   })
+
+  test('receipt log endpoint should hide legacy stage_key history rows @receipts-log-filter-legacy', async ({ page }, testInfo) => {
+    test.setTimeout(2 * 60_000)
+
+    const envText = fs.readFileSync(path.join(__dirname, '../../.env'), 'utf8')
+    const envLines = envText.split(/\r?\n/)
+    const envMap: Record<string, string> = {}
+    for (const line of envLines) {
+      const match = line.match(/^([A-Z0-9_]+)=(.*)$/)
+      if (!match) continue
+      envMap[match[1]] = match[2]
+    }
+    const dbName = envMap.DB_NAME
+    const dbUser = envMap.DB_USER
+    const dbPass = envMap.DB_PASS
+    expect(dbName).toBeTruthy()
+    expect(dbUser).toBeTruthy()
+    expect(dbPass).toBeTruthy()
+
+    const mysqlQuery = (sql: string) =>
+      execFileSync(
+        'docker',
+        ['exec', '-e', `MYSQL_PWD=${dbPass}`, 'mind2-mysql-1', 'mysql', '-u', dbUser, '-D', dbName, '-N', '-B', '-e', sql],
+        { encoding: 'utf8' },
+      ).trim()
+
+    const fileId = mysqlQuery(
+      "SELECT file_id FROM ai_processing_history WHERE job_type IN ('document_analysis','expense_classification','data_extraction','accounting_classification') AND COALESCE(prompt_text,'')='' AND COALESCE(response_text,'')='' ORDER BY created_at DESC LIMIT 1;",
+    )
+    expect(fileId).toBeTruthy()
+
+    await loginAsAdmin(page)
+    const token = await page.evaluate(() => localStorage.getItem('mind.jwt'))
+    expect(token).toBeTruthy()
+    const authHeaders = { Authorization: `Bearer ${token}` }
+
+    const logResponse = await page.request.get(`/ai/api/receipts/${fileId}/log`, { headers: authHeaders })
+    expect(logResponse.ok()).toBeTruthy()
+    const payload = (await logResponse.json()) as { ai_history?: any[] }
+    const aiHistory = Array.isArray(payload.ai_history) ? payload.ai_history : []
+    const legacyKeys = new Set(['document_analysis', 'expense_classification', 'data_extraction', 'accounting_classification'])
+    const hasLegacy = aiHistory.some((entry) => legacyKeys.has(String(entry?.job_type || '')))
+    expect(hasLegacy).toBe(false)
+
+    await testInfo.attach('receipt-log.json', {
+      body: Buffer.from(JSON.stringify(payload ?? {}, null, 2), 'utf8'),
+      contentType: 'application/json',
+    })
+    await testInfo.attach('ai-page', {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    })
+  })
 })
 
 test.describe('@migrations', () => {
