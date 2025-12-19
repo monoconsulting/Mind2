@@ -257,7 +257,15 @@ test.describe('@company-resolution-fallback', () => {
 
     // Known failure-case file_id from ai_processing_history where AI3 previously crashed on:
     // "Company resolution failed: both vat/orgnr and name are missing"
-    const fileId = '10c33ec7-7a0c-4729-8e37-e68811c772b8'
+    let fileId = mysqlQuery(
+      "SELECT file_id FROM ai_processing_history WHERE error_message LIKE 'Company resolution failed:%' ORDER BY created_at DESC LIMIT 1;",
+    )
+    if (!fileId) {
+      fileId = mysqlQuery(
+        "SELECT id FROM unified_files WHERE other_data LIKE '%missing_vendor_identity_in_ocr%' ORDER BY updated_at DESC LIMIT 1;",
+      )
+    }
+    expect(fileId).toBeTruthy()
 
     const runAi3 = await page.request.post('/ai/api/ai/process/batch', {
       headers: authHeaders,
