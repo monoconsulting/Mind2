@@ -355,6 +355,11 @@ test.describe('@ai4-validation-nonfatal', () => {
       })
       expect(resetResponse.ok()).toBeTruthy()
 
+      const beforeMaxIdRaw = mysqlQuery(
+        `SELECT IFNULL(MAX(id), 0) FROM ai_processing_history WHERE file_id='${fileId}' AND job_type='ai4';`,
+      )
+      const beforeMaxId = Number.parseInt(String(beforeMaxIdRaw || '0'), 10) || 0
+
       const runAi4 = await page.request.post('/ai/api/ai/process/batch', {
         headers: authHeaders,
         data: {
@@ -378,9 +383,9 @@ test.describe('@ai4-validation-nonfatal', () => {
       expect(receipt?.ai_status).toBe('manual_review')
 
       const historyRow = mysqlQuery(
-        `SELECT status, error_message FROM ai_processing_history WHERE file_id='${fileId}' AND job_type='ai4' ORDER BY created_at DESC LIMIT 1;`,
+        `SELECT status, error_message FROM ai_processing_history WHERE file_id='${fileId}' AND job_type='ai4' AND id > ${beforeMaxId} ORDER BY id DESC LIMIT 1;`,
       )
-      const [status, errorMessage] = historyRow.split('\t')
+      const [status, errorMessage] = String(historyRow || '').split('\t')
       expect(status).toBe('error')
       expect(String(errorMessage || '')).toContain('AccountingProposalValidationError')
     } finally {
