@@ -1,4 +1,35 @@
 import { test, expect } from '@playwright/test'
+import { execFileSync } from 'child_process'
+import fs from 'fs'
+import path from 'path'
+
+function loadDotEnv() {
+  const envText = fs.readFileSync(path.join(__dirname, '../../.env'), 'utf8')
+  const envLines = envText.split(/\r?\n/)
+  const envMap: Record<string, string> = {}
+  for (const line of envLines) {
+    const match = line.match(/^([A-Z0-9_]+)=(.*)$/)
+    if (!match) continue
+    envMap[match[1]] = match[2]
+  }
+  return envMap
+}
+
+function mysqlQuery(sql: string): string {
+  const envMap = loadDotEnv()
+  const dbName = envMap.DB_NAME
+  const dbUser = envMap.DB_USER
+  const dbPass = envMap.DB_PASS
+  expect(dbName).toBeTruthy()
+  expect(dbUser).toBeTruthy()
+  expect(dbPass).toBeTruthy()
+
+  return execFileSync(
+    'docker',
+    ['exec', '-e', `MYSQL_PWD=${dbPass}`, 'mind2-mysql-1', 'mysql', '-u', dbUser, '-D', dbName, '-N', '-B', '-e', sql],
+    { encoding: 'utf8' },
+  ).trim()
+}
 
 test.use({
   viewport: {
@@ -118,7 +149,10 @@ test.describe('@accounting-input-gate', () => {
     // gross_amount_original + net_amount_original set (currency=SEK), while *_sek may be NULL.
     // The test resets *_sek + exchange_rate to a broken state and asserts the pipeline
     // deterministically normalizes it during AI4.
-    const fileId = '7ab12bb6-a15e-4a84-993a-ad41754f457b'
+    const fileId = mysqlQuery(
+      "SELECT id FROM unified_files WHERE currency='SEK' AND gross_amount_original IS NOT NULL AND net_amount_original IS NOT NULL ORDER BY updated_at DESC LIMIT 1;",
+    )
+    expect(fileId).toBeTruthy()
 
     const resetResponse = await page.request.patch(`/ai/api/receipts/${fileId}`, {
       data: {
@@ -223,7 +257,15 @@ test.describe('@company-resolution-fallback', () => {
 
     // Known failure-case file_id from ai_processing_history where AI3 previously crashed on:
     // "Company resolution failed: both vat/orgnr and name are missing"
-    const fileId = '10c33ec7-7a0c-4729-8e37-e68811c772b8'
+    let fileId = mysqlQuery(
+      "SELECT file_id FROM ai_processing_history WHERE error_message LIKE 'Company resolution failed:%' ORDER BY created_at DESC LIMIT 1;",
+    )
+    if (!fileId) {
+      fileId = mysqlQuery(
+        "SELECT id FROM unified_files WHERE other_data LIKE '%missing_vendor_identity_in_ocr%' ORDER BY updated_at DESC LIMIT 1;",
+      )
+    }
+    expect(fileId).toBeTruthy()
 
     const runAi3 = await page.request.post('/ai/api/ai/process/batch', {
       headers: authHeaders,
@@ -277,41 +319,81 @@ test.describe('@ai4-validation-nonfatal', () => {
     expect(token).toBeTruthy()
     const authHeaders = { Authorization: `Bearer ${token}` }
 
-    // Known failure-case file_id where AI4 previously produced AccountingProposalValidationError.
-    const fileId = 'b8479106-3887-464c-b4af-c13aa0728ac7'
+    const promptsResponse = await page.request.get('/ai/api/ai-config/prompts', { headers: authHeaders })
+    expect(promptsResponse.ok()).toBeTruthy()
+    const promptsPayload = (await promptsResponse.json()) as { prompts: any[] }
+    const prompt = promptsPayload.prompts.find((p) => p.prompt_key === 'accounting_classification')
+    expect(prompt).toBeTruthy()
 
-    // Reset totals so AI4 uses a known-bad input state (gross/net missing => 0).
-    const resetResponse = await page.request.patch(`/ai/api/receipts/${fileId}`, {
-      data: {
-        gross_amount_sek: null,
-        net_amount_sek: null,
-        exchange_rate: 0,
-        currency: 'SEK',
-      },
-    })
-    expect(resetResponse.ok()).toBeTruthy()
+    const originalPrompt = String(prompt.prompt_content ?? '')
+    const forcedPrompt = 'Return ONLY the word NOT_JSON. Do not output JSON.'
 
-    const runAi4 = await page.request.post('/ai/api/ai/process/batch', {
-      headers: authHeaders,
-      data: {
-        file_ids: [fileId],
-        processing_steps: ['AI4'],
-        stop_on_error: true,
-      },
-    })
-    expect(runAi4.ok()).toBeTruthy()
-    const runAi4Json = await runAi4.json()
+    try {
+      const updateResponse = await page.request.put(`/ai/api/ai-config/prompts/${prompt.id}`, {
+        headers: authHeaders,
+        data: {
+          title: prompt.title,
+          description: prompt.description,
+          prompt_content: forcedPrompt,
+          selected_model_id: prompt.selected_model_id ?? null,
+        },
+      })
+      expect(updateResponse.ok()).toBeTruthy()
 
-    const result = Array.isArray(runAi4Json?.results) ? runAi4Json.results[0] : null
-    expect(result?.file_id).toBe(fileId)
-    expect(result?.error ?? null).toBeNull()
-    expect(result?.ai4_status).toBe('needs_review')
-    expect(String(result?.ai4_error || '')).toContain('AccountingProposalValidationError')
+      const fileId = mysqlQuery(
+        "SELECT id FROM unified_files WHERE currency='SEK' AND gross_amount_original IS NOT NULL AND net_amount_original IS NOT NULL ORDER BY updated_at DESC LIMIT 1;",
+      )
+      expect(fileId).toBeTruthy()
 
-    const receiptResponse = await page.request.get(`/ai/api/receipts/${fileId}`)
-    expect(receiptResponse.ok()).toBeTruthy()
-    const receipt = await receiptResponse.json()
-    expect(receipt?.ai_status).toBe('manual_review')
+      const resetResponse = await page.request.patch(`/ai/api/receipts/${fileId}`, {
+        data: {
+          gross_amount_sek: null,
+          net_amount_sek: null,
+          exchange_rate: 0,
+          currency: 'SEK',
+        },
+      })
+      expect(resetResponse.ok()).toBeTruthy()
+
+      const runAi4 = await page.request.post('/ai/api/ai/process/batch', {
+        headers: authHeaders,
+        data: {
+          file_ids: [fileId],
+          processing_steps: ['AI4'],
+          stop_on_error: true,
+        },
+      })
+      expect(runAi4.ok()).toBeTruthy()
+      const runAi4Json = await runAi4.json()
+
+      const result = Array.isArray(runAi4Json?.results) ? runAi4Json.results[0] : null
+      expect(result?.file_id).toBe(fileId)
+      expect(result?.error ?? null).toBeNull()
+      expect(result?.ai4_status).toBe('needs_review')
+      expect(String(result?.ai4_error || '')).toContain('AccountingProposalValidationError')
+
+      const receiptResponse = await page.request.get(`/ai/api/receipts/${fileId}`)
+      expect(receiptResponse.ok()).toBeTruthy()
+      const receipt = await receiptResponse.json()
+      expect(receipt?.ai_status).toBe('manual_review')
+
+      const historyRow = mysqlQuery(
+        `SELECT status, error_message FROM ai_processing_history WHERE file_id='${fileId}' AND job_type='ai4' ORDER BY created_at DESC LIMIT 1;`,
+      )
+      const [status, errorMessage] = historyRow.split('\t')
+      expect(status).toBe('error')
+      expect(String(errorMessage || '')).toContain('AccountingProposalValidationError')
+    } finally {
+      await page.request.put(`/ai/api/ai-config/prompts/${prompt.id}`, {
+        headers: authHeaders,
+        data: {
+          title: prompt.title,
+          description: prompt.description,
+          prompt_content: originalPrompt,
+          selected_model_id: prompt.selected_model_id ?? null,
+        },
+      })
+    }
 
     await page.goto('/process')
     await page.waitForLoadState('networkidle')
