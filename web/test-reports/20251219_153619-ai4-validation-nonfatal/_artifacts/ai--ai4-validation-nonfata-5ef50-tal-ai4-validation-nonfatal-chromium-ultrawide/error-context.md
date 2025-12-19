@@ -1,0 +1,149 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: M
+      - generic [ref=e7]: Mind Admin
+    - navigation [ref=e8]:
+      - button "Översikt" [ref=e9] [cursor=pointer]:
+        - img [ref=e10] [cursor=pointer]
+        - generic [ref=e13] [cursor=pointer]: Översikt
+      - button "Process" [ref=e14] [cursor=pointer]:
+        - img [ref=e15] [cursor=pointer]
+        - generic [ref=e16] [cursor=pointer]: Process
+      - button "Kvitton" [ref=e17] [cursor=pointer]:
+        - img [ref=e18] [cursor=pointer]
+        - generic [ref=e21] [cursor=pointer]: Kvitton
+      - button "Kortmatchning" [ref=e22] [cursor=pointer]:
+        - img [ref=e23] [cursor=pointer]
+        - generic [ref=e25] [cursor=pointer]: Kortmatchning
+      - button "Manuell matchning" [ref=e26] [cursor=pointer]:
+        - img [ref=e27] [cursor=pointer]
+        - generic [ref=e30] [cursor=pointer]: Manuell matchning
+      - button "Kö" [ref=e31] [cursor=pointer]:
+        - img [ref=e32] [cursor=pointer]
+        - generic [ref=e35] [cursor=pointer]: Kö
+      - button "AI" [ref=e36] [cursor=pointer]:
+        - img [ref=e37] [cursor=pointer]
+        - generic [ref=e38] [cursor=pointer]: AI
+      - button "Export" [ref=e39] [cursor=pointer]:
+        - img [ref=e40] [cursor=pointer]
+        - generic [ref=e43] [cursor=pointer]: Export
+      - button "Användare" [ref=e44] [cursor=pointer]:
+        - img [ref=e45] [cursor=pointer]
+        - generic [ref=e46] [cursor=pointer]: Användare
+    - generic [ref=e48]:
+      - generic [ref=e49]:
+        - generic [ref=e50]: A
+        - generic [ref=e51]:
+          - generic [ref=e52]: Administratör
+          - generic [ref=e53]: Systemansvarig
+      - button "Logga ut" [ref=e54] [cursor=pointer]:
+        - img [ref=e55] [cursor=pointer]
+        - generic [ref=e58] [cursor=pointer]: Logga ut
+  - generic [ref=e59]:
+    - banner [ref=e60]:
+      - generic [ref=e61]: Översikt
+      - generic [ref=e63]: Överblick över status för kvittohanteringen och centrala nyckeltal
+    - main [ref=e64]:
+      - generic [ref=e65]:
+        - generic [ref=e66]: Daglig lägesbild över automatiserad kvittohantering och systemhälsa (DEBUG)
+        - generic [ref=e67]:
+          - generic [ref=e68]:
+            - generic [ref=e69]:
+              - img [ref=e70]
+              - generic [ref=e74]: "134"
+            - generic [ref=e75]: Totalt antal kvitton
+            - generic [ref=e76]: 306 registrerade denna vecka
+          - generic [ref=e77]:
+            - generic [ref=e78]:
+              - img [ref=e79]
+              - generic [ref=e83]: 94,5%
+            - generic [ref=e84]: Träffsäkerhet
+            - generic [ref=e85]: +2,1 procentenheter jämfört med föregående vecka
+          - generic [ref=e86]:
+            - generic [ref=e87]:
+              - img [ref=e88]
+              - generic [ref=e92]: "23"
+            - generic [ref=e93]: Bearbetningskö
+            - generic [ref=e94]: 0 pågår just nu · 8 kräver åtgärd
+          - generic [ref=e95]:
+            - generic [ref=e96]:
+              - img [ref=e97]
+              - generic [ref=e101]: Varning
+            - generic [ref=e102]: Systemhälsa
+            - generic [ref=e103]: Samtliga tjänster svarar normalt
+        - generic [ref=e104]:
+          - generic [ref=e105]:
+            - generic [ref=e107]:
+              - heading "Senaste händelser" [level=3] [ref=e108]
+              - paragraph [ref=e109]: Automatiska uppdateringar från systemet
+            - generic [ref=e110]:
+              - generic [ref=e113]:
+                - generic [ref=e114]: Kvitto IMG_2025_001.jpg behandlades utan fel
+                - generic [ref=e115]: För 2 minuter sedan
+              - generic [ref=e118]:
+                - generic [ref=e119]: OCR misslyckades för kvitto IMG_2025_002.jpg
+                - generic [ref=e120]: För 5 minuter sedan
+              - generic [ref=e123]:
+                - generic [ref=e124]: Batch med 12 kvitton är färdigställd
+                - generic [ref=e125]: För 8 minuter sedan
+              - generic [ref=e128]:
+                - generic [ref=e129]: Kvitto IMG_2025_003.jpg markerat för manuell kontroll
+                - generic [ref=e130]: För 15 minuter sedan
+          - generic [ref=e131]:
+            - generic [ref=e132]:
+              - generic [ref=e133]:
+                - heading "Lagringsanvändning" [level=3] [ref=e134]
+                - paragraph [ref=e135]: Förbrukning i Mind-plattformen
+              - img [ref=e136]
+            - generic [ref=e138]:
+              - generic [ref=e139]:
+                - generic [ref=e140]: "Använt: 0 GB"
+                - generic [ref=e141]: "Totalt: 10 GB"
+              - paragraph [ref=e143]: 0% av tilldelad lagring nyttjas
+        - generic [ref=e144]:
+          - generic [ref=e146]:
+            - heading "Snabbåtgärder" [level=3] [ref=e147]
+            - paragraph [ref=e148]: Vanliga steg för ekonomi- och driftteam
+          - generic [ref=e149]:
+            - generic [ref=e150] [cursor=pointer]:
+              - img [ref=e151] [cursor=pointer]
+              - generic [ref=e154] [cursor=pointer]:
+                - generic [ref=e155] [cursor=pointer]: Visa alla kvitton
+                - generic [ref=e156] [cursor=pointer]: Gå direkt till kvittoöversikten
+            - generic [ref=e157] [cursor=pointer]:
+              - img [ref=e158] [cursor=pointer]
+              - generic [ref=e161] [cursor=pointer]:
+                - generic [ref=e162] [cursor=pointer]: Bearbetningsflöde
+                - generic [ref=e163] [cursor=pointer]: Följ pipeline och köstatus
+            - generic [ref=e164] [cursor=pointer]:
+              - img [ref=e165] [cursor=pointer]
+              - generic [ref=e168] [cursor=pointer]:
+                - generic [ref=e169] [cursor=pointer]: Systemhantering
+                - generic [ref=e170] [cursor=pointer]: Hantera integrationer och drift
+            - generic [ref=e171] [cursor=pointer]:
+              - img [ref=e172] [cursor=pointer]
+              - generic [ref=e175] [cursor=pointer]:
+                - generic [ref=e176] [cursor=pointer]: Hälsomonitor
+                - generic [ref=e177] [cursor=pointer]: Kontrollera AI och regelmotor
+            - generic [ref=e178] [cursor=pointer]:
+              - img [ref=e179] [cursor=pointer]
+              - generic [ref=e181] [cursor=pointer]:
+                - generic [ref=e182] [cursor=pointer]: Felhantering
+                - generic [ref=e183] [cursor=pointer]: Överblick över misslyckade poster
+            - generic [ref=e184] [cursor=pointer]:
+              - img [ref=e185] [cursor=pointer]
+              - generic [ref=e187] [cursor=pointer]:
+                - generic [ref=e188] [cursor=pointer]: Manuell hämtning
+                - generic [ref=e189] [cursor=pointer]: Starta om FTP-importen
+        - generic [ref=e190]:
+          - generic [ref=e192]:
+            - heading "Systemstatus" [level=3] [ref=e193]
+            - paragraph [ref=e194]: Testa API-knutpunkter och samla svar
+          - button "Testa API-anslutning" [ref=e196] [cursor=pointer]:
+            - img [ref=e197] [cursor=pointer]
+            - text: Testa API-anslutning
+```
