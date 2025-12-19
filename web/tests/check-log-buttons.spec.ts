@@ -78,12 +78,28 @@ test('Process log modal shows ai_stage_name and copy gives feedback @process-log
   const copyButton = dialog.getByRole('button', { name: /Kopiera allt|Kopierar\.\.\.|Copied!|Copy failed/i });
   await expect(copyButton).toBeVisible();
 
+  // Capture the exact text passed to clipboard.writeText (readText can be flaky in headless)
+  await page.evaluate(() => {
+    (window as any).__pwCopiedText = null;
+    try {
+      const clipboard = navigator.clipboard;
+      if (!clipboard?.writeText) return;
+      const original = clipboard.writeText.bind(clipboard);
+      clipboard.writeText = async (text) => {
+        (window as any).__pwCopiedText = String(text ?? '');
+        return await original(text);
+      };
+    } catch {
+      // ignore
+    }
+  });
+
   await copyButton.click();
-  await expect(copyButton).toContainText(/Copied!|Copy failed/i);
+  await expect(copyButton).toContainText(/Copied!/i);
 
   const copied = await page.evaluate(async () => {
     try {
-      return await navigator.clipboard.readText();
+      return (window as any).__pwCopiedText ?? null;
     } catch {
       return null;
     }
