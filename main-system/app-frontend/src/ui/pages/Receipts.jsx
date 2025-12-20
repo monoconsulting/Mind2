@@ -38,16 +38,26 @@ const initialFilters = {
   tag: ''
 }
 
-function formatCurrency(value) {
+function formatCurrency(value, currency = 'SEK') {
   if (typeof value !== 'number' || Number.isNaN(value)) {
     return '-'
   }
-  const formatter = new Intl.NumberFormat('sv-SE', {
-    style: 'currency',
-    currency: 'SEK',
-    minimumFractionDigits: 2
-  })
-  return formatter.format(value)
+  const code = typeof currency === 'string' && currency.trim() ? currency.trim().toUpperCase() : 'SEK'
+  try {
+    const formatter = new Intl.NumberFormat('sv-SE', {
+      style: 'currency',
+      currency: code,
+      minimumFractionDigits: 2
+    })
+    return formatter.format(value)
+  } catch (error) {
+    const formatter = new Intl.NumberFormat('sv-SE', {
+      style: 'currency',
+      currency: 'SEK',
+      minimumFractionDigits: 2
+    })
+    return `${formatter.format(value)}${code && code !== 'SEK' ? ` ${code}` : ''}`
+  }
 }
 
 function formatDate(value, includeTime = false) {
@@ -566,9 +576,9 @@ function ItemsModal({ open, receipt, onClose }) {
                     <tr key={index}>
                       <td>{item.description || item.item_name || '-'}</td>
                       <td className="text-right">{item.quantity || 1}</td>
-                      <td className="text-right">{formatCurrency(item.unit_price || item.price || 0)}</td>
+                      <td className="text-right">{formatCurrency(item.unit_price || item.price || 0, item.currency || receipt.currency)}</td>
                       <td className="text-right font-semibold">
-                        {formatCurrency((item.quantity || 1) * (item.unit_price || item.price || 0))}
+                        {formatCurrency((item.quantity || 1) * (item.unit_price || item.price || 0), item.currency || receipt.currency)}
                       </td>
                     </tr>
                   ))}
@@ -1331,8 +1341,8 @@ export default function ReceiptsList() {
                     <td>
                       <div className="font-medium">{formatDate(receipt.purchase_date || receipt.purchase_datetime)}</div>
                     </td>
-                    <td className="text-right">{formatCurrency(receipt.net_amount)}</td>
-                    <td className="text-right text-lg font-semibold">{formatCurrency(receipt.gross_amount)}</td>
+                    <td className="text-right">{formatCurrency(receipt.net_amount_display, receipt.currency)}</td>
+                    <td className="text-right text-lg font-semibold">{formatCurrency(receipt.gross_amount_display, receipt.currency)}</td>
                     <td className="text-center">
                       {receipt.match_first_card ? (
                         <FiCheckCircle className="text-green-500 inline-block text-xl" />
