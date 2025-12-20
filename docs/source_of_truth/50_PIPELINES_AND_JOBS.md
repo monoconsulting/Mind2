@@ -65,10 +65,16 @@ flowchart TD
 | `expense_classification` | `classify_expense_internal()` | AI2: Expense type detection (personal/corporate) | `unified_files.expense_type` |
 | `r_ai3` | `extract_receipt_data_ai3()` | AI3: Data extraction | Amounts, dates, merchant + card metadata (when present) |
 | `r_ai4` | `normalize_receipt_data_ai4()` | AI4: Accounting classification | Account codes, VAT |
-| `r_persist` | Implicit | Save structured data | `unified_files` + `receipt_items` |
+| `r_persist` | `_persist_extraction_result()` | Save structured data | `unified_files` + `receipt_items` (incl. deterministic amount repair + VAT totals) |
 | `r_queue_match` | - | Queue for AI5 matching | - |
 | `finalize_ok` | `wf1_finalize()` | Mark success | `ai_status=completed` |
 | `KLAR` | - | Final state | - |
+
+**Persist-stage amount repair (deterministic only):**
+
+- VAT breakdown can be filled from `unified_files.other_data.vat_summary` into `total_vat_25/12/6` when enough data exists.
+- Missing `gross/net` totals are repaired only when deterministically computable (e.g. single-row VAT summary, or `gross-net` with exactly one detected VAT rate).
+- SEK invariant: if `currency='SEK'` then `exchange_rate=1.000000` and `gross_amount_sek/net_amount_sek` mirror original when missing.
 
 ### 2.4 Key Code Files
 

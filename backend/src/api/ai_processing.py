@@ -57,6 +57,70 @@ _AI_STAGE_STATUS = {
 # Database helpers
 # ---------------------------------------------------------------------------
 
+_VAT_BUCKET_RATES: tuple[int, ...] = (25, 12, 6)
+
+
+def _decimal_2(value: Any) -> Decimal | None:
+    if value in (None, "", False, "null"):
+        return None
+    try:
+        return Decimal(str(value).replace(",", ".")).quantize(Decimal("0.01"))
+    except Exception:
+        return None
+
+
+def _parse_vat_rate(value: Any) -> int | None:
+    if value in (None, "", False, "null"):
+        return None
+    try:
+        rate = int(round(float(str(value).replace(",", "."))))
+    except Exception:
+        return None
+    return rate if rate in _VAT_BUCKET_RATES else None
+
+
+def _parse_vat_summary(vat_summary: Any) -> list[dict[str, Any]]:
+    if not isinstance(vat_summary, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for raw in vat_summary:
+        if not isinstance(raw, dict):
+            continue
+        rate = _parse_vat_rate(
+            raw.get("vat_rate")
+            or raw.get("vat_rate_percent")
+            or raw.get("vat_percentage")
+            or raw.get("vatRate")
+            or raw.get("vatRatePercent")
+            or raw.get("vatPercentage")
+            or raw.get("rate")
+        )
+        vat_amount = _decimal_2(raw.get("vat_amount") or raw.get("vat") or raw.get("vatAmount"))
+        gross_amount = _decimal_2(raw.get("gross_amount") or raw.get("gross") or raw.get("grossAmount"))
+        net_amount = _decimal_2(raw.get("net_amount") or raw.get("net") or raw.get("netAmount"))
+        rows.append(
+            {
+                "rate": rate,
+                "vat_amount": vat_amount,
+                "gross_amount": gross_amount,
+                "net_amount": net_amount,
+            }
+        )
+    return rows
+
+
+def _vat_totals_from_summary(vat_rows: list[dict[str, Any]]) -> dict[int, Decimal]:
+    totals: dict[int, Decimal] = {}
+    for row in vat_rows:
+        rate = row.get("rate")
+        vat_amount = row.get("vat_amount")
+        if rate in _VAT_BUCKET_RATES and isinstance(vat_amount, Decimal):
+            totals[rate] = (totals.get(rate) or Decimal("0.00")) + vat_amount
+    for k, v in list(totals.items()):
+        totals[k] = v.quantize(Decimal("0.01"))
+    return totals
+
+
 def _stage_status(stage: str, matched: Optional[bool] = None) -> str:
     if stage == "AI5":
         key = f"AI5_{str(bool(matched)).upper()}"
@@ -357,6 +421,107 @@ def _persist_extraction_result(
         other_data_payload["company_create_needed"] = created or bool(result.company_create_needed)
         if needs_review_reason:
             other_data_payload["needs_review_reason"] = needs_review_reason
+
+        # Load current DB values so we can avoid wiping existing non-null fields
+        cursor.execute(
+            """
+            SELECT
+              currency, exchange_rate,
+              gross_amount_original, net_amount_original,
+              gross_amount_sek, net_amount_sek,
+              total_vat_25, total_vat_12, total_vat_6,
+              gross_amount, net_amount
+            FROM unified_files
+            WHERE id = %s
+            """,
+            (file_id,),
+        )
+        existing_row = cursor.fetchone()
+        if existing_row is None:
+            raise ValueError(f"File {file_id} not found")
+        (
+            existing_currency,
+            existing_exchange_rate,
+            existing_gross_original,
+            existing_net_original,
+            existing_gross_sek,
+            existing_net_sek,
+            existing_vat_25,
+            existing_vat_12,
+            existing_vat_6,
+            existing_gross_legacy,
+            existing_net_legacy,
+        ) = existing_row
+
+        # Deterministic repairs (gross/net/VAT totals + SEK invariant)
+        currency = (unified.currency or existing_currency or "SEK").strip().upper() if isinstance((unified.currency or existing_currency or "SEK"), str) else "SEK"
+        exchange_rate = unified.exchange_rate if unified.exchange_rate is not None else existing_exchange_rate
+
+        gross_original = unified.gross_amount_original if unified.gross_amount_original is not None else existing_gross_original
+        net_original = unified.net_amount_original if unified.net_amount_original is not None else existing_net_original
+        gross_sek = unified.gross_amount_sek if unified.gross_amount_sek is not None else existing_gross_sek
+        net_sek = unified.net_amount_sek if unified.net_amount_sek is not None else existing_net_sek
+
+        if currency == "SEK":
+            exchange_rate = Decimal("1.000000")
+            if gross_original is None and isinstance(gross_sek, Decimal):
+                gross_original = gross_sek
+            if net_original is None and isinstance(net_sek, Decimal):
+                net_original = net_sek
+            if gross_sek is None and isinstance(gross_original, Decimal):
+                gross_sek = gross_original
+            if net_sek is None and isinstance(net_original, Decimal):
+                net_sek = net_original
+        else:
+            if exchange_rate in (0, Decimal("0")):
+                exchange_rate = None
+
+        vat_rows = _parse_vat_summary(other_data_payload.get("vat_summary"))
+        vat_totals = _vat_totals_from_summary(vat_rows)
+        vat_rates_detected = sorted({r.get("rate") for r in vat_rows if r.get("rate") in _VAT_BUCKET_RATES})
+
+        # Case A: one-row VAT summary can deterministically complete header totals
+        if len(vat_rows) == 1:
+            row = vat_rows[0]
+            row_vat = row.get("vat_amount")
+            row_gross = row.get("gross_amount")
+            if isinstance(row_vat, Decimal) and isinstance(row_gross, Decimal):
+                if gross_original is None:
+                    gross_original = row_gross
+                if net_original is None:
+                    net_candidate = (row_gross - row_vat).quantize(Decimal("0.01"))
+                    if net_candidate >= Decimal("0.00"):
+                        net_original = net_candidate
+
+        # VAT buckets: compute from vat_summary, else derive from gross-net if single rate detected
+        total_vat_25 = existing_vat_25
+        total_vat_12 = existing_vat_12
+        total_vat_6 = existing_vat_6
+
+        if total_vat_25 is None and 25 in vat_totals:
+            total_vat_25 = vat_totals[25]
+        if total_vat_12 is None and 12 in vat_totals:
+            total_vat_12 = vat_totals[12]
+        if total_vat_6 is None and 6 in vat_totals:
+            total_vat_6 = vat_totals[6]
+
+        if (
+            total_vat_25 is None
+            and total_vat_12 is None
+            and total_vat_6 is None
+            and isinstance(gross_original, Decimal)
+            and isinstance(net_original, Decimal)
+        ):
+            vat_diff = (gross_original - net_original).quantize(Decimal("0.01"))
+            if vat_diff >= Decimal("0.00") and len(vat_rates_detected) == 1:
+                rate = int(vat_rates_detected[0])
+                if rate == 25:
+                    total_vat_25 = vat_diff
+                elif rate == 12:
+                    total_vat_12 = vat_diff
+                elif rate == 6:
+                    total_vat_6 = vat_diff
+
         other_data_json = json.dumps(other_data_payload, ensure_ascii=False)
 
         updates: Dict[str, Any] = {
@@ -364,14 +529,17 @@ def _persist_extraction_result(
             "payment_type": unified.payment_type,
             "purchase_datetime": unified.purchase_datetime,
             "expense_type": unified.expense_type,
-            "gross_amount_original": unified.gross_amount_original,
-            "net_amount_original": unified.net_amount_original,
-            "exchange_rate": unified.exchange_rate,
-            "currency": unified.currency,
-            "gross_amount": unified.gross_amount_sek,  # legacy column
-            "net_amount": unified.net_amount_sek,  # legacy column
-            "gross_amount_sek": unified.gross_amount_sek,
-            "net_amount_sek": unified.net_amount_sek,
+            "gross_amount_original": gross_original,
+            "net_amount_original": net_original,
+            "total_vat_25": total_vat_25,
+            "total_vat_12": total_vat_12,
+            "total_vat_6": total_vat_6,
+            "exchange_rate": exchange_rate,
+            "currency": currency,
+            "gross_amount": gross_sek if gross_sek is not None else existing_gross_legacy,  # legacy column
+            "net_amount": net_sek if net_sek is not None else existing_net_legacy,  # legacy column
+            "gross_amount_sek": gross_sek,
+            "net_amount_sek": net_sek,
             "company_id": resolved_company_id,
             "receipt_number": unified.receipt_number,
             "other_data": other_data_json,
@@ -392,11 +560,6 @@ def _persist_extraction_result(
         params: List[Any] = list(updates.values())
         set_parts.append("updated_at = NOW()")
         params.append(file_id)
-
-        # Check if file exists first
-        cursor.execute("SELECT id FROM unified_files WHERE id = %s", (file_id,))
-        if cursor.fetchone() is None:
-            raise ValueError(f"File {file_id} not found")
 
         cursor.execute(
             "UPDATE unified_files SET " + ", ".join(set_parts) + " WHERE id = %s",

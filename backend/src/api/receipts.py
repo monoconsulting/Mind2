@@ -356,6 +356,10 @@ def _fetch_receipt_details(rid: str) -> dict[str, Any]:
         "credit_card_entering_mode": None,
         "currency": None,
         "exchange_rate": None,
+        "gross_amount_original": None,
+        "net_amount_original": None,
+        "gross_amount_display": None,
+        "net_amount_display": None,
         "gross_amount": None,
         "net_amount": None,
         "gross_amount_sek": None,
@@ -379,6 +383,7 @@ def _fetch_receipt_details(rid: str) -> dict[str, Any]:
                     "u.expense_type, u.credit_card_number, u.credit_card_last_4_digits, u.credit_card_type, "
                     "u.credit_card_brand_full, u.credit_card_brand_short, u.credit_card_payment_variant, "
                     "u.credit_card_token, u.credit_card_entering_mode, u.currency, u.exchange_rate, "
+                    "u.gross_amount_original, u.net_amount_original, "
                     "u.gross_amount, u.net_amount, u.gross_amount_sek, u.net_amount_sek, "
                     "u.total_vat_25, u.total_vat_12, u.total_vat_6, "
                     "u.ai_status, u.ai_confidence, u.other_data, u.ocr_raw, "
@@ -391,6 +396,7 @@ def _fetch_receipt_details(rid: str) -> dict[str, Any]:
                     "u.expense_type, u.credit_card_number, u.credit_card_last_4_digits, u.credit_card_type, "
                     "u.credit_card_brand_full, u.credit_card_brand_short, u.credit_card_payment_variant, "
                     "u.credit_card_token, u.credit_card_entering_mode, u.currency, u.exchange_rate, "
+                    "u.gross_amount_original, u.net_amount_original, "
                     "u.gross_amount, u.net_amount, u.gross_amount_sek, u.net_amount_sek, "
                     "u.total_vat_25, u.total_vat_12, u.total_vat_6, "
                     "u.ai_status, u.ai_confidence, u.other_data, u.ocr_raw"
@@ -404,9 +410,20 @@ def _fetch_receipt_details(rid: str) -> dict[str, Any]:
                 _id, merchant, company_id, vat, purchase_dt, receipt_number, payment_type,
                 expense_type, card_number, card_last_4, card_type, card_brand_full, card_brand_short,
                 card_payment_variant, card_token, card_entering_mode, currency, exchange_rate,
+                gross_original, net_original,
                 gross, net, gross_sek, net_sek, vat_25, vat_12, vat_6,
                 status, confidence, other_data, ocr_raw, tag_csv,
             ) = row
+            currency_code = (currency or "SEK").strip().upper() if isinstance(currency, str) else "SEK"
+            gross_original_value = float(gross_original) if gross_original is not None else None
+            net_original_value = float(net_original) if net_original is not None else None
+
+            if currency_code != "SEK":
+                gross_display = gross_original_value
+                net_display = net_original_value
+            else:
+                gross_display = gross_original_value if gross_original_value is not None else (float(gross) if gross is not None else (float(gross_sek) if gross_sek not in (None, 0) else None))
+                net_display = net_original_value if net_original_value is not None else (float(net) if net is not None else (float(net_sek) if net_sek not in (None, 0) else None))
             data.update(
                 {
                     "id": _id,
@@ -426,8 +443,12 @@ def _fetch_receipt_details(rid: str) -> dict[str, Any]:
                     "credit_card_payment_variant": card_payment_variant,
                     "credit_card_token": card_token,
                     "credit_card_entering_mode": card_entering_mode,
-                    "currency": currency,
-                    "exchange_rate": float(exchange_rate) if exchange_rate not in (None, 0) else None,
+                    "currency": currency_code,
+                    "exchange_rate": float(exchange_rate) if exchange_rate is not None else None,
+                    "gross_amount_original": gross_original_value,
+                    "net_amount_original": net_original_value,
+                    "gross_amount_display": gross_display,
+                    "net_amount_display": net_display,
                     "gross_amount": float(gross) if gross is not None else None,
                     "net_amount": float(net) if net is not None else None,
                     "gross_amount_sek": float(gross_sek) if gross_sek not in (None, 0) else None,
@@ -1098,6 +1119,7 @@ def list_receipts() -> Any:
             with db_cursor() as cur:
                 query = (
                     "SELECT u.id, u.original_filename, c.name as company_name, u.purchase_datetime, "
+                    "u.currency, u.gross_amount_original, u.net_amount_original, "
                     "u.net_amount_sek, u.gross_amount_sek, u.ai_status, u.file_type, u.workflow_type, "
                     "u.submitted_by, u.file_creation_timestamp, u.created_at, fl.lat, fl.lon, fl.acc, "
                     "u.expense_type, u.credit_card_last_4_digits, u.credit_card_type, u.payment_type, "
@@ -1144,6 +1166,9 @@ def list_receipts() -> Any:
                     fname,
                     merchant,
                     pdt,
+                    currency,
+                    gross_original,
+                    net_original,
                     net,
                     gross,
                     status,
@@ -1213,6 +1238,15 @@ def list_receipts() -> Any:
 
                     net_value = float(net) if net is not None else None
                     gross_value = float(gross) if gross is not None else None
+                    currency_code = (currency or "SEK").strip().upper() if isinstance(currency, str) else "SEK"
+                    gross_original_value = float(gross_original) if gross_original is not None else None
+                    net_original_value = float(net_original) if net_original is not None else None
+                    if currency_code != "SEK":
+                        gross_display = gross_original_value
+                        net_display = net_original_value
+                    else:
+                        gross_display = gross_original_value if gross_original_value is not None else gross_value
+                        net_display = net_original_value if net_original_value is not None else net_value
                     line_items = _count_line_items(rid)
                     document_type = None
                     if include_credit:
@@ -1238,6 +1272,11 @@ def list_receipts() -> Any:
                             "location": location,
                             "net_amount": net_value,
                             "gross_amount": gross_value,
+                            "currency": currency_code,
+                            "gross_amount_original": gross_original_value,
+                            "net_amount_original": net_original_value,
+                            "gross_amount_display": gross_display,
+                            "net_amount_display": net_display,
                             "status": status,
                             "ai_status": status,  # Add ai_status field so frontend deps can detect changes
                             "workflow_stage_status": workflow_stage_status,  # Current workflow stage
