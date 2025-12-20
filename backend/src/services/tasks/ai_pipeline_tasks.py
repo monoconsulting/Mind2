@@ -395,14 +395,35 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
     # AI4 - Accounting Classification
     accounting_inputs = _load_accounting_inputs(file_id)
     begin_import_stage(workflow_run_id, "r_ai4", message="AI4 normalisering startar")
-    if accounting_inputs:
-        gross, net, vat_amount, vendor_name = accounting_inputs
+    if accounting_inputs and accounting_inputs.get("ai4_ready") is False:
+        reason = str(accounting_inputs.get("reason") or "missing totals for accounting")
+        _history(
+            file_id,
+            "ai4",
+            "skipped",
+            ai_stage_name="AI4-AccountingClassification",
+            log_text=f"Needs review: {reason}",
+        )
+        complete_import_stage(
+            workflow_run_id,
+            "r_ai4",
+            success=True,
+            message=reason,
+        )
+        log_import_event(workflow_run_id, AiStatus.MANUAL_REVIEW.value, message=reason)
+        _move_to_manual_review(file_id, reason)
+    elif accounting_inputs and accounting_inputs.get("ai4_ready"):
+        gross = accounting_inputs.get("gross_amount_sek")
+        net = accounting_inputs.get("net_amount_sek")
+        vat_amount = accounting_inputs.get("vat_amount_sek")
+        vendor_name = accounting_inputs.get("vendor_name")
         receipt_items = _load_receipt_items(file_id)
         start_time = time.time()
         ai4_provider = ai_service.prompt_provider_names.get("accounting_classification", "unknown")
         ai4_model = ai_service.prompt_model_names.get("accounting_classification", "unknown")
         ai4_prompt = ai_service.prompts.get("accounting_classification", "")
         raw_response = ""
+        from services.ai_service import AccountingProposalValidationError
         try:
             result = classify_accounting_internal(
                 AccountingClassificationRequest(
@@ -474,6 +495,35 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
                 success=True,
                 message=f"AI4 skapade {proposal_count} konteringsförslag",
             )
+        except AccountingProposalValidationError as exc:
+            # Non-fatal: validator errors must degrade to manual review and the batch must continue.
+            elapsed = int((time.time() - start_time) * 1000)
+            error_msg = f"{type(exc).__name__}: {str(exc)}"
+            raw_response = ai_service.last_raw_response or ""
+            _history(
+                file_id,
+                "ai4",
+                "error",
+                ai_stage_name="AI4-AccountingClassification",
+                log_text=(
+                    "Needs review: AI4 validation failed for "
+                    f"vendor='{vendor_name}', gross={gross}, net={net}, vat={vat_amount}"
+                ),
+                error_message=error_msg,
+                processing_time_ms=elapsed,
+                provider=ai4_provider,
+                model_name=ai4_model,
+                prompt_text=ai4_prompt,
+                response_text=raw_response,
+            )
+            complete_import_stage(
+                workflow_run_id,
+                "r_ai4",
+                success=True,
+                message=error_msg,
+            )
+            log_import_event(workflow_run_id, AiStatus.MANUAL_REVIEW.value, message=error_msg)
+            _move_to_manual_review(file_id, error_msg)
         except Exception as exc:
             elapsed = int((time.time() - start_time) * 1000)
             error_msg = f"{type(exc).__name__}: {str(exc)}"

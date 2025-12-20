@@ -557,12 +557,12 @@ Mind currently uses **28** tables + **2** views (see detailed definitions below)
 | `total_vat_25` | `decimal(12,2)` | YES | `NULL` | total vat amount 25% |
 | `total_vat_12` | `decimal(12,2)` | YES | `NULL` |  |
 | `total_vat_6` | `decimal(12,2)` | YES | `NULL` |  |
-| `exchange_rate` | `decimal(12,0)` | YES | `'0'` | exchange rate example: 1 USD=11.33 SEK |
+| `exchange_rate` | `decimal(12,6)` | YES | `NULL` | Exchange rate to SEK (SEK invariant: `1.000000` for SEK; NULL means unknown/unused) |
 | `currency` | `varchar(222)` | YES | `'SEK'` | currency that was bought in |
-| `gross_amount_sek` | `decimal(10,0)` | YES | `'0'` | only used for foreign currency - shows the gross amount in sek |
-| `net_amount_sek` | `decimal(10,0)` | YES | `'0'` | The net amount in SEK after exchange conversion |
-| `gross_amount` | `decimal(12,2)` | YES | `NULL` | original gross amound in the specified currency |
-| `net_amount` | `decimal(12,2)` | YES | `NULL` | original gross amount in the specified currency |
+| `gross_amount_sek` | `decimal(12,2)` | YES | `NULL` | SEK mirror amount (for SEK mirrors original; for foreign only when deterministically known) |
+| `net_amount_sek` | `decimal(12,2)` | YES | `NULL` | SEK mirror amount (for SEK mirrors original; for foreign only when deterministically known) |
+| `gross_amount` | `decimal(12,2)` | YES | `NULL` | Legacy mirror (SEK) for backward compatibility (do not use for foreign-currency display) |
+| `net_amount` | `decimal(12,2)` | YES | `NULL` | Legacy mirror (SEK) for backward compatibility (do not use for foreign-currency display) |
 | `ai_status` | `varchar(32)` | YES | `NULL` |  |
 | `ai_confidence` | `float` | YES | `NULL` |  |
 | `submitted_by` | `varchar(64)` | YES | `NULL` |  |

@@ -57,6 +57,70 @@ _AI_STAGE_STATUS = {
 # Database helpers
 # ---------------------------------------------------------------------------
 
+_VAT_BUCKET_RATES: tuple[int, ...] = (25, 12, 6)
+
+
+def _decimal_2(value: Any) -> Decimal | None:
+    if value in (None, "", False, "null"):
+        return None
+    try:
+        return Decimal(str(value).replace(",", ".")).quantize(Decimal("0.01"))
+    except Exception:
+        return None
+
+
+def _parse_vat_rate(value: Any) -> int | None:
+    if value in (None, "", False, "null"):
+        return None
+    try:
+        rate = int(round(float(str(value).replace(",", "."))))
+    except Exception:
+        return None
+    return rate if rate in _VAT_BUCKET_RATES else None
+
+
+def _parse_vat_summary(vat_summary: Any) -> list[dict[str, Any]]:
+    if not isinstance(vat_summary, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for raw in vat_summary:
+        if not isinstance(raw, dict):
+            continue
+        rate = _parse_vat_rate(
+            raw.get("vat_rate")
+            or raw.get("vat_rate_percent")
+            or raw.get("vat_percentage")
+            or raw.get("vatRate")
+            or raw.get("vatRatePercent")
+            or raw.get("vatPercentage")
+            or raw.get("rate")
+        )
+        vat_amount = _decimal_2(raw.get("vat_amount") or raw.get("vat") or raw.get("vatAmount"))
+        gross_amount = _decimal_2(raw.get("gross_amount") or raw.get("gross") or raw.get("grossAmount"))
+        net_amount = _decimal_2(raw.get("net_amount") or raw.get("net") or raw.get("netAmount"))
+        rows.append(
+            {
+                "rate": rate,
+                "vat_amount": vat_amount,
+                "gross_amount": gross_amount,
+                "net_amount": net_amount,
+            }
+        )
+    return rows
+
+
+def _vat_totals_from_summary(vat_rows: list[dict[str, Any]]) -> dict[int, Decimal]:
+    totals: dict[int, Decimal] = {}
+    for row in vat_rows:
+        rate = row.get("rate")
+        vat_amount = row.get("vat_amount")
+        if rate in _VAT_BUCKET_RATES and isinstance(vat_amount, Decimal):
+            totals[rate] = (totals.get(rate) or Decimal("0.00")) + vat_amount
+    for k, v in list(totals.items()):
+        totals[k] = v.quantize(Decimal("0.01"))
+    return totals
+
+
 def _stage_status(stage: str, matched: Optional[bool] = None) -> str:
     if stage == "AI5":
         key = f"AI5_{str(bool(matched)).upper()}"
@@ -325,7 +389,22 @@ def _persist_extraction_result(
         if owns_connection:
             conn.start_transaction()
 
-        resolved_company_id, resolved_match_type, created = _ensure_company(cursor, result.company)
+        needs_review_reason: str | None = None
+        resolved_company_id: int | None = None
+        resolved_match_type: str | None = None
+        created = False
+        try:
+            resolved_company_id, resolved_match_type, created = _ensure_company(cursor, result.company)
+        except ValueError as exc:
+            # Controlled handling: missing vendor identity must degrade to needs_review, never crash.
+            # This error happens when OCR/AI3 did not provide enough vendor identity (vat/orgnr + name).
+            if str(exc).startswith("Company resolution failed:"):
+                needs_review_reason = "missing_vendor_identity_in_ocr"
+                resolved_company_id = None
+                resolved_match_type = needs_review_reason
+                created = False
+            else:
+                raise
         unified = result.unified_file
         # Reflect resolved company metadata back on the response model
         result.company_match_type = resolved_match_type
@@ -340,6 +419,109 @@ def _persist_extraction_result(
                 other_data_payload = {"raw_other_data": unified.other_data}
         other_data_payload["company_match_type"] = resolved_match_type
         other_data_payload["company_create_needed"] = created or bool(result.company_create_needed)
+        if needs_review_reason:
+            other_data_payload["needs_review_reason"] = needs_review_reason
+
+        # Load current DB values so we can avoid wiping existing non-null fields
+        cursor.execute(
+            """
+            SELECT
+              currency, exchange_rate,
+              gross_amount_original, net_amount_original,
+              gross_amount_sek, net_amount_sek,
+              total_vat_25, total_vat_12, total_vat_6,
+              gross_amount, net_amount
+            FROM unified_files
+            WHERE id = %s
+            """,
+            (file_id,),
+        )
+        existing_row = cursor.fetchone()
+        if existing_row is None:
+            raise ValueError(f"File {file_id} not found")
+        (
+            existing_currency,
+            existing_exchange_rate,
+            existing_gross_original,
+            existing_net_original,
+            existing_gross_sek,
+            existing_net_sek,
+            existing_vat_25,
+            existing_vat_12,
+            existing_vat_6,
+            existing_gross_legacy,
+            existing_net_legacy,
+        ) = existing_row
+
+        # Deterministic repairs (gross/net/VAT totals + SEK invariant)
+        currency = (unified.currency or existing_currency or "SEK").strip().upper() if isinstance((unified.currency or existing_currency or "SEK"), str) else "SEK"
+        exchange_rate = unified.exchange_rate if unified.exchange_rate is not None else existing_exchange_rate
+
+        gross_original = unified.gross_amount_original if unified.gross_amount_original is not None else existing_gross_original
+        net_original = unified.net_amount_original if unified.net_amount_original is not None else existing_net_original
+        gross_sek = unified.gross_amount_sek if unified.gross_amount_sek is not None else existing_gross_sek
+        net_sek = unified.net_amount_sek if unified.net_amount_sek is not None else existing_net_sek
+
+        if currency == "SEK":
+            exchange_rate = Decimal("1.000000")
+            if gross_original is None and isinstance(gross_sek, Decimal):
+                gross_original = gross_sek
+            if net_original is None and isinstance(net_sek, Decimal):
+                net_original = net_sek
+            if gross_sek is None and isinstance(gross_original, Decimal):
+                gross_sek = gross_original
+            if net_sek is None and isinstance(net_original, Decimal):
+                net_sek = net_original
+        else:
+            if exchange_rate in (0, Decimal("0")):
+                exchange_rate = None
+
+        vat_rows = _parse_vat_summary(other_data_payload.get("vat_summary"))
+        vat_totals = _vat_totals_from_summary(vat_rows)
+        vat_rates_detected = sorted({r.get("rate") for r in vat_rows if r.get("rate") in _VAT_BUCKET_RATES})
+
+        # Case A: one-row VAT summary can deterministically complete header totals
+        if len(vat_rows) == 1:
+            row = vat_rows[0]
+            row_vat = row.get("vat_amount")
+            row_gross = row.get("gross_amount")
+            if isinstance(row_vat, Decimal) and isinstance(row_gross, Decimal):
+                if gross_original is None:
+                    gross_original = row_gross
+                if net_original is None:
+                    net_candidate = (row_gross - row_vat).quantize(Decimal("0.01"))
+                    if net_candidate >= Decimal("0.00"):
+                        net_original = net_candidate
+
+        # VAT buckets: compute from vat_summary, else derive from gross-net if single rate detected
+        total_vat_25 = existing_vat_25
+        total_vat_12 = existing_vat_12
+        total_vat_6 = existing_vat_6
+
+        if total_vat_25 is None and 25 in vat_totals:
+            total_vat_25 = vat_totals[25]
+        if total_vat_12 is None and 12 in vat_totals:
+            total_vat_12 = vat_totals[12]
+        if total_vat_6 is None and 6 in vat_totals:
+            total_vat_6 = vat_totals[6]
+
+        if (
+            total_vat_25 is None
+            and total_vat_12 is None
+            and total_vat_6 is None
+            and isinstance(gross_original, Decimal)
+            and isinstance(net_original, Decimal)
+        ):
+            vat_diff = (gross_original - net_original).quantize(Decimal("0.01"))
+            if vat_diff >= Decimal("0.00") and len(vat_rates_detected) == 1:
+                rate = int(vat_rates_detected[0])
+                if rate == 25:
+                    total_vat_25 = vat_diff
+                elif rate == 12:
+                    total_vat_12 = vat_diff
+                elif rate == 6:
+                    total_vat_6 = vat_diff
+
         other_data_json = json.dumps(other_data_payload, ensure_ascii=False)
 
         updates: Dict[str, Any] = {
@@ -347,14 +529,17 @@ def _persist_extraction_result(
             "payment_type": unified.payment_type,
             "purchase_datetime": unified.purchase_datetime,
             "expense_type": unified.expense_type,
-            "gross_amount_original": unified.gross_amount_original,
-            "net_amount_original": unified.net_amount_original,
-            "exchange_rate": unified.exchange_rate,
-            "currency": unified.currency,
-            "gross_amount": unified.gross_amount_sek,  # legacy column
-            "net_amount": unified.net_amount_sek,  # legacy column
-            "gross_amount_sek": unified.gross_amount_sek,
-            "net_amount_sek": unified.net_amount_sek,
+            "gross_amount_original": gross_original,
+            "net_amount_original": net_original,
+            "total_vat_25": total_vat_25,
+            "total_vat_12": total_vat_12,
+            "total_vat_6": total_vat_6,
+            "exchange_rate": exchange_rate,
+            "currency": currency,
+            "gross_amount": gross_sek if gross_sek is not None else existing_gross_legacy,  # legacy column
+            "net_amount": net_sek if net_sek is not None else existing_net_legacy,  # legacy column
+            "gross_amount_sek": gross_sek,
+            "net_amount_sek": net_sek,
             "company_id": resolved_company_id,
             "receipt_number": unified.receipt_number,
             "other_data": other_data_json,
@@ -367,7 +552,7 @@ def _persist_extraction_result(
             "credit_card_type": unified.credit_card_type,
             "credit_card_token": unified.credit_card_token,
             "credit_card_entering_mode": unified.credit_card_entering_mode,
-            "ai_status": AiStatus.COMPLETED.value,
+            "ai_status": AiStatus.MANUAL_REVIEW.value if needs_review_reason else AiStatus.COMPLETED.value,
             "ai_confidence": result.confidence,
         }
 
@@ -375,11 +560,6 @@ def _persist_extraction_result(
         params: List[Any] = list(updates.values())
         set_parts.append("updated_at = NOW()")
         params.append(file_id)
-
-        # Check if file exists first
-        cursor.execute("SELECT id FROM unified_files WHERE id = %s", (file_id,))
-        if cursor.fetchone() is None:
-            raise ValueError(f"File {file_id} not found")
 
         cursor.execute(
             "UPDATE unified_files SET " + ", ".join(set_parts) + " WHERE id = %s",
@@ -898,70 +1078,58 @@ def process_batch() -> Any:
                         )
                         file_result["steps_completed"].append("AI3")
                     elif step == "AI4":
-                        with db_cursor() as cursor:
-                            cursor.execute(
-                                """
-                                SELECT gross_amount_sek, net_amount_sek,
-                                       (gross_amount_sek - net_amount_sek) AS vat_amount,
-                                       c.name AS vendor_name
-                                  FROM unified_files uf
-                             LEFT JOIN companies c ON uf.company_id = c.id
-                                 WHERE uf.id = %s
-                                """,
-                                (file_id,),
-                            )
-                            amounts = cursor.fetchone()
-                            # Fetch receipt_items from database with their IDs
-                            cursor.execute(
-                                """
-                                SELECT id, main_id, article_id, name, number,
-                                       item_price_ex_vat, item_price_inc_vat,
-                                       item_total_price_ex_vat, item_total_price_inc_vat,
-                                       currency, vat, vat_percentage
-                                  FROM receipt_items
-                                 WHERE main_id = %s
-                                 ORDER BY id
-                                """,
-                                (file_id,),
-                            )
-                            items_rows = cursor.fetchall()
+                        from services.tasks.file_management_tasks import _load_accounting_inputs, _load_receipt_items, _move_to_manual_review
 
-                        receipt_items_for_ai4: List[ReceiptItem] = []
-                        for row in items_rows:
-                            receipt_items_for_ai4.append(ReceiptItem(
-                                id=row[0],
-                                main_id=row[1],
-                                article_id=row[2] or "",
-                                name=row[3],
-                                number=row[4],
-                                item_price_ex_vat=row[5],
-                                item_price_inc_vat=row[6],
-                                item_total_price_ex_vat=row[7],
-                                item_total_price_inc_vat=row[8],
-                                currency=row[9],
-                                vat=row[10],
-                                vat_percentage=row[11],
-                            ))
+                        accounting = _load_accounting_inputs(file_id)
+                        if not accounting:
+                            continue
 
-                        if amounts:
-                            logger.info(
-                                "AI4 processing %s with %d receipt_items (IDs: %s)",
-                                file_id,
-                                len(receipt_items_for_ai4),
-                                [item.id for item in receipt_items_for_ai4]
-                            )
+                        if accounting.get("ai4_ready") is False:
+                            reason = str(accounting.get("reason") or "missing totals for accounting")
+                            file_result["ai4_status"] = "needs_review"
+                            file_result["ai4_reason"] = reason
+                            _move_to_manual_review(file_id, reason)
+                            continue
+
+                        receipt_items_for_ai4 = _load_receipt_items(file_id)
+                        vendor_name = accounting.get("vendor_name") or ""
+
+                        logger.info(
+                            "AI4 processing %s with %d receipt_items",
+                            file_id,
+                            len(receipt_items_for_ai4),
+                        )
+
+                        try:
+                            from services.ai_service import AccountingProposalValidationError
+                            from services.ai_logging import log_ai_call
+
                             classify_accounting_internal(
                                 AccountingClassificationRequest(
                                     file_id=file_id,
                                     document_type=document_type or "other",
                                     expense_type=expense_type or "personal",
-                                    gross_amount=Decimal(str(amounts[0] or 0)),
-                                    net_amount=Decimal(str(amounts[1] or 0)),
-                                    vat_amount=Decimal(str(amounts[2] or 0)),
-                                    vendor_name=amounts[3] or "",
+                                    gross_amount=Decimal(str(accounting.get("gross_amount_sek") or 0)),
+                                    net_amount=Decimal(str(accounting.get("net_amount_sek") or 0)),
+                                    vat_amount=Decimal(str(accounting.get("vat_amount_sek") or 0)),
+                                    vendor_name=vendor_name,
                                     receipt_items=receipt_items_for_ai4,
                                 )
                             )
+                        except AccountingProposalValidationError as exc:
+                            error_msg = f"{type(exc).__name__}: {str(exc)}"
+                            file_result["ai4_status"] = "needs_review"
+                            file_result["ai4_error"] = error_msg
+                            _move_to_manual_review(file_id, error_msg)
+                            log_ai_call(
+                                file_id=file_id,
+                                job="ai4",
+                                status="error",
+                                ai_stage_name="AI4-AccountingClassification",
+                                log_text="Needs review: AI4 validation failed",
+                                error_message=error_msg,
+                            )
+                        else:
                             file_result["steps_completed"].append("AI4")
                             stats = run_box_enrichment(file_id)
                             if stats.get("success"):
