@@ -1,0 +1,15 @@
+file_id,file_name,currency,gross_amount_display,net_amount_display,missing_count,missing_fields,warnings,latest_workflow_status,latest_stage_name,latest_stage_status,ai_history_rows
+691df66e-92d4-4af9-b419-cfb7ee792b7c,1-page-autodesk.pdf,SEK,680.00,680.00,,"payment_type,vat_breakdown(total_vat_25/12/6)",,failed,finalize_fail_end,failed,9
+f552d5a3-8b1f-453c-b2d6-a0c7b6018acd,FC_Webhallen_Sverige_AB_2025-06-02_194700.pdf,SEK,1947.00,,5,"net_amount,vat_breakdown(total_vat_25/12/6),credit_card_brand_short,credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,8
+adb7fdfd-d4a9-4913-9f72-3f05a42969dd,3-pages-ms.pdf,SEK,138.13,,5,"net_amount,vat_breakdown(total_vat_25/12/6),credit_card_brand_short,credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,8
+98a91ca1-3814-4c86-9674-762db39d3435,Kvitto_2025-06-30_170640.pdf,SEK,558.30,446.64,2,"vat_breakdown(total_vat_25/12/6),credit_card_last_4_digits",,succeeded,KLAR,succeeded,9
+e7e67d82-48f6-4277-b59b-14a8f6ca17a6,1-page-elgiganten.pdf,SEK,2790.00,2232.00,2,"vat_breakdown(total_vat_25/12/6),credit_card_last_4_digits",,succeeded,KLAR,succeeded,9
+6630b6c1-bda2-448b-bc50-fb7c08c36ff2,1-page-kjell.jpg,SEK,2980.00,2384.00,2,"vat_breakdown(total_vat_25/12/6),credit_card_last_4_digits",,succeeded,KLAR,succeeded,8
+d51fb97d-5122-49df-b8a6-9b91a7d5f103,1_page_kjell_2025-10-01_08-07-02.png,SEK,2980.00,2384.00,2,"vat_breakdown(total_vat_25/12/6),credit_card_last_4_digits",,succeeded,KLAR,succeeded,8
+48eb1a3d-4f42-40ca-903d-fa29cb318e8e,unknown_unknown_1970-01-01_.pdf,SEK,511.00,408.80,1,vat_breakdown(total_vat_25/12/6),,succeeded,KLAR,succeeded,9
+81c5c6e9-7664-4603-855e-d74870fed7c0,Kvitto_2025-06-30_165938.pdf,SEK,727.11,581.69,1,receipt_items,,succeeded,KLAR,succeeded,9
+a04ac807-ed6e-44fa-9182-59ecc313a8d2,Jula_Bromma_2025-12-12.pdf,SEK,429.40,343.52,1,vat_breakdown(total_vat_25/12/6),,succeeded,KLAR,succeeded,9
+fedfba87-b5f9-4b3f-ba8f-369f61ff2cf1,250708_Neko_Sushi.pdf,SEK,344.00,307.14,1,vat_breakdown(total_vat_25/12/6),,succeeded,KLAR,succeeded,9
+1c34a7f3-3609-446d-840a-5a2d8a122860,250704_Ruccola.pdf,SEK,290.00,258.92,1,vat_breakdown(total_vat_25/12/6),,succeeded,KLAR,succeeded,9
+01e67ae7-840e-4fed-a4fe-df2ef5a7d47d,2-pages-jula.pdf,SEK,129.00,103.20,1,vat_breakdown(total_vat_25/12/6),,succeeded,KLAR,succeeded,9
+ef2023c0-ab16-4845-a182-e83d5affc698,1_page_midjourney.jpg,USD,12.50,10.00,,"payment_type,vat_breakdown(total_vat_25/12/6),sek_amounts(gross_amount_sek/net_amount_sek),exchange_rate",,succeeded,KLAR,succeeded,7

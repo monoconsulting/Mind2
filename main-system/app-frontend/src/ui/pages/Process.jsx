@@ -150,16 +150,26 @@ const initialFilters = {
   uploadMonth: ''
 }
 
-function formatCurrency(value) {
+function formatCurrency(value, currency = 'SEK') {
   if (typeof value !== 'number' || Number.isNaN(value)) {
     return '-'
   }
-  const formatter = new Intl.NumberFormat('sv-SE', {
-    style: 'currency',
-    currency: 'SEK',
-    minimumFractionDigits: 2
-  })
-  return formatter.format(value)
+  const code = typeof currency === 'string' && currency.trim() ? currency.trim().toUpperCase() : 'SEK'
+  try {
+    const formatter = new Intl.NumberFormat('sv-SE', {
+      style: 'currency',
+      currency: code,
+      minimumFractionDigits: 2
+    })
+    return formatter.format(value)
+  } catch (error) {
+    const formatter = new Intl.NumberFormat('sv-SE', {
+      style: 'currency',
+      currency: 'SEK',
+      minimumFractionDigits: 2
+    })
+    return `${formatter.format(value)}${code && code !== 'SEK' ? ` ${code}` : ''}`
+  }
 }
 
 function formatDate(value, includeTime = false) {
@@ -2543,8 +2553,8 @@ export default function Receipts() {
                         {receipt.credit_card_last_4 || '-'}
                       </div>
                     </td>
-                    <td className="text-right">{formatCurrency(receipt.net_amount)}</td>
-                    <td className="text-right text-lg font-semibold">{formatCurrency(receipt.gross_amount)}</td>
+                    <td className="text-right">{formatCurrency(receipt.net_amount_display, receipt.currency)}</td>
+                    <td className="text-right text-lg font-semibold">{formatCurrency(receipt.gross_amount_display, receipt.currency)}</td>
                     <td className="text-center">
                       {(() => {
                         const status = (receipt.ai_status || '').toLowerCase()
