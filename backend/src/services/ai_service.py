@@ -393,8 +393,11 @@ DATE_PATTERNS = [
 
 
 def _normalize_amount(token: str) -> Optional[Decimal]:
-    cleaned = token.strip().replace(" ", "")
-    cleaned = cleaned.replace("â€¯", "").replace("'", "")
+    cleaned = token.strip()
+    cleaned = cleaned.replace(" ", "")
+    cleaned = cleaned.replace("\u00A0", "")  # NBSP
+    cleaned = cleaned.replace("\u202F", "")  # Narrow NBSP
+    cleaned = cleaned.replace("'", "")
     cleaned = cleaned.replace(",", ".")
     if cleaned.count(".") > 1:
         # assume thousands separators
@@ -693,7 +696,7 @@ class AIService:
         reasoning_parts: List[str] = []
 
         receipt_tokens = ["kvitto", "receipt", "summa", "moms", "butik", "kundens kvitto"]
-        invoice_tokens = ["invoice", "faktura", "fÃ¶rfallodatum", "ocr", "betalning"]
+        invoice_tokens = ["invoice", "faktura", "förfallodatum", "ocr", "betalning"]
         fc_tokens = ["firstcard", "first card", "kortmatchning", "kontoutdrag", "firstcard company", "kortfaktura"]
 
         receipt_hits = sum(token in text for token in receipt_tokens)
@@ -747,7 +750,7 @@ class AIService:
         text = (request.ocr_text or "").lower()
         logger.info("Classifying expense for %s", request.file_id)
 
-        card_patterns = ["visa", "mastercard", "first card", "corporate", "fÃ¶retagskort", "card number"]
+        card_patterns = ["visa", "mastercard", "first card", "corporate", "företagskort", "card number"]
         cash_patterns = ["kontant", "cash"]
 
         expense_type = "personal"

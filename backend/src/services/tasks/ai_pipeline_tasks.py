@@ -358,7 +358,7 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
         begin_import_stage(
             workflow_run_id,
             "r_persist",
-            message=f"Sparar AI3-resultat f├╢r {item_count} artiklar",
+            message=f"Sparar AI3-resultat för {item_count} artiklar",
         )
         complete_import_stage(
             workflow_run_id,
@@ -561,15 +561,15 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             workflow_run_id,
             "r_ai4",
             success=True,
-            message="AI4 hoppades ├╢ver ΓÇô saknar konteringsunderlag",
+            message="AI4 hoppades över - saknar konteringsunderlag",
         )
 
-    begin_import_stage(workflow_run_id, "r_queue_match", message="K├╢ar kvitto f├╢r AI5-matchning")
+    begin_import_stage(workflow_run_id, "r_queue_match", message="Köar kvitto för AI5-matchning")
     complete_import_stage(
         workflow_run_id,
         "r_queue_match",
         success=True,
-        message=f"Kvitto {file_id} markerat som redo f├╢r matchning",
+        message=f"Kvitto {file_id} markerat som redo för matchning",
     )
 
     return steps

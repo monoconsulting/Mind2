@@ -128,6 +128,68 @@ test.describe('@migrations', () => {
   })
 })
 
+test.describe('@mojibake-guard', () => {
+  test.use({
+    viewport: { width: 1900, height: 1200 },
+    recordVideo: {
+      dir: 'web/test-results/media/video',
+      size: { width: 1900, height: 1200 },
+    },
+  })
+
+  test('prompt updates reject mojibake on write @mojibake-guard', async ({ page }, testInfo) => {
+    await loginAsAdmin(page)
+    const token = await page.evaluate(() => localStorage.getItem('mind.jwt'))
+    expect(token).toBeTruthy()
+    const authHeaders = { Authorization: `Bearer ${token}` }
+
+    await page.goto('/ai')
+    await page.waitForLoadState('networkidle')
+    await testInfo.attach('ai-page', {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    })
+
+    const promptsResponse = await page.request.get('/ai/api/ai-config/prompts', { headers: authHeaders })
+    expect(promptsResponse.ok()).toBeTruthy()
+    const promptsPayload = (await promptsResponse.json()) as { prompts: any[] }
+    const prompt = promptsPayload.prompts.find((p) => p.prompt_key === 'data_extraction')
+    expect(prompt).toBeTruthy()
+
+    const original = String(prompt.prompt_content ?? '')
+    const mojibakeProbe = 'fÃ¶rfallodatum'
+    const mutated = `${original}\n\n# PW_TEST_MOJIBAKE_GUARD\n${mojibakeProbe}\n`
+
+    try {
+      const updateResponse = await page.request.put(`/ai/api/ai-config/prompts/${prompt.id}`, {
+        headers: authHeaders,
+        data: {
+          title: prompt.title,
+          description: prompt.description,
+          prompt_content: mutated,
+          selected_model_id: prompt.selected_model_id ?? null,
+        },
+      })
+
+      expect(updateResponse.status()).toBe(400)
+      const body = await updateResponse.json()
+      expect(body?.error).toBe('mojibake_detected')
+      expect(body?.field).toBe('prompt_content')
+    } finally {
+      // Ensure we never leave the DB mutated if the endpoint still permits the write.
+      await page.request.put(`/ai/api/ai-config/prompts/${prompt.id}`, {
+        headers: authHeaders,
+        data: {
+          title: prompt.title,
+          description: prompt.description,
+          prompt_content: original,
+          selected_model_id: prompt.selected_model_id ?? null,
+        },
+      })
+    }
+  })
+})
+
 test.describe('@accounting-input-gate', () => {
   test.use({
     viewport: { width: 1900, height: 1200 },

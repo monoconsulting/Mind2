@@ -369,11 +369,44 @@ def _transform_prompt_statement(statement: str) -> str | None:
     lower = stripped.lower()
     if "ai_system_prompts" not in lower:
         return statement
+
+    mojibake_sig = re.compile(r"(?:\u00c3|\u00c2|\u00e2\u20ac|\u251c|\u0393\u00c7)")
+
+    def _is_repair_update(sql: str) -> bool:
+        sql_lower = sql.lower()
+        if " set " not in sql_lower or " where " not in sql_lower:
+            return False
+        where_idx = sql_lower.find(" where ")
+        head = sql[:where_idx]
+        tail = sql[where_idx:]
+
+        # Never allow updates that themselves contain mojibake in the SET clause.
+        if mojibake_sig.search(head):
+            return False
+
+        # Require prompt_key scoping.
+        if not re.search(r"(?is)\bprompt_key\s*=\s*'[^']+'\b", tail):
+            return False
+
+        # Allow only repair-style predicates that are unlikely to overwrite user-edited prompts:
+        # - match known bad values (mojibake signatures) in WHERE, or
+        # - match exact bytes via HEX(title|description|prompt_content)=...
+        if not (mojibake_sig.search(tail) or re.search(r"(?is)\bhex\s*\(\s*`?(title|description|prompt_content)`?\s*\)", tail)):
+            return False
+
+        # Restrict the columns being updated to prompt metadata/content only.
+        set_part = head.split(" set ", 1)[1]
+        updated_cols = re.findall(r"(?is)(`?)([a-z_]+)\\1\\s*=", set_part)
+        allowed = {"title", "description", "prompt_content", "updated_at"}
+        return all(col in allowed for _tick, col in updated_cols)
+
     if lower.startswith("delete"):
         return None
     if lower.startswith("update"):
         # Never overwrite prompt rows via migrations; prompts are user data.
-        return None
+        # Exception: allow narrowly-scoped mojibake repair updates that only run
+        # when the existing row matches known-bad encodings (see WORKFLOW_REPAIR_PART_2).
+        return stripped if _is_repair_update(stripped) else None
     if lower.startswith("insert"):
         # Allow seeding only-if-missing.
         return re.sub(r"(?is)^\s*insert\s+into\s+`?ai_system_prompts`?\b", "INSERT IGNORE INTO ai_system_prompts", stripped)

@@ -1,8 +1,5 @@
 @echo off
 setlocal
-cd /d %~dp0\..
-
-python scripts\missing_per_receipt_report.py
-
+call "%~dp0..\\create_missing_per_receipt_csv.bat" %*
 endlocal
 

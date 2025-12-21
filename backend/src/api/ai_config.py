@@ -1,6 +1,7 @@
 """API endpoints for AI LLM configuration."""
 
 import logging
+import re
 
 import requests
 from flask import Blueprint, jsonify, request
@@ -15,6 +16,24 @@ from api.middleware import auth_required
 logger = logging.getLogger(__name__)
 
 ai_config_bp = Blueprint("ai_config", __name__, url_prefix="/ai-config")
+
+_MOJIBAKE_SIGNATURES: list[tuple[str, re.Pattern[str]]] = [
+    # Common UTF-8 bytes mis-decoded as latin-1 / Windows-1252
+    ("utf8_as_latin1", re.compile(r"(Ã[\u0080-\u00FF]|Â[\u0080-\u00FF])")),
+    # UTF-8 punctuation bytes mis-decoded as CP1252/latin-1 (e.g. en-dash, quotes, narrow nbsp)
+    ("utf8_punct_as_latin1", re.compile(r"â€|â€™|â€œ|â€|â€“|â€”|â€¯")),
+    # UTF-8 bytes mis-decoded into box drawing characters (common in CP437/CP850 artifacts)
+    ("utf8_as_cp437_cp850", re.compile(r"[├╢]")),
+    # UTF-8 bytes mis-decoded into the 'ΓÇ' sequence
+    ("utf8_as_cp437_seq", re.compile(r"ΓÇ")),
+]
+
+
+def _contains_mojibake(value: str) -> tuple[bool, str]:
+    for name, rx in _MOJIBAKE_SIGNATURES:
+        if rx.search(value or ""):
+            return True, name
+    return False, ""
 
 
 def _normalise_text(value: object) -> str:
@@ -340,6 +359,25 @@ def update_prompt(prompt_id):
             clean_title = _normalise_text(data.get("title"))
             clean_description = _normalise_text(data.get("description"))
             clean_content = _normalise_text(data.get("prompt_content"))
+
+            for field_name, field_value in (
+                ("title", clean_title),
+                ("description", clean_description),
+                ("prompt_content", clean_content),
+            ):
+                bad, sig = _contains_mojibake(field_value)
+                if bad:
+                    return (
+                        jsonify(
+                            {
+                                "error": "mojibake_detected",
+                                "field": field_name,
+                                "signature": sig,
+                                "action": "Run the DB mojibake repair tool before editing prompts.",
+                            }
+                        ),
+                        400,
+                    )
             cursor.execute(
                 """
                 UPDATE ai_system_prompts
