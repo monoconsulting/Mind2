@@ -489,7 +489,9 @@ export default function AiPage() {
 
   const normalizePrompt = (prompt) => {
     if (!prompt) return { id: null, title: '', description: '', prompt_content: '', selected_model_id: null }
-    const safePrompt = fixEncodingDeep(prompt)
+    // Do not auto-fix/normalize encodings on the write-path. If the DB contains
+    // mojibake, saving is blocked server-side until an explicit repair is run.
+    const safePrompt = prompt
     return {
       ...safePrompt,
       prompt_content: safePrompt.prompt_content || '',
@@ -571,7 +573,7 @@ export default function AiPage() {
     try {
       const response = await api.fetch('/ai/api/ai-config/prompts')
       if (!response.ok) throw new Error('Failed to fetch prompts')
-      const data = fixEncodingDeep(await response.json())
+      const data = await response.json()
       const prompts = (data.prompts || []).map((prompt) => normalizePrompt(prompt))
       setSystemPrompts(prompts)
       setOriginalPrompts(prompts.map((prompt) => ({ ...prompt })))
@@ -728,13 +730,29 @@ export default function AiPage() {
         body: JSON.stringify(payload)
       })
 
-      if (!response.ok) throw new Error('Failed to save prompt')
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        if (contentType.includes('application/json')) {
+          try {
+            const data = await response.json()
+            if (response.status === 400 && data?.error === 'mojibake_detected') {
+              throw new Error('DB contains mojibake. Run repair tool before editing prompts.')
+            }
+            if (data?.error) {
+              throw new Error(String(data.error))
+            }
+          } catch (jsonError) {
+            // ignore parse error and fall back to generic error
+          }
+        }
+        throw new Error('Failed to save prompt')
+      }
 
       let savedPrompt = payload
       const contentType = response.headers.get('content-type') || ''
       if (contentType.includes('application/json')) {
         try {
-          const data = fixEncodingDeep(await response.json())
+          const data = await response.json()
           if (data?.prompt) {
             savedPrompt = normalizePrompt(data.prompt)
           } else if (data?.data) {
