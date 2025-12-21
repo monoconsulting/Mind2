@@ -1,0 +1,55 @@
+file_id,file_name,currency,gross_amount_display,net_amount_display,missing_count,missing_fields,warnings,latest_workflow_status,latest_stage_name,latest_stage_status,ai_history_rows,file_type,workflow_type,company_name
+fed394ed-f20b-4caf-ae91-e8a883e38681,250708_Neko_Sushi.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+e972daf6-d419-4f55-8ead-93b828cf4329,Kvitto_2025-06-30_165915.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+e4669830-1b66-4d7c-b9c5-e349722e6a58,1_page_midjourney.jpg,USD,12.50,10.00,,"payment_type,sek_amounts(gross_amount_sek/net_amount_sek),exchange_rate",,succeeded,KLAR,succeeded,7,receipt,receipt,Midjourney Inc
+e1a95739-4c62-4882-aa5c-a303190d5e18,unknown_Udio_2025-04-30_12.50.pdf,USD,12.50,10.00,0,,,succeeded,KLAR,succeeded,8,invoice,receipt,Udio
+dae2fa31-8455-4047-9261-c0c871ec409c,Kvitto_2025-06-30_170640.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+d374ea63-2bbe-49c6-aef9-666b0b2bb7dd,1-page-autodesk.pdf,SEK,680.00,680.00,,"payment_type,vat_breakdown(total_vat_25/12/6)",,succeeded,KLAR,succeeded,9,receipt,receipt,Autodesk Ireland Operations UC
+d36b2ce3-47eb-4bad-87d2-56cc81d0d783,Kvitto_2025-06-30_165938.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+d1509669-c667-4f06-b397-9c57c611d7d0,unknown_AZ-Delivery_Vertriebs_GmbH_2025-05-15_104695.pdf,SEK,339.15,271.32,0,,,succeeded,KLAR,succeeded,9,invoice,receipt,AZ-Delivery Vertriebs GmbH
+cd391a80-9f7d-4c72-b324-b1d4ddf81a9c,1-page-autodesk.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+c96e2f34-692b-4001-bfdc-2fabc7dc0aad,FC_Webhallen_Sverige_AB_2025-06-02_194700.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+c5ba5dcc-87fe-4730-8ed5-6a808c1f312f,2-pages-jula.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+bfcaddc2-d0ab-46d2-9ec7-b303404cc279,3-pages-ms.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+b7630f5f-7597-4a15-9ccf-94b74eba8e5c,241204_Dustin.pdf-page-0004.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+b6ecc21d-40f1-4144-a031-09c2971e6c7c,1-page-swish.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+b432572e-7de2-4c4c-b350-d8095f0ec9fa,250708_Neko_Sushi.pdf,SEK,344.00,307.14,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,Neko Sushi Bromma
+b4292fa7-48e2-42c9-9a12-a392feb73497,EU_Topaz_Labs_2024-06-15_6540_D-9900_K-000_1930_D-000_K-9900_99.00.pdf,USD,99.00,,0,,,succeeded,KLAR,succeeded,8,invoice,receipt,Topaz Labs
+b32e7e4b-89bf-4e68-81df-d6a7b1a30c98,Kvitto_2025-06-30_165915.pdf,SEK,,,0,,,failed,finalize_fail_end,failed,4,other,receipt,
+aade45b1-5eff-4335-bb4c-47323fef9f92,3-pages-ms.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+a9b17cd2-90d3-4b31-ad38-7cc649308aa1,241204_Dustin.pdf,SEK,,,0,,,succeeded,KLAR,succeeded,8,invoice,receipt,Dustin
+a21c4f6c-9441-4c77-b841-2a34b39ba259,250708_Neko_Sushi.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+9f42d57c-5d02-4c85-9c20-37dabddc68af,unknown_unknown_1970-01-01_.pdf,SEK,511.00,408.80,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,Hornbach Byggmarknad AB
+96f84540-f3d8-400d-ae86-e7b1cfe1e61f,2-pages-jula.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+9629595e-35e6-44f9-991a-3295abbcdcc1,1-page-swish.pdf,SEK,800.00,,0,,,succeeded,KLAR,succeeded,8,invoice,receipt,
+954f2f5a-9c5b-45f2-8e07-a3f294455d4c,unknown_AZ-Delivery_Vertriebs_GmbH_2025-05-15_104695.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+8bc22420-2ecf-44b1-b3c8-91da82dc86ac,unknown_OpenRouter_Inc_2025-06-16_6540_D-3209_K-000_1930_D-000_K-3209_32.09.pdf,USD,32.09,,0,,,succeeded,KLAR,succeeded,8,invoice,receipt,"OpenRouter, Inc"
+841a27bf-ae8f-493b-aaa9-4294e6c387a2,Kvitto_2025-06-30_165938.pdf,SEK,,,0,,,failed,finalize_fail_end,failed,3,pdf,receipt,
+811c17ad-ee4a-4763-97d1-d1aff8dcb58b,241204_Dustin.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+7a4eac24-c25c-43d2-a942-16e84805c672,FC_Webhallen_Sverige_AB_2025-06-02_194700.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+7930409c-3a95-4833-8445-07a6b75e5137,241204_Dustin.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+6762583c-96cf-487a-8e04-23a32ade6c17,250704_Ruccola.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+6548441d-300f-44a2-86f3-740e9d6dc487,Kvitto_2025-06-30_165915.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+646ee65f-11e7-494e-be62-63f419384e07,Jula_Bromma_2025-12-12.pdf,SEK,429.40,343.52,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,JULA
+5f7eb933-39d5-4cbf-95bf-3f77925b9702,unknown_unknown_1970-01-01_.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+5a54d21e-854e-4f29-84c2-f63a2d68a08b,1-page-elgiganten.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+53b28104-9177-4b06-909b-36aec1d219f4,unknown_OpenRouter_Inc_2025-06-16_6540_D-3209_K-000_1930_D-000_K-3209_32.09.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+487f6499-826f-47e7-bae0-959c8e9576ed,unknown_AZ-Delivery_Vertriebs_GmbH_2025-05-15_104695.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+465a16d0-a96e-4488-9737-40ce94c2e1cb,2-pages-jula.pdf,SEK,129.00,103.20,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,JULA
+4551e350-902f-470a-825e-90eeece882f8,3-pages-ms.pdf-page-0003.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+4395f85a-81ae-4c64-bfaa-2aa7ce8672df,1-page-elgiganten.pdf,SEK,2790.00,2232.00,1,credit_card_last_4_digits,,succeeded,KLAR,succeeded,9,receipt,receipt,Elgiganten SE
+432d1358-14fc-47f5-a5bc-4dc2de212d2c,unknown_AZ-Delivery_Vertriebs_GmbH_2025-05-15_104695.pdf-page-0003.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+3f3ec231-11ca-478a-9d61-80b619394afa,Kvitto_2025-06-30_170640.pdf,SEK,558.30,446.64,1,credit_card_last_4_digits,,succeeded,KLAR,succeeded,9,receipt,receipt,BILTEMA SWEDEN AB/BREDDEN 1.74
+38362b15-4d45-476a-b7f9-3f0caf6f4c98,250704_Ruccola.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+3481c3c3-73f3-47fc-9738-7a7c2172d010,Kvitto_2025-06-30_170640.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+2fc66e35-585a-42a3-8749-665eacc36126,3-pages-ms.pdf,SEK,138.13,110.50,3,"credit_card_brand_short,credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,9,receipt,receipt,Microsoft AB
+1b1563e5-4bcb-48b1-afe9-4a398e3ac6a0,unknown_Udio_2025-04-30_12.50.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+1a2dd79a-0e92-436c-8f6a-fb251f3efb80,1-page-kjell.jpg,SEK,2980.00,2384.00,1,credit_card_last_4_digits,,succeeded,KLAR,succeeded,8,receipt,receipt,Kjell & Co Kungsholmen Sthlm
+0d76df0a-f7ed-404f-8f6f-0a259c8d203c,241204_Dustin.pdf-page-0003.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+0bf9ef71-1380-45fb-ac46-17a1ecd4101f,1_page_kjell_2025-10-01_08-07-02.png,SEK,2980.00,2384.00,1,credit_card_last_4_digits,,succeeded,KLAR,succeeded,8,receipt,receipt,Kjell & Co Kungsholmen Sthlm
+0bda6c99-c456-407d-8925-f660c73663b1,FC_Webhallen_Sverige_AB_2025-06-02_194700.pdf,SEK,1947.00,1557.60,2,"credit_card_brand_short,credit_card_last_4_digits",,succeeded,KLAR,succeeded,9,receipt,receipt,Webhallen Sverige AB
+0bb611fc-44eb-443b-b067-1d7f6528dc50,EU_Topaz_Labs_2024-06-15_6540_D-9900_K-000_1930_D-000_K-9900_99.00.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+08faa989-5e0e-41e7-997a-1f10bab3a33d,Kvitto_2025-06-30_165938.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+08eddf89-13cd-47d4-b0ae-05c9a4064a87,250704_Ruccola.pdf,SEK,290.00,258.92,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,Ruccola Bromma AB
+089a994c-1c4b-4b61-b204-cda69c77f053,Jula_Bromma_2025-12-12.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+000a83c1-f4d2-4984-92a0-39ff541edeb7,Jula_Bromma_2025-12-12.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
