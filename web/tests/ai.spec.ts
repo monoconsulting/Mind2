@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { execFileSync } from 'child_process'
+import { randomUUID } from 'crypto'
 import fs from 'fs'
 import path from 'path'
 
@@ -29,6 +30,19 @@ function mysqlQuery(sql: string): string {
     ['exec', '-e', `MYSQL_PWD=${dbPass}`, 'mind2-mysql-1', 'mysql', '-u', dbUser, '-D', dbName, '-N', '-B', '-e', sql],
     { encoding: 'utf8' },
   ).trim()
+}
+
+function loadUniquePdf(relativePath: string): { name: string; buffer: Buffer } {
+  const sourcePath = path.resolve(relativePath)
+  const pdfBytes = fs.readFileSync(sourcePath)
+  const marker = Buffer.from(`\n% Mind FC upload ${randomUUID()}\n`)
+  const eofMarker = Buffer.from('%%EOF')
+  const eofIndex = pdfBytes.lastIndexOf(eofMarker)
+  const augmented =
+    eofIndex >= 0
+      ? Buffer.concat([pdfBytes.subarray(0, eofIndex), marker, pdfBytes.subarray(eofIndex)])
+      : Buffer.concat([pdfBytes, marker, eofMarker])
+  return { name: path.basename(sourcePath), buffer: augmented }
 }
 
 test.use({
@@ -461,6 +475,195 @@ test.describe('@ai4-validation-nonfatal', () => {
         },
       })
     }
+
+    await page.goto('/process')
+    await page.waitForLoadState('networkidle')
+    await testInfo.attach('process-snapshot', {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    })
+  })
+})
+
+test.describe('@finalize-manual-review', () => {
+  test.use({
+    viewport: { width: 1900, height: 1200 },
+    recordVideo: {
+      dir: 'web/test-results/media/video',
+      size: { width: 1900, height: 1200 },
+    },
+  })
+
+  test('finalize_ok does not overwrite manual_review @finalize-manual-review', async ({ page }, testInfo) => {
+    test.setTimeout(2 * 60_000)
+    await loginAsAdmin(page)
+
+    const fileId = mysqlQuery(
+      "SELECT id FROM unified_files WHERE file_type='receipt' ORDER BY updated_at DESC LIMIT 1;",
+    )
+    expect(fileId).toBeTruthy()
+
+    const script = [
+      "from services.db.connection import db_cursor",
+      "from services.workflow_runs import create_workflow_run",
+      "from services.tasks.workflow_base import begin_import_stage, complete_import_stage",
+      "from services.status_constants import AiStatus",
+      `file_id = \"${fileId}\"`,
+      "with db_cursor() as cur:",
+      "    cur.execute(\"UPDATE unified_files SET ai_status=%s WHERE id=%s\", (AiStatus.MANUAL_REVIEW.value, file_id))",
+      "run_id = create_workflow_run(workflow_key=\"WF1_RECEIPT\", source_channel=\"pw_test\", file_id=file_id, content_hash=file_id)",
+      "if not run_id:",
+      "    raise SystemExit('workflow_run_create_failed')",
+      "begin_import_stage(run_id, \"finalize_ok\", message=\"pw_test finalize\")",
+      "complete_import_stage(run_id, \"finalize_ok\", success=True, message=\"pw_test finalize\")",
+      "with db_cursor() as cur:",
+      "    cur.execute(\"SELECT ai_status FROM unified_files WHERE id=%s\", (file_id,))",
+      "    row = cur.fetchone()",
+      "print(row[0] if row else \"\")",
+    ].join('\n')
+
+    const result = execFileSync(
+      'docker',
+      ['compose', 'exec', '-T', 'ai-api', 'python', '-c', script],
+      { encoding: 'utf8' },
+    ).trim()
+
+    expect(result).toBe('manual_review')
+
+    await page.goto('/process')
+    await page.waitForLoadState('networkidle')
+    await testInfo.attach('process-snapshot', {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    })
+  })
+})
+
+test.describe('@ai4-input-determinism', () => {
+  test.use({
+    viewport: { width: 1900, height: 1200 },
+    recordVideo: {
+      dir: 'web/test-results/media/video',
+      size: { width: 1900, height: 1200 },
+    },
+  })
+
+  test('KR normalization + FX SEK totals enable ai4_ready @ai4-input-determinism', async ({ page }, testInfo) => {
+    test.setTimeout(2 * 60_000)
+    await loginAsAdmin(page)
+
+    const fileId = mysqlQuery(
+      "SELECT id FROM unified_files WHERE file_type='receipt' AND company_id IS NOT NULL ORDER BY updated_at DESC LIMIT 1;",
+    )
+    expect(fileId).toBeTruthy()
+
+    const runAccountingInputs = () => {
+      const script = [
+        "import json",
+        "from decimal import Decimal",
+        "from services.tasks.file_management_tasks import _load_accounting_inputs",
+        `file_id = \"${fileId}\"`,
+        "data = _load_accounting_inputs(file_id) or {}",
+        "def conv(value):",
+        "    if isinstance(value, Decimal):",
+        "        return float(value)",
+        "    return value",
+        "print(json.dumps({k: conv(v) for k, v in data.items()}))",
+      ].join('\n')
+      const raw = execFileSync(
+        'docker',
+        ['compose', 'exec', '-T', 'ai-api', 'python', '-c', script],
+        { encoding: 'utf8' },
+      ).trim()
+      return JSON.parse(raw || '{}')
+    }
+
+    mysqlQuery(
+      `UPDATE unified_files SET currency='KR', gross_amount_original=100, net_amount_original=80, gross_amount_sek=NULL, net_amount_sek=NULL, exchange_rate=0 WHERE id='${fileId}';`,
+    )
+
+    const krInputs = runAccountingInputs()
+    expect(krInputs.ai4_ready).toBe(true)
+    expect(krInputs.currency).toBe('SEK')
+    expect(krInputs.gross_amount_sek).toBe(100)
+    expect(krInputs.net_amount_sek).toBe(80)
+    expect(krInputs.exchange_rate).toBe(1)
+
+    mysqlQuery(
+      `UPDATE unified_files SET currency='USD', gross_amount_original=120, net_amount_original=96, gross_amount_sek=NULL, net_amount_sek=NULL, exchange_rate=2.0 WHERE id='${fileId}';`,
+    )
+
+    const fxInputs = runAccountingInputs()
+    expect(fxInputs.ai4_ready).toBe(true)
+    expect(fxInputs.currency).toBe('USD')
+    expect(fxInputs.gross_amount_sek).toBe(240)
+    expect(fxInputs.net_amount_sek).toBe(192)
+    expect(fxInputs.exchange_rate).toBe(2)
+
+    await page.goto('/process')
+    await page.waitForLoadState('networkidle')
+    await testInfo.attach('process-snapshot', {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    })
+  })
+})
+
+test.describe('@fc-lines-failfast', () => {
+  test.use({
+    viewport: { width: 1900, height: 1200 },
+    recordVideo: {
+      dir: 'web/test-results/media/video',
+      size: { width: 1900, height: 1200 },
+    },
+  })
+
+  test('FC invoice with no lines fails before matching @fc-lines-failfast', async ({ page }, testInfo) => {
+    test.setTimeout(4 * 60_000)
+
+    const pdf = loadUniquePdf('web/FC_2508.pdf')
+    const uploadResponse = await page.request.post('/ai/api/reconciliation/firstcard/upload-invoice', {
+      multipart: {
+        invoice: {
+          name: pdf.name,
+          mimeType: 'application/pdf',
+          buffer: pdf.buffer,
+        },
+      },
+    })
+    expect(uploadResponse.status()).toBe(201)
+    const uploadJson = await uploadResponse.json()
+    const invoiceId = String(uploadJson?.invoice_id || '')
+    expect(invoiceId).toBeTruthy()
+
+    await expect
+      .poll(
+        async () => {
+          const response = await page.request.get(
+            `/ai/api/reconciliation/firstcard/invoices/${encodeURIComponent(invoiceId)}`,
+          )
+          if (!response.ok()) return null
+          const payload = await response.json()
+          return payload?.invoice?.processing_status || null
+        },
+        { timeout: 180_000 },
+      )
+      .toBe('failed')
+
+    const detailResponse = await page.request.get(
+      `/ai/api/reconciliation/firstcard/invoices/${encodeURIComponent(invoiceId)}`,
+    )
+    expect(detailResponse.ok()).toBeTruthy()
+    const detail = await detailResponse.json()
+    const metadata = detail?.invoice?.metadata || {}
+    expect(metadata?.last_error?.code).toBe('invoice_lines_persist_failed')
+    expect(metadata?.line_counts?.total ?? null).toBe(0)
+
+    const lineCountRaw = mysqlQuery(
+      `SELECT COUNT(*) FROM invoice_lines WHERE invoice_id='${invoiceId}';`,
+    )
+    const lineCount = Number.parseInt(String(lineCountRaw || '0'), 10) || 0
+    expect(lineCount).toBe(0)
 
     await page.goto('/process')
     await page.waitForLoadState('networkidle')

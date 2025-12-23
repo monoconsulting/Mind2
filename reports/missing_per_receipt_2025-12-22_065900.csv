@@ -1,0 +1,136 @@
+file_id,file_name,currency,gross_amount_display,net_amount_display,missing_count,missing_fields,warnings,latest_workflow_status,latest_stage_name,latest_stage_status,ai_history_rows,file_type,workflow_type,company_name
+ff9a884d-a808-4038-b092-3b7552950139,6915044249367_1762985026.jpeg,SEK,,,0,,,failed,finalize_fail_end,failed,4,other,receipt,
+fa1e109e-6ae2-49ad-9abb-21a0f6437cfa,6915c002e8ccc_1763033090.jpeg,SEK,1147.50,918.00,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,Clas Ohlson
+f2f65234-fe79-4c77-bfc2-9bab439867cb,691502c526e35_1762984645.jpeg,SEK,11700.00,,3,"net_amount,credit_card_brand_short,credit_card_last_4_digits",,succeeded,KLAR,succeeded,8,receipt,receipt,SANDHAMN HOTELL OCH RESTAURANG AB
+edfbaa30-789d-4e7b-96ef-7a88036b3bb8,photo_6914fe2203e015.44642334.jpg,SEK,323.22,,3,"net_amount,vat_breakdown(total_vat_25/12/6),receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,BAUHAUS
+edf78f35-92f4-4457-ab23-c950cbcd6d3f,FC_2507.pdf,SEK,,,0,,,succeeded,KLAR,succeeded,4,fc_invoice,creditcard_invoice,
+ed507707-b42f-4c00-be9b-145bd9af8ab8,unknown_AZ-Delivery_Vertriebs_GmbH_2025-05-15_104695.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+eb7ce2d0-f2f1-415e-94b8-0721438177e0,6915053d0c8f3_1762985277.jpeg,SEK,438.95,351.16,2,"credit_card_brand_short,credit_card_last_4_digits","gross_header_items_mismatch_gt_2,net_header_items_mismatch_gt_2",succeeded,KLAR,succeeded,9,receipt,receipt,BAUHAUS
+e66e602e-e859-4e56-9178-bab4b088157b,FC_2508.pdf,SEK,,,0,,,succeeded,KLAR,succeeded,4,fc_invoice,creditcard_invoice,
+e4e8270f-0b52-43f2-bf49-d9f67ea42797,1-page-kjell.jpg,SEK,2980.00,2384.00,1,credit_card_last_4_digits,,succeeded,KLAR,succeeded,8,receipt,receipt,Kjell & Co Kungsholmen Sthlm
+e4dbe2cf-b2d5-4226-9731-035ffcd23215,250708_Neko_Sushi.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+e10d23a7-7aac-4e51-a3c0-512aa1b8710c,3-pages-ms.pdf,SEK,138.13,110.50,4,"vat_breakdown(total_vat_25/12/6),credit_card_brand_short,credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,Microsoft AB
+df8803d3-982d-4b78-a8dc-2f6dd6c1f30d,Kvitto_2025-06-30_165915.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+df167fc9-0cba-4c79-9e58-571fa49745db,Kvitto_2025-06-30_170640.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+dc61cb8b-02f4-478b-a159-7523644938a9,FC_Webhallen_Sverige_AB_2025-06-02_194700.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+dc5183e5-7205-4fb1-a2e2-c4aa14dcd92e,FC_2505.pdf-page-0002.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+db542a1b-c618-4125-aed2-eeeaed961669,photo_6914fe98a433b5.85808156.jpg,SEK,920.70,,3,"net_amount,vat_breakdown(total_vat_25/12/6),receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,Rusta
+db05b28c-ab8f-4c69-acce-2f1262f2ea76,691505264fee3_1762985254.jpeg,SEK,,,0,,,failed,finalize_fail_end,failed,4,other,receipt,
+da0d00b1-9284-4c84-a399-4fec33a83b92,6915026200672_1762984546.jpeg,SEK,395.80,,3,"net_amount,vat_breakdown(total_vat_25/12/6),receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,BAUHAUS
+d9088522-89e8-4178-be4c-2fabbb53fc2b,6915027533c28_1762984565.jpeg,SEK,393.00,350.89,2,"credit_card_brand_short,credit_card_last_4_digits",gross_header_items_mismatch_gt_2,succeeded,KLAR,succeeded,9,receipt,receipt,Grekiska Grill&BAR
+d3834a42-4b04-453c-b136-75507ff37783,6915047b7dac7_1762985083.jpeg,SEK,399.50,319.60,1,receipt_items,,succeeded,KLAR,succeeded,8,receipt,receipt,
+d002afec-9038-4a30-b9c2-d072c936d74a,6915023394fde_1762984499.jpeg,SEK,258.90,207.12,1,receipt_items,,succeeded,KLAR,succeeded,8,receipt,receipt,BAUHAUS
+cd011679-0312-42be-a493-c0a5bcfabda5,2-pages-jula.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+c541e0a1-8941-4230-95ae-d05fcdd68aa4,photo_6914fdf4d8d3f6.87433514.jpg,SEK,239.65,,3,"net_amount,vat_breakdown(total_vat_25/12/6),receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,BAUHAUS
+c0bffee0-4fe4-40fc-852d-b503b93d7b6e,photo_68b4a0e12436a2.02743784.jpg,SEK,,,0,,,failed,finalize_fail_end,failed,4,other,receipt,
+be3f6450-bfe6-4c5b-8a31-4a02320a1584,Kvitto_2025-06-30_165938.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+bc9b49ab-2f70-4403-9f17-f41e161eb344,691502e977e2f_1762984681.jpeg,SEK,,,0,,,failed,finalize_fail_end,failed,3,image,receipt,
+b7726d84-7e00-4792-974f-9a690ffc4735,FC_2507.pdf-page-0002.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+b72e2fd3-3094-4fe5-8685-e05eb87feb60,241204_Dustin.pdf-page-0004.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+b6808511-6f0e-4045-86e4-97928bb859f6,FC_2507.pdf-page-0001.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+b64b8c6f-a597-4b5a-9c0e-982381d9f462,FC_2509.pdf,SEK,,,0,,,succeeded,KLAR,succeeded,4,fc_invoice,creditcard_invoice,
+b5928be7-a671-4e32-be6a-244441319e44,photo_68f3a9128d9335.73583617.jpg,SEK,323.22,258.58,2,"credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,BAUHAUS
+b5867f95-a044-440b-bdfb-0871bfc77dd7,FC_2508.pdf-page-0002.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+b476705d-77f6-4b5c-a4c8-2e6a91eb6459,6915039427513_1762984852.jpeg,SEK,69.90,,3,"net_amount,vat_breakdown(total_vat_25/12/6),receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,BAUHAUS
+b3105bf6-3d42-49f5-8557-ea3ba96737b1,photo_68b5d14befd6b8.95349031.jpg,SEK,660.00,,,"payment_type,net_amount,vat_breakdown(total_vat_25/12/6)",,succeeded,KLAR,succeeded,8,receipt,receipt,UBEREATS
+b21e8d99-fe9d-4798-86fe-de4c6a7bd6c9,FC_2506.pdf,SEK,,,0,,,succeeded,KLAR,succeeded,4,fc_invoice,creditcard_invoice,
+aed31702-41c1-41b9-a7a3-72ff578fe6c5,6924c196c843e_1764016534.jpeg,SEK,79.80,63.84,2,"credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,BAUHAUS
+ae0628ad-2f4b-411c-9b19-d462695de0a5,Jula_Bromma_2025-12-12.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+ae05be68-522e-4277-807c-a5b38a15c9d5,FC_2507.pdf-page-0003.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+ab1d476c-3ce9-4267-8b20-aa3530d42b9c,1-page-autodesk.pdf,SEK,680.00,680.00,,"payment_type,vat_breakdown(total_vat_25/12/6)",,succeeded,KLAR,succeeded,9,receipt,receipt,Autodesk Ireland Operations UC
+ab031e57-17de-4866-b580-974e19148050,FC_2506.pdf-page-0001.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+aaf7d358-e463-4d44-b7d3-f103be461796,6915030b6ff62_1762984715.jpeg,SEK,,,0,,,failed,finalize_fail_end,failed,4,other,receipt,
+aa495530-a43a-4575-a00e-563b0f068677,Jula_Bromma_2025-12-12.pdf,SEK,429.40,343.52,1,vat_breakdown(total_vat_25/12/6),,succeeded,KLAR,succeeded,9,receipt,receipt,JULA
+aa367a07-ec6c-4ed1-ab8b-2c0835e88b73,Kvitto_2025-06-30_165938.pdf,SEK,727.11,581.69,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,Circle K Sollentuna
+a5a788b2-0811-4132-92ce-bfdd9bf4c28c,photo_68ee8b39422377.65593086.jpg,SEK,399.75,319.80,1,credit_card_last_4_digits,,succeeded,KLAR,succeeded,9,receipt,receipt,BAUHAUS
+a25f569d-6d21-4c94-9bac-ef3310f95c9d,691b5183cecac_1763398019.jpeg,SEK,310.00,276.78,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,Ruccola Bromma AB
+9f5f6e60-4f6e-4117-bac3-6b8ed3e8f1fd,6915036020810_1762984800.jpeg,SEK,261.80,209.44,,"payment_type,receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,BAUHAUS
+9e49c974-5f36-448f-b395-d9fbec10ed86,691504667b0d7_1762985062.jpeg,SEK,75.00,,5,"net_amount,vat_breakdown(total_vat_25/12/6),credit_card_brand_short,credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,ALERIS SJUKVARD AB
+9db1ced4-80a8-4726-83bd-c2fd6c9fa597,FC_Webhallen_Sverige_AB_2025-06-02_194700.pdf,SEK,1947.00,1557.60,2,"credit_card_brand_short,credit_card_last_4_digits",,succeeded,KLAR,succeeded,9,receipt,receipt,Webhallen Sverige AB
+9d4dbe8b-f930-4f44-8266-e5c9a745feff,photo_68be7ad9d1e7c3.81863965.jpg,SEK,358.90,,3,"net_amount,vat_breakdown(total_vat_25/12/6),receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,BAUHAUS
+9b5504a6-7adc-4c43-87f0-2015f9e3b52e,241204_Dustin.pdf,SEK,,,0,,,succeeded,KLAR,succeeded,8,invoice,receipt,Dustin
+99a4c44a-b731-4560-99a9-6d1575cce842,FC_2505.pdf-page-0003.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+979a66ed-ad4c-4510-86aa-fbe36abe25d1,Jula_Bromma_2025-12-12.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+978813e8-ad3f-4646-b44c-84d000212ac1,unknown_unknown_1970-01-01_.pdf,SEK,511.00,408.80,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,Hornbach Byggmarknad AB
+941cc8e9-61ab-4e59-9272-8773954df5b7,1-page-autodesk.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+9273d369-775c-4b2f-b781-eaca9192f70f,691502d605c9e_1762984662.jpeg,SEK,84.95,,4,"net_amount,vat_breakdown(total_vat_25/12/6),credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,BAUHAUS
+8fa67cd6-b4dd-4181-b3d6-ce3e0a72544f,68ee403a8280a_1760444474.jpeg,SEK,149.80,119.84,1,receipt_items,,succeeded,KLAR,succeeded,8,receipt,receipt,Clas Ohlson
+8f10cf2b-f996-4ee5-be4b-18c5ab2b3187,unknown_AZ-Delivery_Vertriebs_GmbH_2025-05-15_104695.pdf-page-0003.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+8db31ee0-ee1c-49eb-8ce0-9f5d58132ab1,2-pages-jula.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+8cf0621d-d29a-4d0b-ad1e-4e4321d678bd,unknown_OpenRouter_Inc_2025-06-16_6540_D-3209_K-000_1930_D-000_K-3209_32.09.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+8cb3220a-66f1-4847-8d26-394e1cd6c7c7,1-page-elgiganten.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+8755b53d-e43a-46c2-bd96-898b8d260d04,6915032350fe3_1762984739.jpeg,SEK,629.00,503.20,3,"purchase_datetime,credit_card_brand_short,credit_card_last_4_digits",,succeeded,KLAR,succeeded,9,receipt,receipt,BAUHAUS
+83e9125f-b6d4-4d1d-bd88-14ab7c36972e,6915024d9502e_1762984525.jpeg,SEK,,,0,,,failed,finalize_fail_end,failed,4,other,receipt,
+836846f8-eb61-4878-becd-a769527a21c4,FC_2505.pdf-page-0001.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+82b2e895-c5a1-4a58-a675-8c3d1c036af7,68bd5bb2eafc3_1757240242.jpeg,SEK,313.00,250.40,,"payment_type,receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,
+7eb188e0-5946-40fd-a8ea-86b5b21d02b7,photo_68c39c92096163.69462592.jpg,SEK,313.00,250.40,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,Hornbach Byggmarknad AB
+7c521f98-d07b-450d-a059-de19fc5e91de,2-pages-jula.pdf,SEK,129.00,103.20,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,JULA
+7b1310c1-f341-4926-b3f4-4c362c8d4d4c,693ff1687cd55_1765798248.jpeg,SEK,19.90,15.92,3,"credit_card_brand_short,credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,
+7abcee91-3a78-4140-b632-ca77f0ba932e,1-page-swish.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+7a4a96c6-2fe1-488d-93f6-71879efab4b1,Kvitto_2025-06-30_170640.pdf,SEK,558.30,446.64,1,credit_card_last_4_digits,,succeeded,KLAR,succeeded,9,receipt,receipt,BILTEMA SWEDEN AB
+7a3f1557-9dea-4d57-8399-166793c46ebf,unknown_Udio_2025-04-30_12.50.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+73ba612f-3fb4-4f01-8620-fcb704cd4e31,691505517d040_1762985297.jpeg,SEK,499.00,399.20,0,,gross_header_items_mismatch_gt_2,succeeded,KLAR,succeeded,9,receipt,receipt,Hornbach Byggmarknad AB
+730bfe77-b127-4113-b831-b0611667787d,unknown_AZ-Delivery_Vertriebs_GmbH_2025-05-15_104695.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+721993f2-d242-49bc-85d9-5d207eb79349,Kvitto_2025-06-30_170640.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+6f14d08a-7608-4a05-a3c1-03f07318b1f5,6915050bf0a18_1762985227.jpeg,SEK,215.00,191.96,2,"credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,McDonald's Akalla
+6d7213c8-6222-4cba-a9aa-da4b37af512c,69150378e4984_1762984824.jpeg,SEK,298.80,,3,"net_amount,vat_breakdown(total_vat_25/12/6),receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,BAUHAUS
+6cfffb6b-e34d-44cb-bd24-62dc29209107,691503de47bd1_1762984926.jpeg,SEK,1200.00,1097.15,2,"credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,
+6bacd960-8c9b-4e69-8908-65bd93220cc2,FC_2509.pdf-page-0002.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+673fc8e7-5414-4d6a-9889-f0c5bdb49ad3,241204_Dustin.pdf-page-0003.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+65963e57-4f2d-4108-9589-aaff90f8a6de,241204_Dustin.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+5efc9f74-56ff-4c04-b699-3e847b94ba22,68b5aaf82694e_1756736248.jpeg,SEK,548.80,439.04,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,BAUHAUS
+5e6d298d-dbe2-411f-8f32-eca68410ad73,1-page-swish.pdf,SEK,1800.00,,0,,,succeeded,KLAR,succeeded,8,invoice,receipt,
+5d8e423a-4699-49a5-9994-36de48a43ab4,691504f5c2175_1762985205.jpeg,SEK,941.25,,,"payment_type,net_amount,vat_breakdown(total_vat_25/12/6),receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,COOP
+5c034b59-c7fa-4ea7-b931-4182a680edfa,unknown_OpenRouter_Inc_2025-06-16_6540_D-3209_K-000_1930_D-000_K-3209_32.09.pdf,USD,32.09,,0,,,succeeded,KLAR,succeeded,8,invoice,receipt,"OpenRouter, Inc"
+58013593-9833-469d-804d-f055631dac3d,1_page_midjourney.jpg,SEK,12.50,10.00,,payment_type,,succeeded,KLAR,succeeded,8,receipt,receipt,Midjourney Inc
+55084e7f-7b69-4444-b2b4-68a86b20b64a,FC_2509.pdf-page-0003.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+5455d7c9-64af-4a03-86c2-4896582679b6,691504cb4bb04_1762985163.jpeg,SEK,168.00,134.40,0,,,succeeded,KLAR,succeeded,8,receipt,receipt,
+48309355-b3de-47c7-adb8-c312f80b2449,FC_Webhallen_Sverige_AB_2025-06-02_194700.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+46495304-a338-4576-8243-d0e159832b82,FC_2508.pdf-page-0001.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+45836e04-c097-4409-a6af-3cc061de0405,FC_2509.pdf-page-0001.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+45543679-dc0f-46fb-a89e-298f09855edd,691502166efd8_1762984470.jpeg,SEK,1274.90,1159.00,,payment_type,net_header_items_mismatch_gt_2,succeeded,KLAR,succeeded,9,receipt,receipt,DE Bistro AB
+44467ca5-6c7e-4243-9e2c-4f2900d7f0fe,FC_2506.pdf-page-0003.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+44049e57-5f43-4bbd-9477-3c31091ae063,68f25d2c3fc00_1760714028.jpeg,SEK,219.00,175.20,2,"credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,Circle K Rissne
+40761168-5930-459b-8f71-19d0794d1227,3-pages-ms.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+405ed318-98f2-42ec-887c-def6e94491c0,691503435d2a4_1762984771.jpeg,SEK,278.00,218.00,3,"purchase_datetime,credit_card_brand_short,credit_card_last_4_digits",net_header_items_mismatch_gt_2,succeeded,KLAR,succeeded,9,receipt,receipt,BAUHAUS
+3d321129-c5f0-47a3-be03-9cfe17302840,691502b104526_1762984625.jpeg,SEK,304.80,243.84,1,credit_card_last_4_digits,,succeeded,KLAR,succeeded,8,receipt,receipt,
+3b0130a5-306c-4c9a-a775-b33f69a3769f,250704_Ruccola.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+3a6d7ed7-36bf-4cb2-95b2-0144111516b2,FC_2506.pdf-page-0002.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+3a4022fb-9477-4cc7-84ff-6b6633681ebf,photo_6914fe44caf7f1.96560514.jpg,SEK,1080.00,,1,net_amount,,succeeded,KLAR,succeeded,8,receipt,receipt,The Public Täby AB
+38a28335-647a-4ce6-93c4-e02b71c29478,photo_68b6739890f7a7.62128365.jpg,SEK,660.00,,,"payment_type,net_amount,vat_breakdown(total_vat_25/12/6)",gross_header_items_mismatch_gt_2,succeeded,KLAR,succeeded,8,receipt,receipt,UBEREATS
+379380fd-2b77-4960-b4c3-730af4af68a8,250704_Ruccola.pdf,SEK,290.00,258.92,1,vat_breakdown(total_vat_25/12/6),,succeeded,KLAR,succeeded,9,receipt,receipt,Ruccola Bromma AB
+361f0c91-fa72-494f-a6ae-51b3e243e1d7,6915029f23f47_1762984607.jpeg,SEK,456.36,365.10,2,"credit_card_brand_short,credit_card_last_4_digits",,succeeded,KLAR,succeeded,9,receipt,receipt,BAUHAUS
+3465377a-5ad8-4e1f-9751-4798c345b8c6,250708_Neko_Sushi.pdf,SEK,344.00,307.14,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,Neko Sushi Bromma
+3317df30-1ccc-4ae6-8864-ad8825744356,691503fc3b764_1762984956.jpeg,SEK,977.96,782.37,1,credit_card_last_4_digits,,succeeded,KLAR,succeeded,9,receipt,receipt,Circle K Rissne
+307a17ef-52fd-4b9a-bb02-807b6e97088d,photo_68bdc1cc97f643.62743853.jpg,SEK,,,0,,,failed,finalize_fail_end,failed,4,other,receipt,
+2eacbc45-015c-4816-85bc-52267879677e,FC_2505.pdf,SEK,,,0,,,succeeded,KLAR,succeeded,4,fc_invoice,creditcard_invoice,
+2db88b41-125d-4317-86a7-c8b20dfad995,Kvitto_2025-06-30_165938.pdf-page-0002.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+2d95e314-7952-41b9-9a6b-8b153dc95278,EU_Topaz_Labs_2024-06-15_6540_D-9900_K-000_1930_D-000_K-9900_99.00.pdf,USD,99.00,,0,,,succeeded,KLAR,succeeded,8,invoice,receipt,Topaz Labs
+28d1d128-bcc5-49a2-9f22-604cb4ce8b74,1_page_kjell_2025-10-01_08-07-02.png,SEK,2980.00,2384.00,1,credit_card_last_4_digits,,succeeded,KLAR,succeeded,8,receipt,receipt,Kjell & Co Kungsholmen Sthlm
+26b7643f-8102-43c5-b457-14f2b6da9068,unknown_Udio_2025-04-30_12.50.pdf,USD,12.50,10.00,0,,,succeeded,KLAR,succeeded,8,invoice,receipt,Udio
+264aea17-e15f-442d-8fb2-428dddef85eb,FC_2508.pdf-page-0003.png,SEK,,,0,,,,,,0,cc_image,creditcard_invoice,
+25956ae0-f82a-4e6d-8fe5-61bb68bf875a,photo_68bc1fcb8fb2d1.19853966.jpg,SEK,261.80,209.44,1,credit_card_brand_short,"gross_header_items_mismatch_gt_2,net_header_items_mismatch_gt_2",succeeded,KLAR,succeeded,9,receipt,receipt,BAUHAUS
+254110c0-0342-463b-9092-0fb147b1c191,69150285adf09_1762984581.jpeg,SEK,,,0,,,failed,finalize_fail_end,failed,3,image,receipt,
+24809474-2b23-43f3-8443-382f7efdf7a4,693ff178680e4_1765798264.jpeg,SEK,735.64,,3,"net_amount,vat_breakdown(total_vat_25/12/6),receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,Hornbach Byggmarknad AB
+21ba6df3-deec-4436-ac59-4a4c319d8831,693feefdbfe48_1765797629.jpeg,SEK,273.85,,4,"net_amount,vat_breakdown(total_vat_25/12/6),credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,
+206ef442-9d05-4a0b-b831-48a6c06208a4,photo_68d51dec3d2445.62262545.jpg,SEK,313.00,250.40,1,credit_card_last_4_digits,,succeeded,KLAR,succeeded,9,receipt,receipt,Hornbach Byggmarknad AB
+1f889a1e-9d80-469e-b8da-8ea6d9ffee67,69150431614b0_1762985009.jpeg,SEK,313.00,,2,"net_amount,vat_breakdown(total_vat_25/12/6)",,succeeded,KLAR,succeeded,8,receipt,receipt,Hornbach Byggmarknad AB
+1ea11d6a-2e81-4539-acc4-6e13bccb0269,241204_Dustin.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+1b43b03e-a85f-4586-8548-a80b2f87c97f,68e7ceb6be4b2_1760022198.jpeg,SEK,199.00,159.20,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,BAUHAUS
+1823eec6-b4c9-46c9-b239-92ee17d8924e,3-pages-ms.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+177c8911-8a70-4d95-86a4-7f0fe5e383a7,Kvitto_2025-06-30_165915.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+168049da-123c-4f0a-a3d8-27eeee1779fa,unknown_unknown_1970-01-01_.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+164abfc5-bce6-4ea8-929f-fee70fb1abfe,6921c9af6c25d_1763821999.jpeg,SEK,52.95,42.36,1,credit_card_last_4_digits,,succeeded,KLAR,succeeded,9,receipt,receipt,BAUHAUS
+15e0836e-f35d-498f-a006-8859352b8bd5,1-page-elgiganten.pdf,SEK,2790.00,2232.00,1,credit_card_last_4_digits,,succeeded,KLAR,succeeded,9,receipt,receipt,Elgiganten SE
+12eae5fd-6534-456a-901f-7c77f6b6a092,250704_Ruccola.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+10628231-bf01-4a2c-bd9d-2812d8401980,photo_6914fdaae6d9d1.61987467.jpg,SEK,378.00,337.50,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,Grekiska Grill&BAR
+0de75017-a66b-4f85-b6a0-a2b7c214a45b,250708_Neko_Sushi.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+0da99b4c-7131-4076-889e-51be0cefa314,Kvitto_2025-06-30_165915.pdf,SEK,,,0,,,failed,finalize_fail_end,failed,4,other,receipt,
+0d2f2c70-3661-42b2-adc5-3e85cbd7b038,unknown_AZ-Delivery_Vertriebs_GmbH_2025-05-15_104695.pdf,SEK,339.15,271.32,0,,,succeeded,KLAR,succeeded,9,invoice,receipt,AZ-Delivery Vertriebs GmbH
+0b1424ab-970a-4561-8950-c1e7901d8f19,691504551acf9_1762985045.jpeg,SEK,1011.83,809.46,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,Circle K Sollentuna
+09c54740-f036-4d3b-8720-4f363f4fbc53,3-pages-ms.pdf-page-0003.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+0331b0fd-98ad-44a0-a86d-ec5c5b23dc62,EU_Topaz_Labs_2024-06-15_6540_D-9900_K-000_1930_D-000_K-9900_99.00.pdf-page-0001.png,SEK,,,0,,,,,,0,pdf_page,receipt,
+027804a6-51ac-4a73-a051-52f67369dacf,68b5aa0f0280e_1756736015.png,SEK,,,0,,,failed,finalize_fail_end,failed,4,Manual Review,receipt,
+017ca370-3fa7-4adf-83fc-d2d8af5b6c9e,photo_68bb122a63d1b1.20796996.jpg,SEK,84.95,,3,"net_amount,vat_breakdown(total_vat_25/12/6),receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,BAUHAUS
+00db0f9e-7d51-4021-a3dc-70bcde9d2e44,691b1ce995348_1763384553.jpeg,SEK,502.00,,4,"net_amount,vat_breakdown(total_vat_25/12/6),credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,8,receipt,receipt,BAUHAUS
+004bd450-5257-4c03-96bc-32469978e685,photo_68ebbe3b5a4484.42026272.jpg,SEK,1764.00,1411.20,0,,,succeeded,KLAR,succeeded,9,receipt,receipt,Hornbach Byggmarknad AB

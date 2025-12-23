@@ -22,6 +22,7 @@ from services.ftp_service import (
 )
 
 from services.storage import FileStorage
+from services.file_detection import detect_file
 from services.tasks import (
     begin_import_stage,
     complete_import_stage,
@@ -114,11 +115,14 @@ def _insert_unified_file(
     filename: str,
     metadata: Dict[str, Any],
     content_hash: str,
-    source: str = "ftp"
+    source: str = "ftp",
+    *,
+    file_bytes: bytes | None = None,
 ) -> Optional[str]:
     """Insert file record with metadata from FTP using create_unified_file. Returns workflow_run_id."""
-    file_suffix = _get_file_suffix(filename)
-    file_category = _get_file_category(file_suffix)
+    file_suffix_raw = _get_file_suffix(filename)
+    file_category = _get_file_category(file_suffix_raw)
+    file_suffix = Path(filename).suffix or (f".{file_suffix_raw}" if file_suffix_raw else None)
 
     # Extract ONLY metadata fields (file system data, NOT business data)
     original_file_id = metadata.get('file_id')
@@ -137,22 +141,56 @@ def _insert_unified_file(
         except:
             file_creation_timestamp = None
 
+    detected_kind = None
+    detected_mime = None
+    if file_bytes:
+        try:
+            detection = detect_file(file_bytes, filename)
+            detected_kind = detection.kind
+            detected_mime = detection.mime_type
+        except Exception:
+            detected_kind = None
+            detected_mime = None
+
+    if not detected_kind:
+        # Fallback: infer from suffix when bytes unavailable or detection failed
+        if file_suffix_raw in {"pdf"}:
+            detected_kind = "pdf"
+        elif file_suffix_raw in {"jpg", "jpeg", "png", "tif", "tiff"}:
+            detected_kind = "image"
+        else:
+            detected_kind = "other"
+
+    workflow_key = None
+    if detected_kind == "image":
+        workflow_key = "WF1_RECEIPT"
+    elif detected_kind == "pdf":
+        workflow_key = "WF2_PDF_SPLIT"
+
+    if not workflow_key:
+        logger.warning("FTP: Unsupported file kind '%s' for %s - skipping workflow creation", detected_kind, filename)
+        return None
+
+    if not mime_type and detected_mime:
+        mime_type = detected_mime
+
     unified_file = create_unified_file(
         file_id=file_id,
-        file_type="receipt",
+        file_type=detected_kind,
         content_hash=content_hash,
         submitted_by=source,
         original_filename=filename,
-        initial_ai_status="ftp_fetched",
+        initial_ai_status="processing",
         mime_type=mime_type,
         file_suffix=file_suffix,
         original_file_id=original_file_id,
         original_file_name=original_file_name,
         original_file_size=original_file_size,
-        extra_metadata={},
+        extra_metadata={"detected_kind": detected_kind} if detected_kind else {},
         source=source,
         file_category=file_category,
-        workflow_type="WF1_RECEIPT"
+        workflow_key=workflow_key,
+        workflow_type="receipt"
     )
     logger.info(f"Inserted unified_file {file_id} with metadata and hash {content_hash[:16]}...")
 
@@ -320,7 +358,13 @@ def fetch_from_local_inbox() -> FetchResult:
             workflow_run_id = None
             # Insert file record with metadata and hash (handles duplicates)
             try:
-                workflow_run_id = _insert_unified_file(file_id, p.name, metadata, content_hash)
+                workflow_run_id = _insert_unified_file(
+                    file_id,
+                    p.name,
+                    metadata,
+                    content_hash,
+                    file_bytes=data,
+                )
             except ValueError as ve:
                 if "Duplicate file" in str(ve):
                     skipped.append(p.name)
@@ -430,7 +474,14 @@ def fetch_from_ftp() -> FetchResult:
                     workflow_run_id = None
                     # Insert file record with metadata and hash (handles duplicates)
                     try:
-                        workflow_run_id = _insert_unified_file(file_id, name, metadata, content_hash, source="ftp")
+                        workflow_run_id = _insert_unified_file(
+                            file_id,
+                            name,
+                            metadata,
+                            content_hash,
+                            source="ftp",
+                            file_bytes=file_data,
+                        )
                     except ValueError as ve:
                         if "Duplicate file" in str(ve):
                             skipped.append(name)

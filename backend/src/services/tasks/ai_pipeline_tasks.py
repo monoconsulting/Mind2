@@ -395,8 +395,52 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
     # AI4 - Accounting Classification
     accounting_inputs = _load_accounting_inputs(file_id)
     begin_import_stage(workflow_run_id, "r_ai4", message="AI4 normalisering startar")
-    if accounting_inputs and accounting_inputs.get("ai4_ready") is False:
+    ai4_block_reasons: list[str] = []
+    receipt_item_count: int | None = None
+    if accounting_inputs:
+        currency = accounting_inputs.get("currency")
+        exchange_rate = accounting_inputs.get("exchange_rate")
+        gross_amount_sek = accounting_inputs.get("gross_amount_sek")
+        net_amount_sek = accounting_inputs.get("net_amount_sek")
+        receipt_item_count = int(accounting_inputs.get("receipt_item_count") or 0)
+
+        missing_exchange_rate = exchange_rate is None
+        try:
+            if not missing_exchange_rate and Decimal(str(exchange_rate)) == 0:
+                missing_exchange_rate = True
+        except Exception:
+            pass
+
+        if currency and currency != "SEK":
+            if missing_exchange_rate or gross_amount_sek is None or net_amount_sek is None:
+                ai4_block_reasons.append("foreign_currency_missing_exchange_rate_or_sek_amounts")
+
+        if receipt_item_count == 0:
+            logger.info(
+                "AI4 proceeding with receipt_item_count=0 (header-only accounting); file_id=%s",
+                file_id,
+            )
+
+    if ai4_block_reasons:
+        reason = "; ".join(ai4_block_reasons)
+        _history(
+            file_id,
+            "ai4",
+            "skipped",
+            ai_stage_name="AI4-AccountingClassification",
+            log_text=f"Needs review: {reason}",
+        )
+        complete_import_stage(
+            workflow_run_id,
+            "r_ai4",
+            success=False,
+            message=f"{reason} (item_count={receipt_item_count})",
+        )
+        log_import_event(workflow_run_id, AiStatus.MANUAL_REVIEW.value, message=reason)
+        _move_to_manual_review(file_id, reason)
+    elif accounting_inputs and accounting_inputs.get("ai4_ready") is False:
         reason = str(accounting_inputs.get("reason") or "missing totals for accounting")
+        item_count_note = f"{receipt_item_count}" if receipt_item_count is not None else "unknown"
         _history(
             file_id,
             "ai4",
@@ -408,7 +452,7 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             workflow_run_id,
             "r_ai4",
             success=True,
-            message=reason,
+            message=f"{reason} (item_count={item_count_note})",
         )
         log_import_event(workflow_run_id, AiStatus.MANUAL_REVIEW.value, message=reason)
         _move_to_manual_review(file_id, reason)
@@ -493,7 +537,7 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
                 workflow_run_id,
                 "r_ai4",
                 success=True,
-                message=f"AI4 skapade {proposal_count} konteringsförslag",
+                message=f"AI4 skapade {proposal_count} konteringsförslag (item_count={len(receipt_items)})",
             )
         except AccountingProposalValidationError as exc:
             # Non-fatal: validator errors must degrade to manual review and the batch must continue.
@@ -516,14 +560,14 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
                 prompt_text=ai4_prompt,
                 response_text=raw_response,
             )
+            _move_to_manual_review(file_id, error_msg)
             complete_import_stage(
                 workflow_run_id,
                 "r_ai4",
-                success=True,
+                success=False,
                 message=error_msg,
             )
             log_import_event(workflow_run_id, AiStatus.MANUAL_REVIEW.value, message=error_msg)
-            _move_to_manual_review(file_id, error_msg)
         except Exception as exc:
             elapsed = int((time.time() - start_time) * 1000)
             error_msg = f"{type(exc).__name__}: {str(exc)}"
@@ -550,6 +594,11 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             _move_to_manual_review(file_id, error_msg)
             raise
     else:
+        item_count_note = (
+            f"{receipt_item_count}"
+            if receipt_item_count is not None
+            else f"{len(_load_receipt_items(file_id))}"
+        )
         _history(
             file_id,
             "ai4",
@@ -561,7 +610,7 @@ def _run_ai_pipeline(file_id: str, workflow_run_id: int | None = None) -> List[s
             workflow_run_id,
             "r_ai4",
             success=True,
-            message="AI4 hoppades över - saknar konteringsunderlag",
+            message=f"AI4 hoppades över - saknar konteringsunderlag (item_count={item_count_note})",
         )
 
     begin_import_stage(workflow_run_id, "r_queue_match", message="Köar kvitto för AI5-matchning")

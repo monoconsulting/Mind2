@@ -407,8 +407,24 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
 
     try:
         with db_cursor() as cur:
+            vendor_expr = "c.name"
+            try:
+                cur.execute(
+                    """
+                    SELECT 1
+                      FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA = DATABASE()
+                       AND TABLE_NAME = 'unified_files'
+                       AND COLUMN_NAME = 'merchant_name'
+                     LIMIT 1
+                    """
+                )
+                if cur.fetchone():
+                    vendor_expr = "COALESCE(c.name, uf.merchant_name)"
+            except Exception:
+                vendor_expr = "c.name"
             cur.execute(
-                """
+                f"""
                 SELECT
                     uf.gross_amount_sek,
                     uf.net_amount_sek,
@@ -416,7 +432,12 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
                     uf.net_amount_original,
                     uf.currency,
                     uf.exchange_rate,
-                    c.name AS vendor_name
+                    {vendor_expr} AS vendor_name,
+                    (
+                        SELECT COUNT(*)
+                          FROM receipt_items ri
+                         WHERE ri.main_id = uf.id
+                    ) AS receipt_item_count
                 FROM unified_files uf
                 LEFT JOIN companies c ON uf.company_id = c.id
                 WHERE uf.id = %s
@@ -427,9 +448,23 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
             if not row:
                 return None
 
-            gross_amount_sek, net_amount_sek, gross_amount_original, net_amount_original, currency, exchange_rate, vendor_name = row
+            (
+                gross_amount_sek,
+                net_amount_sek,
+                gross_amount_original,
+                net_amount_original,
+                currency,
+                exchange_rate,
+                vendor_name,
+                receipt_item_count,
+            ) = row
+
+            vendor_name_norm = (vendor_name or "").strip()
+            item_count = int(receipt_item_count or 0)
 
             currency_norm = str(currency or "").strip().upper()
+            if currency_norm in {"KR", "KR.", "SEK.", "SEK"}:
+                currency_norm = "SEK"
             updates: list[str] = []
             params: list[Any] = []
 
@@ -448,6 +483,22 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
                     exchange_rate = 1.0
                     updates.append("exchange_rate=%s")
                     params.append(exchange_rate)
+
+            elif currency_norm:
+                # Deterministic FX conversion when SEK totals are missing but original totals + exchange_rate exist.
+                # Only fill *_sek fields when they are NULL in DB to avoid overwriting validated SEK totals.
+                if exchange_rate not in (None, 0) and isinstance(exchange_rate, Decimal):
+                    if gross_amount_sek is None and gross_amount_original is not None:
+                        gross_amount_sek = (gross_amount_original * exchange_rate).quantize(Decimal("0.01"))
+                        updates.append("gross_amount_sek=%s")
+                        params.append(gross_amount_sek)
+                    if net_amount_sek is None and net_amount_original is not None:
+                        net_amount_sek = (net_amount_original * exchange_rate).quantize(Decimal("0.01"))
+                        updates.append("net_amount_sek=%s")
+                        params.append(net_amount_sek)
+                else:
+                    # exchange_rate is missing or not a Decimal; leave SEK totals unset.
+                    pass
 
             if updates:
                 updates.append("updated_at=NOW()")
@@ -480,8 +531,41 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
                     "net_amount_original": net_amount_original,
                     "currency": currency_norm or None,
                     "exchange_rate": exchange_rate,
-                    "vendor_name": vendor_name,
+                    "vendor_name": vendor_name_norm or None,
+                    "receipt_item_count": item_count,
                     "missing_totals": not has_sek_totals and not has_original_totals,
+                }
+
+            if currency_norm and currency_norm != "SEK" and exchange_rate in (None, 0):
+                return {
+                    "ai4_ready": False,
+                    "reason": "missing exchange_rate for non-SEK currency",
+                    "gross_amount_sek": gross_amount_sek,
+                    "net_amount_sek": net_amount_sek,
+                    "vat_amount_sek": vat_amount_sek,
+                    "gross_amount_original": gross_amount_original,
+                    "net_amount_original": net_amount_original,
+                    "currency": currency_norm or None,
+                    "exchange_rate": exchange_rate,
+                    "vendor_name": vendor_name_norm or None,
+                    "receipt_item_count": item_count,
+                    "missing_totals": False,
+                }
+
+            if not vendor_name_norm:
+                return {
+                    "ai4_ready": False,
+                    "reason": "missing vendor_name",
+                    "gross_amount_sek": gross_amount_sek,
+                    "net_amount_sek": net_amount_sek,
+                    "vat_amount_sek": vat_amount_sek,
+                    "gross_amount_original": gross_amount_original,
+                    "net_amount_original": net_amount_original,
+                    "currency": currency_norm or None,
+                    "exchange_rate": exchange_rate,
+                    "vendor_name": None,
+                    "receipt_item_count": item_count,
+                    "missing_totals": False,
                 }
 
             # Guard obvious invalid totals to avoid sending nonsense to AI4.
@@ -497,7 +581,8 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
                         "net_amount_original": net_amount_original,
                         "currency": currency_norm or None,
                         "exchange_rate": exchange_rate,
-                        "vendor_name": vendor_name,
+                        "vendor_name": vendor_name_norm or None,
+                        "receipt_item_count": item_count,
                         "missing_totals": False,
                     }
             except Exception:
@@ -511,7 +596,8 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
                     "net_amount_original": net_amount_original,
                     "currency": currency_norm or None,
                     "exchange_rate": exchange_rate,
-                    "vendor_name": vendor_name,
+                    "vendor_name": vendor_name_norm or None,
+                    "receipt_item_count": item_count,
                     "missing_totals": False,
                 }
 
@@ -524,7 +610,8 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
                 "net_amount_original": net_amount_original,
                 "currency": currency_norm or None,
                 "exchange_rate": exchange_rate,
-                "vendor_name": vendor_name,
+                "vendor_name": vendor_name_norm or None,
+                "receipt_item_count": item_count,
             }
     except Exception:
         return None
@@ -565,7 +652,8 @@ def _load_receipt_items(file_id: str):
                     vat_percentage=Decimal(str(row[11] or 0)),
                 ))
             return items
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to load receipt items for file_id=%s: %s", file_id, exc)
         return []
 
 
@@ -593,7 +681,8 @@ def _save_accounting_entries(file_id: str, entries: List[AccountingEntry]) -> bo
                     ),
                 )
         return True
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to persist ai_accounting_proposals for file_id=%s: %s", file_id, exc)
         return False
 
 

@@ -23,8 +23,10 @@ test('test', async ({ page }) => {
   await page.waitForLoadState('networkidle');
   await page.waitForTimeout(2000);
 
-
-    }
+  console.log('\n=== Test 1: Checking Preview Modal ===');
+  const previewButton = page.getByRole('button', { name: /förhandsgranska/i }).first();
+  if (await previewButton.isVisible()) {
+    await previewButton.click();
 
     await page.waitForTimeout(2000);
 

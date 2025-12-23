@@ -4,8 +4,14 @@
 if [ "${DB_AUTO_MIGRATE:-1}" = "1" ]; then
     echo "Running database migrations..."
     python -c "from services.db.migrations import apply_migrations; apply_migrations()" || {
-        echo "Warning: Database migrations failed, but continuing to start server..."
-        echo "This is expected if migrations have already been applied."
+        if [ "${DB_MIGRATIONS_ALLOW_FAILURE:-0}" = "1" ]; then
+            echo "Warning: Database migrations failed, but continuing (DB_MIGRATIONS_ALLOW_FAILURE=1)."
+            echo "System behavior may be incorrect until schema is fixed."
+        else
+            echo "ERROR: Database migrations failed. Refusing to start server."
+            echo "Set DB_MIGRATIONS_ALLOW_FAILURE=1 to override (not recommended for production)."
+            exit 1
+        fi
     }
 else
     echo "Skipping database migrations (DB_AUTO_MIGRATE=0)"

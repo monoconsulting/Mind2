@@ -41,6 +41,7 @@ from .invoice_tasks import (
     _persist_creditcard_invoice_main,
     _persist_creditcard_invoice_ocr,
     _persist_invoice_lines,
+    _count_invoice_lines,
     process_invoice_document,
 )
 from .ocr_tasks import (
@@ -823,11 +824,87 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
         metadata["period_start"] = extraction.header.period_start.isoformat()
     if extraction.header.period_end:
         metadata["period_end"] = extraction.header.period_end.isoformat()
+    extracted_total = len(extraction.lines)
+    persisted_total = _count_invoice_lines(file_id)
+
     metadata["line_counts"] = {
-        "total": len(extraction.lines),
+        "total": persisted_total,
         "matched": 0,
-        "unmatched": len(extraction.lines),
+        "unmatched": persisted_total,
+        "extracted_total": extracted_total,
+        "persisted_total": persisted_total,
+        "persist_attempted": inserted_invoice_lines,
     }
+
+    if extracted_total == 0 or persisted_total == 0 or persisted_total != extracted_total:
+        if extracted_total == 0:
+            reason = "AI6 produced 0 invoice lines; cannot proceed to matching."
+        elif persisted_total == 0:
+            reason = (
+                "Persisted 0 invoice lines although AI6 returned lines. "
+                "This strongly indicates a DB schema mismatch (migrations not applied) or a SQL error."
+            )
+        else:
+            reason = (
+                f"Persisted invoice line count mismatch: extracted={extracted_total}, persisted={persisted_total}. "
+                "Stop-the-line to avoid matching on incomplete data."
+            )
+
+        metadata["processing_status"] = InvoiceProcessingStatus.FAILED.value
+        metadata["last_error"] = {
+            "code": "invoice_lines_persist_failed",
+            "message": reason,
+            "extracted_total": extracted_total,
+            "persisted_total": persisted_total,
+        }
+        _update_invoice_metadata(file_id, metadata)
+
+        fc_coordinator.begin_fc_import_stage(
+            workflow_run_id,
+            "fc_ready",
+            message="Förbereder fakturan för matchning",
+        )
+        fc_coordinator.complete_fc_import_stage(
+            workflow_run_id,
+            "fc_ready",
+            success=False,
+            message=reason,
+        )
+        transition_processing_status(
+            file_id,
+            InvoiceProcessingStatus.FAILED,
+            (
+                InvoiceProcessingStatus.AI_PROCESSING,
+                InvoiceProcessingStatus.OCR_PENDING,
+                InvoiceProcessingStatus.OCR_DONE,
+                InvoiceProcessingStatus.READY_FOR_MATCHING,
+                InvoiceProcessingStatus.MATCHING_COMPLETED,
+                InvoiceProcessingStatus.COMPLETED,
+                InvoiceProcessingStatus.FAILED,
+            ),
+        )
+        transition_document_status(
+            file_id,
+            InvoiceDocumentStatus.FAILED,
+            (
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.MATCHING,
+                InvoiceDocumentStatus.MATCHED,
+                InvoiceDocumentStatus.PARTIALLY_MATCHED,
+                InvoiceDocumentStatus.PROCESSING,
+                InvoiceDocumentStatus.COMPLETED,
+                InvoiceDocumentStatus.FAILED,
+            ),
+        )
+        logger.error(
+            "wf3_fc_invoice_lines_persist_failed invoice_id=%s extracted_total=%s persisted_total=%s",
+            file_id,
+            extracted_total,
+            persisted_total,
+        )
+        log_finalize_failure(workflow_run_id, reason)
+        return workflow_run_id
+
     metadata["processing_status"] = InvoiceProcessingStatus.READY_FOR_MATCHING.value
     _update_invoice_metadata(file_id, metadata)
 
