@@ -52,11 +52,38 @@ if ($dbName -and $dbUser -and $dbPass) {
     } else {
         Write-Host "Creating MySQL dump..." -ForegroundColor Yellow
 
-        # Create MySQL dump using docker exec
-        $dumpCommand = "docker exec mind2-mysql-1 mysqldump -u$dbUser -p$dbPass $dbName"
+        # Create dump INSIDE the container to avoid PowerShell encoding issues (mojibake)
+        # This preserves Swedish characters correctly
+        $containerDumpPath = "/tmp/mind_db_dump_temp.sql"
 
         try {
-            Invoke-Expression "$dumpCommand 2>`$null" | Out-File -FilePath $dumpFile -Encoding utf8
+            # Step 1: Create dump inside container
+            $dumpResult = docker compose exec -T mysql sh -c "mysqldump --default-character-set=utf8mb4 -u$dbUser -p$dbPass --single-transaction --routines --triggers --events --set-gtid-purged=OFF $dbName > $containerDumpPath" 2>&1
+
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "ERROR: mysqldump failed inside container!" -ForegroundColor Red
+                Write-Host "ABORTED: Database dump is required for backup." -ForegroundColor Red
+                exit 1
+            }
+
+            # Step 2: Get container ID and copy file out
+            $containerId = docker compose ps -q mysql
+            if (-not $containerId) {
+                Write-Host "ERROR: Could not find MySQL container ID!" -ForegroundColor Red
+                Write-Host "ABORTED: Database dump is required for backup." -ForegroundColor Red
+                exit 1
+            }
+
+            docker cp "${containerId}:${containerDumpPath}" $dumpFile 2>&1 | Out-Null
+
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "ERROR: Failed to copy dump from container!" -ForegroundColor Red
+                Write-Host "ABORTED: Database dump is required for backup." -ForegroundColor Red
+                exit 1
+            }
+
+            # Step 3: Clean up temp file in container
+            docker compose exec -T mysql sh -c "rm -f $containerDumpPath" 2>&1 | Out-Null
 
             if ((Test-Path $dumpFile) -and ((Get-Item $dumpFile).Length -gt 1000)) {
                 $dumpSize = (Get-Item $dumpFile).Length / 1MB

@@ -444,7 +444,7 @@ def _fetch_receipt_details(rid: str) -> dict[str, Any]:
                     "credit_card_token": card_token,
                     "credit_card_entering_mode": card_entering_mode,
                     "currency": currency_code,
-                    "exchange_rate": float(exchange_rate) if exchange_rate is not None else None,
+                    "exchange_rate": float(exchange_rate) if exchange_rate not in (None, 0) else None,
                     "gross_amount_original": gross_original_value,
                     "net_amount_original": net_original_value,
                     "gross_amount_display": gross_display,

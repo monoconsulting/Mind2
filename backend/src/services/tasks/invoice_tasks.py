@@ -208,8 +208,32 @@ def _persist_invoice_lines(invoice_id: str, parsed_lines: list[dict[str, Any]]) 
                 )
                 inserted += 1
     except Exception:
-        return inserted
+        logger.exception(
+            "Failed to persist invoice_lines for invoice_id=%s; transaction rolled back",
+            invoice_id,
+        )
+        return 0
     return inserted
+
+def _count_invoice_lines(invoice_id: str) -> int:
+    """Count persisted invoice lines for a credit-card invoice.
+
+    Args:
+        invoice_id: The ``invoice_documents.id`` / ``invoice_lines.invoice_id`` to count.
+
+    Returns:
+        Number of rows in ``invoice_lines`` for this invoice, or 0 if DB is unavailable.
+    """
+    if db_cursor is None:
+        return 0
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT COUNT(1) FROM invoice_lines WHERE invoice_id=%s", (invoice_id,))
+            row = cur.fetchone()
+            return int(row[0] or 0) if row else 0
+    except Exception as exc:
+        logger.exception("Failed to count invoice_lines for invoice_id=%s: %s", invoice_id, exc)
+        return 0
 
 def _to_decimal(value: Any) -> Optional[Decimal]:
     if value is None or value == "":
@@ -550,6 +574,7 @@ def _persist_creditcard_invoice_items(
 __all__ = [
     "process_invoice_document",
     "_persist_invoice_lines",
+    "_count_invoice_lines",
     "_to_decimal",
     "_format_date_for_db",
     "_persist_creditcard_invoice_ocr",

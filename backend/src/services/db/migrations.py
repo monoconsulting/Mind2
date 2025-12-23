@@ -253,7 +253,35 @@ def _db_is_provisioned(cur: Any) -> tuple[bool, list[str]]:
     if prompt_type != "mediumtext":
         missing.append("column:ai_system_prompts.prompt_content (expected mediumtext)")
 
+    # Critical columns required by current conversion + matching flows
+    if not _column_exists(cur, "invoice_lines", "extraction_confidence"):
+        missing.append("column:invoice_lines.extraction_confidence")
+    if not _column_exists(cur, "invoice_lines", "ocr_source_text"):
+        missing.append("column:invoice_lines.ocr_source_text")
+    if not _column_exists(cur, "ai_accounting_proposals", "item_id"):
+        missing.append("column:ai_accounting_proposals.item_id")
+
     return (len(missing) == 0, missing)
+
+
+def _normalize_mysql_statement(statement: str) -> str:
+    """Normalize migration SQL for MySQL compatibility.
+
+    Migrations may include statements like:
+        ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...
+
+    MySQL 8 does not support the IF NOT EXISTS modifier for ADD COLUMN, so we
+    rewrite it at execution time.
+    """
+    upper = statement.upper()
+    if upper.startswith("ALTER TABLE") and "ADD COLUMN IF NOT EXISTS" in upper:
+        return re.sub(
+            r"\bADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\b",
+            "ADD COLUMN",
+            statement,
+            flags=re.IGNORECASE,
+        )
+    return statement
 
 
 def _baseline_mark(cur: Any, files: list[Path]) -> list[str]:
@@ -529,6 +557,7 @@ def apply_migrations(seed_demo: bool = True) -> dict[str, Any]:
                     safe_stmt = _transform_prompt_statement(statement) if prompt_safe_mode else statement
                     if safe_stmt is None:
                         continue
+                    safe_stmt = _normalize_mysql_statement(safe_stmt)
                     cur.execute(safe_stmt)
                     try:
                         cur.fetchall()

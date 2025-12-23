@@ -291,9 +291,27 @@ def complete_import_stage(
     if stage_base == "finalize_ok" and success:
         wfr = get_workflow_run(workflow_run_id)
         if wfr and wfr.get("file_id"):
-            from services.db.files import set_ai_status
-            set_ai_status(wfr["file_id"], AiStatus.COMPLETED.value)
-            logger.info("Set ai_status='completed' for file_id=%s after finalize_ok", wfr["file_id"])
+            file_id = wfr["file_id"]
+            current_status: str | None = None
+            if db_cursor is not None:
+                try:
+                    with db_cursor() as cur:
+                        cur.execute("SELECT ai_status FROM unified_files WHERE id=%s", (file_id,))
+                        row = cur.fetchone()
+                    current_status = row[0] if row else None
+                except Exception:
+                    logger.debug("Failed to read ai_status for %s during finalize_ok", file_id, exc_info=True)
+            if current_status in (AiStatus.MANUAL_REVIEW.value, AiStatus.FAILED.value):
+                logger.info(
+                    "Preserving ai_status='%s' for file_id=%s after finalize_ok",
+                    current_status,
+                    file_id,
+                )
+            else:
+                from services.db.files import set_ai_status
+
+                set_ai_status(file_id, AiStatus.COMPLETED.value)
+                logger.info("Set ai_status='completed' for file_id=%s after finalize_ok", file_id)
 
 def log_import_decision(
     workflow_run_id: Optional[int],

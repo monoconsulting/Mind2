@@ -103,7 +103,8 @@ class TestFetchFtpRefactored(unittest.TestCase):
         self.assertEqual(args['submitted_by'], "ftp")
         self.assertEqual(args['source'], "ftp")
         self.assertEqual(args['file_category'], 1)
-        self.assertEqual(args['workflow_type'], "WF1_RECEIPT")
+        self.assertEqual(args['workflow_type'], "receipt")
+        self.assertEqual(args['workflow_key'], "WF2_PDF_SPLIT")
         
         mock_dispatch.assert_called_once_with(999)
 

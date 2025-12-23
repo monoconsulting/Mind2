@@ -29,6 +29,7 @@ from models.ai_processing import (
     ExpenseClassificationRequest,
     ExpenseClassificationResponse,
     ReceiptItem,
+    UnifiedFileBase,
 )
 from services.ai_service import AIService
 from services.box_enrichment import run_box_enrichment
@@ -419,6 +420,40 @@ def _persist_extraction_result(
                 other_data_payload = {"raw_other_data": unified.other_data}
         other_data_payload["company_match_type"] = resolved_match_type
         other_data_payload["company_create_needed"] = created or bool(result.company_create_needed)
+
+        # Deterministic fallback: if payment_type=card but last4 missing, try extracting from OCR text.
+        if unified.payment_type == "card" and not unified.credit_card_last_4_digits:
+            ocr_text = unified.ocr_raw or ""
+            if ocr_text:
+                candidates: list[str] = []
+                patterns = [
+                    r"(?:\*{2,}|x{2,})\s*([0-9]{4})\b",
+                    r"(?:kortnr|kort nr|card number|card no|card #|cardnummer)\D*([0-9]{4})\b",
+                    r"(?:ending|slutar|slut)\s*([0-9]{4})\b",
+                ]
+                for line in ocr_text.splitlines():
+                    lower = line.lower()
+                    for pat in patterns:
+                        for match in re.finditer(pat, lower, flags=re.IGNORECASE):
+                            candidates.append(match.group(1))
+                deduped: list[str] = []
+                seen: set[str] = set()
+                for candidate in candidates:
+                    if candidate not in seen:
+                        seen.add(candidate)
+                        deduped.append(candidate)
+                if len(deduped) == 1:
+                    try:
+                        unified.credit_card_last_4_digits = UnifiedFileBase._normalize_last4(deduped[0])
+                    except Exception:
+                        needs_review_reason = needs_review_reason or "invalid_card_last4_in_ocr"
+                elif len(deduped) == 0:
+                    needs_review_reason = needs_review_reason or "missing_card_last4_in_ocr"
+                else:
+                    needs_review_reason = needs_review_reason or "ambiguous_card_last4_in_ocr"
+            else:
+                needs_review_reason = needs_review_reason or "missing_card_last4_in_ocr"
+
         if needs_review_reason:
             other_data_payload["needs_review_reason"] = needs_review_reason
 

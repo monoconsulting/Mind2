@@ -383,6 +383,64 @@ def parse_accounting_proposals(payload: Any, fallback_receipt_id: str) -> List[A
 
     return parsed
 
+
+def _normalize_optional_decimal(value: Any, field: str) -> Optional[Decimal]:
+    if value is None:
+        return None
+    return _ensure_decimal(value, field)
+
+
+def _validate_accounting_proposals(
+    proposals: List[AccountingProposal],
+    *,
+    gross_amount: Any,
+    net_amount: Any,
+    vat_amount: Any,
+    chart_of_accounts: List[Tuple[Any, ...]],
+) -> None:
+    if chart_of_accounts:
+        valid_codes = {
+            str(row[0]).strip()
+            for row in chart_of_accounts
+            if row and row[0] not in (None, "")
+        }
+        invalid_codes = sorted(
+            {p.account_code for p in proposals if p.account_code not in valid_codes}
+        )
+        if invalid_codes:
+            raise AccountingProposalValidationError(
+                f"Unknown account_code(s): {', '.join(invalid_codes)}"
+            )
+
+    debit_total = sum((p.debit or ZERO_DECIMAL) for p in proposals)
+    credit_total = sum((p.credit or ZERO_DECIMAL) for p in proposals)
+
+    if (debit_total - credit_total).copy_abs() > TWO_DECIMAL_PLACES:
+        raise AccountingProposalValidationError(
+            f"Accounting proposals not balanced (debit={debit_total}, credit={credit_total})"
+        )
+
+    gross = _normalize_optional_decimal(gross_amount, "gross_amount")
+    net = _normalize_optional_decimal(net_amount, "net_amount")
+    vat = _normalize_optional_decimal(vat_amount, "vat_amount")
+
+    if gross is not None:
+        if (debit_total - gross).copy_abs() > TWO_DECIMAL_PLACES:
+            raise AccountingProposalValidationError(
+                f"Debit total {debit_total} does not match gross {gross}"
+            )
+        if (credit_total - gross).copy_abs() > TWO_DECIMAL_PLACES:
+            raise AccountingProposalValidationError(
+                f"Credit total {credit_total} does not match gross {gross}"
+            )
+
+    if gross is not None and net is not None and vat is not None:
+        expected_gross = _quantize_two_decimals(net + vat)
+        if (gross - expected_gross).copy_abs() > TWO_DECIMAL_PLACES:
+            raise AccountingProposalValidationError(
+                f"Gross {gross} does not match net+vat {expected_gross}"
+            )
+
 ORGNR_PATTERN = re.compile(r"\b\d{6}[- ]?\d{4}\b")
 ISO_CURRENCY_PATTERN = re.compile(r"\b(USD|EUR|SEK|NOK|DKK|GBP)\b", re.IGNORECASE)
 RECEIPT_NO_PATTERN = re.compile(r"(?:receipt|kvitto|nr|#)[:\s]*([A-Z0-9-]{3,})", re.IGNORECASE)
@@ -1139,6 +1197,13 @@ class AIService:
 
         try:
             proposals = parse_accounting_proposals(llm_result, request.file_id)
+            _validate_accounting_proposals(
+                proposals,
+                gross_amount=request.gross_amount,
+                net_amount=request.net_amount,
+                vat_amount=request.vat_amount,
+                chart_of_accounts=chart_of_accounts,
+            )
         except AccountingProposalValidationError as exc:
             logger.error(
                 "Invalid AI4 payload for %s: %s. Full payload: %s",
