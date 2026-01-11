@@ -39,6 +39,7 @@ from services.ai.providers import (
     AzureOpenAIProvider,
     OllamaProvider,
 )
+from services.doc_type_rules import detect_deterministic_doc_type
 from services.ai_logging import log_ai_call
 from services.db.connection import db_cursor
 from services.invoice_parser import parse_credit_card_statement
@@ -753,6 +754,9 @@ class AIService:
         confidence = 0.0
         reasoning_parts: List[str] = []
 
+        deterministic_doc_type, deterministic_reason = detect_deterministic_doc_type(text)
+        deterministic_override = deterministic_doc_type is not None
+
         receipt_tokens = ["kvitto", "receipt", "summa", "moms", "butik", "kundens kvitto"]
         invoice_tokens = ["invoice", "faktura", "förfallodatum", "ocr", "betalning"]
         fc_tokens = ["firstcard", "first card", "kortmatchning", "kontoutdrag", "firstcard company", "kortfaktura"]
@@ -761,13 +765,14 @@ class AIService:
         invoice_hits = sum(token in text for token in invoice_tokens)
         fc_hits = sum(token in text for token in fc_tokens)
 
-        llm_result = self._provider_generate(
-            "document_analysis", {"ocr_text": request.ocr_text or ""}, file_id=request.file_id
-        )
-        if llm_result:
-            doc_type = llm_result.get("document_type", doc_type)
-            confidence = float(llm_result.get("confidence", confidence))
-            reasoning_parts.append("LLM-assisted classification")
+        if not deterministic_override:
+            llm_result = self._provider_generate(
+                "document_analysis", {"ocr_text": request.ocr_text or ""}, file_id=request.file_id
+            )
+            if llm_result:
+                doc_type = llm_result.get("document_type", doc_type)
+                confidence = float(llm_result.get("confidence", confidence))
+                reasoning_parts.append("LLM-assisted classification")
 
         if fc_hits:
             doc_type = "fc_invoice"
@@ -785,6 +790,11 @@ class AIService:
             doc_type = "other"
             confidence = 0.5
             reasoning_parts.append("Generic document with limited keywords")
+
+        if deterministic_override:
+            doc_type = deterministic_doc_type or doc_type
+            confidence = max(confidence, 0.95)
+            reasoning_parts.append(f"Deterministic rule: {deterministic_reason}")
 
         prompt_hint = self.prompts.get("document_analysis")
         if prompt_hint:
@@ -808,21 +818,61 @@ class AIService:
         text = (request.ocr_text or "").lower()
         logger.info("Classifying expense for %s", request.file_id)
 
-        card_patterns = ["visa", "mastercard", "first card", "corporate", "företagskort", "card number"]
-        cash_patterns = ["kontant", "cash"]
-
         expense_type = "personal"
-        confidence = 0.6
+        confidence = 0.60
         reasoning_parts: List[str] = []
         card_identifier: Optional[str] = None
 
-        for pattern in card_patterns:
-            if pattern in text:
-                expense_type = "corporate"
-                confidence = 0.85
-                card_identifier = pattern
-                reasoning_parts.append(f"Detected card keyword '{pattern}'")
-                break
+        def _extract_last4(ocr_text: str) -> Optional[str]:
+            patterns = [
+                r"(?:\*{2,}|x{2,}|#){2,}\s*([0-9]{4})",
+                r"(?:kort|card)\s*(?:nr|no|number)?\s*[:\-]?\s*.*?([0-9]{4})\b",
+                r"\b([0-9]{4})\b\s*(?:contactless|blipp|tap)?\b",
+            ]
+            for pat in patterns:
+                match = re.search(pat, ocr_text, flags=re.IGNORECASE | re.DOTALL)
+                if match:
+                    return match.group(1)
+            return None
+
+        is_cash = any(token in text for token in ("kontant", "cash"))
+        is_swish = "swish" in text
+        is_visa = "visa" in text
+        is_mastercard = "mastercard" in text or "master card" in text
+
+        if is_cash or is_swish:
+            expense_type = "personal"
+            confidence = 0.95
+            reasoning_parts.append("Detected swish/cash indicator")
+        elif is_visa:
+            expense_type = "personal"
+            confidence = 0.90
+            card_identifier = "VISA"
+            reasoning_parts.append("Detected VISA indicator")
+        elif is_mastercard:
+            last4 = _extract_last4(text)
+            if last4:
+                card_identifier = f"MC-{last4}"
+                if last4 == "9995":
+                    expense_type = "personal"
+                    confidence = 0.95
+                    reasoning_parts.append("MasterCard last4=9995 => personal")
+                elif last4 in ("6779", "4668"):
+                    expense_type = "corporate"
+                    confidence = 0.95
+                    reasoning_parts.append(f"MasterCard last4={last4} => corporate")
+                else:
+                    expense_type = "personal"
+                    confidence = 0.70
+                    reasoning_parts.append(f"MasterCard last4={last4} not in corporate set => personal")
+            else:
+                expense_type = "personal"
+                confidence = 0.65
+                reasoning_parts.append("MasterCard indicator but last4 not extracted => personal")
+        else:
+            expense_type = "personal"
+            confidence = 0.65
+            reasoning_parts.append("Defaulting to personal expense")
 
         llm_result = self._provider_generate(
             "expense_classification",
@@ -830,19 +880,15 @@ class AIService:
             file_id=request.file_id,
         )
         if llm_result:
-            expense_type = llm_result.get("expense_type", expense_type)
-            confidence = float(llm_result.get("confidence", confidence))
-            if llm_result.get("card_identifier"):
-                card_identifier = llm_result["card_identifier"]
-            reasoning_parts.append("LLM-assisted expense classification")
-
-        if expense_type == "personal":
-            if any(pattern in text for pattern in cash_patterns):
-                confidence = 0.7
-                reasoning_parts.append("Cash keyword detected")
+            llm_expense_type = llm_result.get("expense_type")
+            llm_confidence = float(llm_result.get("confidence", confidence))
+            if llm_expense_type and llm_expense_type == expense_type:
+                confidence = max(confidence, llm_confidence)
+                reasoning_parts.append("LLM confirmed deterministic expense classification")
             else:
-                confidence = 0.65
-                reasoning_parts.append("Defaulting to personal expense")
+                reasoning_parts.append("LLM suggestion ignored due to deterministic rules")
+            if not card_identifier and llm_result.get("card_identifier"):
+                card_identifier = llm_result["card_identifier"]
 
         prompt_hint = self.prompts.get("expense_classification")
         if prompt_hint:

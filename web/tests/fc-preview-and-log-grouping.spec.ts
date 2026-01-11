@@ -121,6 +121,106 @@ test('verify FirstCard preview modal and log date grouping', async ({ page }) =>
       )
       .toBe('Credit Card');
 
+    // Verify CC file_type stability + AI1 metadata stored in other_data
+    const ccInfo = await page.evaluate(async () => {
+      const response = await fetch('/ai/api/receipts?page=1&page_size=50&include_credit=1', {
+        method: 'GET',
+        credentials: 'include',
+      });
+      if (!response.ok) return null;
+      const payload = await response.json();
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      const target = items.find(
+        (item) =>
+          String(item?.workflow_type || '').toLowerCase() === 'creditcard_invoice' ||
+          String(item?.file_type || '').toLowerCase().startsWith('cc_'),
+      );
+      if (!target?.id) return null;
+      return { id: target.id, file_type: target.file_type };
+    });
+
+    expect(ccInfo?.file_type || '').toMatch(/^cc_/);
+
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(async (receiptId) => {
+            if (!receiptId) return null;
+            const response = await fetch(`/ai/api/receipts/${encodeURIComponent(receiptId)}`, {
+              method: 'GET',
+              credentials: 'include',
+            });
+            if (!response.ok) return null;
+            const payload = await response.json();
+            let otherData: any = payload?.other_data || payload?.otherData || null;
+            if (typeof otherData === 'string') {
+              try {
+                otherData = JSON.parse(otherData);
+              } catch {
+                otherData = null;
+              }
+            }
+            return otherData?.ai1_document_type || null;
+          }, ccInfo?.id),
+        { timeout: 240000 },
+      )
+      .toBeTruthy();
+
+    const ai1DocType = await page.evaluate(async (receiptId) => {
+      if (!receiptId) return null;
+      const response = await fetch(`/ai/api/receipts/${encodeURIComponent(receiptId)}`, {
+        method: 'GET',
+        credentials: 'include',
+      });
+      if (!response.ok) return null;
+      const payload = await response.json();
+      let otherData: any = payload?.other_data || payload?.otherData || null;
+      if (typeof otherData === 'string') {
+        try {
+          otherData = JSON.parse(otherData);
+        } catch {
+          otherData = null;
+        }
+      }
+      return otherData?.ai1_document_type || null;
+    }, ccInfo?.id);
+
+    expect(String(ai1DocType)).toMatch(/^(invoice|fc_invoice)$/i);
+
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(async (invoiceId) => {
+            if (!invoiceId) return 0;
+            const response = await fetch(`/ai/api/reconciliation/firstcard/invoices/${encodeURIComponent(invoiceId)}`, {
+              method: 'GET',
+              credentials: 'include',
+            });
+            if (!response.ok) return 0;
+            const payload = await response.json();
+            const lines = Array.isArray(payload?.lines) ? payload.lines : [];
+            return lines.length;
+          }, statementId || ccInfo?.id),
+        { timeout: 240000 },
+      )
+      .toBeGreaterThan(0);
+
+    // WF3 must accept FC invoices even if AI1 classified as "invoice".
+    if (String(ai1DocType).toLowerCase() === 'invoice') {
+      const invoiceLinesCount = await page.evaluate(async (invoiceId) => {
+        if (!invoiceId) return 0;
+        const response = await fetch(`/ai/api/reconciliation/firstcard/invoices/${encodeURIComponent(invoiceId)}`, {
+          method: 'GET',
+          credentials: 'include',
+        });
+        if (!response.ok) return 0;
+        const payload = await response.json();
+        const lines = Array.isArray(payload?.lines) ? payload.lines : [];
+        return lines.length;
+      }, statementId || ccInfo?.id);
+      expect(invoiceLinesCount).toBeGreaterThan(0);
+    }
+
     // Take screenshot after processing
     await page.screenshot({
       path: 'web/test-results/media/snapshots/fc-after-processing.png',

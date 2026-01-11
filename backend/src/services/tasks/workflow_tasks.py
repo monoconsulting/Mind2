@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -16,6 +17,7 @@ from .common import (
     run_box_enrichment,
     transition_document_status,
     transition_processing_status,
+    update_other_data,
 )
 from .ai_pipeline_tasks import _run_ai_pipeline, UnsupportedDocumentTypeError
 from .creditcard_tasks import (
@@ -74,6 +76,27 @@ from api.ai_processing import classify_document_internal
 from services.workflow_coordinator import FirstCardWorkflowCoordinator
 
 logger = logging.getLogger(__name__)
+
+# WF3 heuristic: accept FirstCard invoices even if AI1 returns "invoice".
+def _looks_like_firstcard_invoice(ocr_text: str) -> bool:
+    if not ocr_text:
+        return False
+    text = ocr_text.lower()
+
+    if "first card" in text:
+        return True
+    if re.search(r"first\s*card\s*l\d+", text):
+        return True
+
+    markers = ("kundnr", "fakturanr", "betala till")
+    marker_hits = sum(1 for marker in markers if marker in text)
+    if marker_hits >= 2:
+        return True
+
+    if "(first card)" in text:
+        return True
+
+    return False
 
 # TASK_INVENTORY: ACTIVE (2025-11-28). Dispatches workflow_run records to WF1/WF2/WF3 Celery chains.
 def dispatch_workflow(workflow_run_id: int) -> bool:
@@ -567,23 +590,55 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             DocumentClassificationRequest(file_id=file_id, ocr_text=combined_text)
         )
         doc_type_norm = (classification.document_type or "").strip().lower()
-        is_fc_invoice = doc_type_norm == "fc_invoice"
+        heuristic_fc = _looks_like_firstcard_invoice(combined_text)
+        is_fc_invoice = doc_type_norm == "fc_invoice" or heuristic_fc
+        try:
+            other_data = dict(other_data or {})
+            other_data["ai1_document_type"] = classification.document_type
+            if getattr(classification, "confidence", None) is not None:
+                other_data["ai1_confidence"] = classification.confidence
+            update_other_data(file_id, other_data)
+        except Exception:
+            logger.warning(
+                "WF3 failed to persist AI1 metadata for %s",
+                file_id,
+                exc_info=True,
+            )
+        logger.info(
+            "WF3 AI1 classification for %s: type=%s confidence=%s heuristic_fc=%s",
+            file_id,
+            classification.document_type,
+            getattr(classification, "confidence", None),
+            heuristic_fc,
+        )
         # log_import_decision is a helper, we can replace it or keep it if it uses mark_stage internally.
         # But D2 says replace direct creation/updates. log_import_decision uses _log_import_stage which uses mark_stage.
         # So we should replace it.
         fc_coordinator.begin_fc_import_stage(
             workflow_run_id,
             "fc_is_fc",
-            message=f"AI1 identifierade dokumenttyp: {classification.document_type}",
+            message=(
+                f"AI1 identifierade dokumenttyp: {classification.document_type} "
+                f"(heuristic_fc={heuristic_fc})"
+            ),
         )
         fc_coordinator.complete_fc_import_stage(
             workflow_run_id,
             "fc_is_fc",
             success=is_fc_invoice,
-            message=f"AI1 identifierade dokumenttyp: {classification.document_type}",
+            message=(
+                f"AI1 identifierade dokumenttyp: {classification.document_type} "
+                f"(heuristic_fc={heuristic_fc})"
+            ),
         )
 
         if not is_fc_invoice:
+            logger.info(
+                "WF3 FC gate rejected for %s (ai1=%s, heuristic=%s)",
+                file_id,
+                classification.document_type,
+                heuristic_fc,
+            )
             reason = (
                 f"AI1 klassificerade dokumentet som '{classification.document_type}' "
                 "men endast FC-fakturor till├Ñts i detta fl├╢de."
@@ -599,6 +654,12 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
                 message=reason,
             )
             raise UnsupportedDocumentTypeError(reason)
+        logger.info(
+            "WF3 FC gate accepted for %s (ai1=%s, heuristic=%s)",
+            file_id,
+            classification.document_type,
+            heuristic_fc,
+        )
 
     try:
         transition_processing_status(

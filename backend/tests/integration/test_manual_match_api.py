@@ -222,3 +222,134 @@ def test_receipts_listing_and_match_and_confirm(client):
         assert confirm_resp.status_code == 200
         transition_proc.assert_called_once()
         transition_doc.assert_called_once()
+
+
+# =============================================================================
+# NEW TESTS: Manual Matching (PUT /reconciliation/firstcard/lines/<line_id>)
+# =============================================================================
+
+
+def test_manual_match_line_success(client):
+    """Verify PUT /lines/<id> updates matched_file_id correctly."""
+    # Setup cursors: Line lookup, conflict check, old match value
+    line_cursor = FakeCursor(
+        fetchone_sequence=[
+            ("inv-1", "2025-10-05", 125.0),  # Line data (invoice_id, transaction_date, amount)
+            None,  # No conflict - no other line has this receipt
+            (None,),  # Old match is NULL
+        ]
+    )
+
+    with patch(
+        "api.reconciliation_firstcard.routes.matching.db_cursor",
+        make_db_cursor([line_cursor]),
+    ), patch(
+        "api.reconciliation_firstcard.routes.matching.transition_line_status_and_link",
+        return_value=True,
+    ), patch(
+        "api.reconciliation_firstcard.routes.matching.log_line_history"
+    ), patch(
+        "api.reconciliation_firstcard.routes.matching.refresh_invoice_match_state",
+        return_value=(2, 1),
+    ), patch(
+        "api.reconciliation_firstcard.routes.matching._backfill_receipt_card_from_fc"
+    ):
+        resp = client.put(
+            "/reconciliation/firstcard/lines/101",
+            json={"matched_file_id": "rec-1", "invoice_id": "inv-1"},
+        )
+
+        assert resp.status_code == 200
+        payload = resp.get_json()
+        assert payload["ok"] is True
+
+
+def test_manual_match_line_conflict_receipt_in_use(client):
+    """Verify PUT /lines/<id> returns 409 when receipt already matched to another line."""
+    # Setup cursors: Line exists, but receipt is already matched to another line (999)
+    line_cursor = FakeCursor(
+        fetchone_sequence=[
+            ("inv-1", "2025-10-05", 125.0),  # Line data
+            (999,),  # Conflict: another line (ID 999) already has this receipt
+        ]
+    )
+
+    with patch(
+        "api.reconciliation_firstcard.routes.matching.db_cursor",
+        make_db_cursor([line_cursor]),
+    ):
+        resp = client.put(
+            "/reconciliation/firstcard/lines/101",
+            json={"matched_file_id": "rec-1", "invoice_id": "inv-1"},
+        )
+
+        assert resp.status_code == 409
+        payload = resp.get_json()
+        assert payload["ok"] is False
+        assert payload["reason"] == "receipt_in_use"
+
+
+def test_manual_match_line_not_found(client):
+    """Verify PUT /lines/<id> returns 404 when line does not exist."""
+    # Line lookup returns None
+    line_cursor = FakeCursor(fetchone_sequence=[None])
+
+    with patch(
+        "api.reconciliation_firstcard.routes.matching.db_cursor",
+        make_db_cursor([line_cursor]),
+    ):
+        resp = client.put(
+            "/reconciliation/firstcard/lines/999",
+            json={"matched_file_id": "rec-1", "invoice_id": "inv-1"},
+        )
+
+        assert resp.status_code == 404
+        payload = resp.get_json()
+        assert payload["ok"] is False
+        assert payload["reason"] == "not_found"
+
+
+def test_manual_match_line_state_conflict(client):
+    """Verify PUT /lines/<id> returns 409 when line status transition fails."""
+    # Line exists, no receipt conflict, but status transition fails
+    line_cursor = FakeCursor(
+        fetchone_sequence=[
+            ("inv-1", "2025-10-05", 125.0),  # Line data
+            None,  # No conflict
+            (None,),  # Old match is NULL
+        ]
+    )
+
+    with patch(
+        "api.reconciliation_firstcard.routes.matching.db_cursor",
+        make_db_cursor([line_cursor]),
+    ), patch(
+        "api.reconciliation_firstcard.routes.matching.transition_line_status_and_link",
+        return_value=False,  # Transition fails (e.g., line already confirmed)
+    ):
+        resp = client.put(
+            "/reconciliation/firstcard/lines/101",
+            json={"matched_file_id": "rec-1", "invoice_id": "inv-1"},
+        )
+
+        assert resp.status_code == 409
+        payload = resp.get_json()
+        assert payload["ok"] is False
+        assert payload["reason"] == "line_state_conflict"
+
+
+def test_manual_match_missing_file_id(client):
+    """Verify PUT /lines/<id> returns 400 when matched_file_id is missing."""
+    with patch(
+        "api.reconciliation_firstcard.routes.matching.db_cursor",
+        make_db_cursor([FakeCursor()]),
+    ):
+        resp = client.put(
+            "/reconciliation/firstcard/lines/101",
+            json={"invoice_id": "inv-1"},  # Missing matched_file_id
+        )
+
+        assert resp.status_code == 400
+        payload = resp.get_json()
+        assert payload["ok"] is False
+        assert payload["reason"] == "invalid_request"

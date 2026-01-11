@@ -2447,6 +2447,7 @@ export default function Receipts() {
                   Inkl. moms {sortColumn === 'gross_amount' && (sortDirection === 'asc' ? '▲' : '▼')}
                 </th>
                 <th className="text-center">Matchad</th>
+                <th className="text-center">MANUAL</th>
                 <th className="text-center cursor-pointer hover:bg-gray-800/40 select-none" onClick={() => handleSort('status')}>
                   Status {sortColumn === 'status' && (sortDirection === 'asc' ? '▲' : '▼')}
                 </th>
@@ -2463,7 +2464,7 @@ export default function Receipts() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={18} className="table-loading">
+                  <td colSpan={19} className="table-loading">
                     <div className="loading-inline">
                       <div className="loading-spinner" />
                       <span>Laddar kvitton...</span>
@@ -2472,7 +2473,7 @@ export default function Receipts() {
                 </tr>
               ) : displayedItems.length === 0 ? (
                 <tr>
-                  <td colSpan={18} className="table-empty">
+                  <td colSpan={19} className="table-empty">
                     <div className="space-y-2">
                       <div>Inga kvitton hittades</div>
                       <div className="text-sm text-gray-400">Justera filter eller hämta nya filer från FTP</div>
@@ -2565,6 +2566,12 @@ export default function Receipts() {
                           stage.startsWith('m_link') ||
                           stage === 'ai5'
                         return matched ? 'Ja' : 'Nej'
+                      })()}
+                    </td>
+                    <td className="text-center">
+                      {(() => {
+                        const status = (receipt.ai_status || '').toLowerCase()
+                        return status === 'manual_review' ? '!' : ''
                       })()}
                     </td>
                     <td className="text-center">

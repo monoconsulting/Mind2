@@ -37,12 +37,13 @@ logger = logging.getLogger(__name__)
 _history = log_ai_call
 
 def _hash_exists(content_hash: str) -> bool:
+    """Check if a file with this content_hash already exists (excluding soft-deleted files)."""
     if db_cursor is None:
         return False
     try:
         with db_cursor() as cur:
             cur.execute(
-                "SELECT id FROM unified_files WHERE content_hash = %s LIMIT 1",
+                "SELECT id FROM unified_files WHERE content_hash = %s AND deleted_at IS NULL LIMIT 1",
                 (content_hash,),
             )
             return cur.fetchone() is not None

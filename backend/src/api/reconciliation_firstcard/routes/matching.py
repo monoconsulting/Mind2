@@ -30,7 +30,7 @@ from services.invoice_status import (
     InvoiceLineMatchStatus,
     transition_line_status_and_link,
 )
-from api.ai_processing import _persist_credit_card_match
+from api.ai_processing import _backfill_receipt_card_from_fc, _persist_credit_card_match
 from observability.events import log_event
 
 try:
@@ -242,6 +242,14 @@ def update_line_match(line_id: int) -> Any:
 
     if invoice_id:
         refresh_invoice_match_state(invoice_id)
+
+    try:
+        _backfill_receipt_card_from_fc(
+            new_file_id,
+            invoice_id=invoice_id,
+        )
+    except Exception:
+        logger.exception("Failed to backfill card details after manual match for %s", new_file_id)
 
     log_event(
         logger,

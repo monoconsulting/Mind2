@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import Any, TypedDict
 
 from flask import jsonify, request
 
@@ -30,6 +30,46 @@ except Exception:  # pragma: no cover
 
 
 logger = logging.getLogger(__name__)
+MATCH_DATE_WINDOW_DAYS = 60
+MATCH_AMOUNT_TOLERANCE = Decimal("10")
+
+
+class MatchedReceiptPayload(TypedDict):
+    file_id: str
+    purchase_datetime: str | None
+    gross_amount: float | None
+    credit_card_match: bool
+    vendor_name: str | None
+
+
+class CandidatePayload(TypedDict):
+    file_id: str
+    purchase_datetime: str | None
+    gross_amount: float | None
+    vendor_name: str | None
+    credit_card_match: bool
+    amount_difference: float | None
+    date_difference_days: int | None
+    match_score: float
+    is_current_match: bool
+
+
+class LinePayload(TypedDict):
+    id: int
+    invoice_id: str | None
+    transaction_date: str | None
+    amount: float | None
+    currency: str | None
+    description: str
+    match_status: str
+    matched_file_id: str | None
+    matched_receipt: MatchedReceiptPayload | None
+    candidates_found: int
+
+
+def _shape_payload(payload: dict[str, Any], allowed_keys: set[str]) -> dict[str, Any]:
+    """Return a deterministic payload with only the allowed keys."""
+    return {key: payload.get(key) for key in allowed_keys}
 
 
 @recon_bp.get("/reconciliation/firstcard/invoices/<invoice_id>/lines")
@@ -141,7 +181,6 @@ def line_candidates(line_id: int) -> Any:
                        il.invoice_id,
                        il.transaction_date,
                        il.amount,
-                       il.currency,
                        il.merchant_name,
                        il.description,
                        il.match_status,
@@ -170,7 +209,6 @@ def line_candidates(line_id: int) -> Any:
         line_invoice_id,
         transaction_date,
         amount,
-        currency,
         merchant_name,
         description,
         match_status,
@@ -182,58 +220,77 @@ def line_candidates(line_id: int) -> Any:
         matched_vendor_name,
     ) = line_row
 
-    matched_receipt_payload: dict[str, Any] | None = None
+    matched_receipt_payload: MatchedReceiptPayload | None = None
     if matched_file_id:
-        matched_receipt_payload = {
-            "file_id": matched_file_id,
-            "purchase_datetime": matched_purchase_dt.isoformat() if hasattr(matched_purchase_dt, "isoformat") else matched_purchase_dt,
-            "gross_amount": float(matched_gross_amount) if matched_gross_amount is not None else None,
-            "credit_card_match": bool(matched_credit_flag) if matched_credit_flag is not None else False,
-            "vendor_name": matched_vendor_name,
-        }
+        matched_receipt_payload = MatchedReceiptPayload(
+            file_id=matched_file_id,
+            purchase_datetime=matched_purchase_dt.isoformat()
+            if hasattr(matched_purchase_dt, "isoformat")
+            else matched_purchase_dt,
+            gross_amount=float(matched_gross_amount) if matched_gross_amount is not None else None,
+            credit_card_match=bool(matched_credit_flag) if matched_credit_flag is not None else False,
+            vendor_name=matched_vendor_name,
+        )
 
     display_amount = as_decimal(amount)
 
-    line_payload = {
-        "id": int(line_id_val),
-        "invoice_id": line_invoice_id or invoice_id,
-        "transaction_date": transaction_date.isoformat() if hasattr(transaction_date, "isoformat") else transaction_date,
-        "amount": float(display_amount) if display_amount is not None else None,
-        "currency": currency,
-        "description": description or merchant_name or "",
-        "match_status": match_status or "pending",
-        "matched_file_id": matched_file_id,
-        "matched_receipt": matched_receipt_payload,
-    }
+    line_payload: LinePayload = LinePayload(
+        id=int(line_id_val),
+        invoice_id=line_invoice_id or invoice_id,
+        transaction_date=transaction_date.isoformat() if hasattr(transaction_date, "isoformat") else transaction_date,
+        amount=float(display_amount) if display_amount is not None else None,
+        currency=None,
+        description=description or merchant_name or "",
+        match_status=match_status or "pending",
+        matched_file_id=matched_file_id,
+        matched_receipt=matched_receipt_payload,
+        candidates_found=0,
+    )
 
     target_date = as_date(transaction_date)
     target_amount = display_amount
 
-    candidates: list[dict[str, Any]] = []
+    candidates: list[CandidatePayload] = []
+
     try:
+        match_datetime_expr = "COALESCE(uf.purchase_datetime, uf.created_at)"
+        match_amount_expr = (
+            "COALESCE("
+            "NULLIF(uf.gross_amount, 0), "
+            "NULLIF(uf.gross_amount_sek, 0), "
+            "NULLIF(uf.net_amount, 0), "
+            "NULLIF(uf.net_amount_sek, 0)"
+            ")"
+        )
         clauses = [
             "SELECT uf.id,",
-            "       uf.purchase_datetime,",
-            "       uf.gross_amount,",
+            f"       {match_datetime_expr} AS match_datetime,",
+            f"       CAST({match_amount_expr} AS DECIMAL(13, 2)) AS match_amount,",
             "       uf.credit_card_match,",
             "       uf.created_at,",
             "       c.name",
             "  FROM unified_files AS uf",
             " LEFT JOIN invoice_lines AS il ON il.matched_file_id = uf.id AND il.id != %s",
             " LEFT JOIN companies AS c ON c.id = uf.company_id",
-            " WHERE uf.purchase_datetime IS NOT NULL",
-            "   AND uf.gross_amount IS NOT NULL",
-            "   AND (il.id IS NULL OR il.id = %s)",
+            " WHERE (il.id IS NULL OR il.id = %s)",
+            "   AND uf.file_type = 'receipt'",
+            "   AND uf.expense_type = 'corporate'",
         ]
         params: list[Any] = [line_id, line_id]
         if target_date is not None:
-            clauses.append("   AND ABS(DATEDIFF(DATE(uf.purchase_datetime), %s)) <= 7")
+            clauses.append(f"   AND ABS(DATEDIFF(DATE({match_datetime_expr}), %s)) <= %s")
             params.append(target_date)
+            params.append(MATCH_DATE_WINDOW_DAYS)
         if target_amount is not None:
-            clauses.append("   AND ABS(uf.gross_amount - %s) <= 200")
+            clauses.append(f"   AND ABS({match_amount_expr} - %s) <= %s")
             params.append(target_amount)
+            params.append(float(MATCH_AMOUNT_TOLERANCE))
         clauses.append(
-            " ORDER BY ABS(uf.gross_amount - %s), ABS(DATEDIFF(DATE(uf.purchase_datetime), %s)), uf.created_at DESC LIMIT 50"
+            " ORDER BY "
+            "CASE WHEN match_amount IS NULL THEN 1 ELSE 0 END, "
+            "ABS(match_amount - %s), "
+            f"ABS(DATEDIFF(DATE({match_datetime_expr}), %s)) ASC, "
+            "uf.created_at DESC LIMIT 50"
         )
         params.extend(
             [
@@ -250,18 +307,18 @@ def line_candidates(line_id: int) -> Any:
 
     for (
         receipt_id,
-        purchase_dt,
-        gross_amount_value,
+        match_datetime,
+        match_amount_value,
         credit_flag,
         created_at,
         vendor_name,
     ) in candidate_rows:
-        receipt_amount = as_decimal(gross_amount_value)
+        receipt_amount = as_decimal(match_amount_value)
         amount_diff = None
         if target_amount is not None and receipt_amount is not None:
             amount_diff = abs(Decimal(str(target_amount)) - receipt_amount)
         date_diff = None
-        candidate_date = as_date(purchase_dt)
+        candidate_date = as_date(match_datetime)
         if target_date is not None and candidate_date is not None:
             date_diff = abs((candidate_date - target_date).days)
 
@@ -275,33 +332,36 @@ def line_candidates(line_id: int) -> Any:
             score = Decimal("0")
 
         candidates.append(
-            {
-                "file_id": receipt_id,
-                "purchase_datetime": purchase_dt.isoformat() if hasattr(purchase_dt, "isoformat") else purchase_dt,
-                "gross_amount": float(receipt_amount) if receipt_amount is not None else None,
-                "vendor_name": vendor_name,
-                "credit_card_match": bool(credit_flag) if credit_flag is not None else False,
-                "amount_difference": float(amount_diff) if amount_diff is not None else None,
-                "date_difference_days": date_diff,
-                "match_score": float(score),
-                "is_current_match": receipt_id == matched_file_id,
-            }
+            CandidatePayload(
+                file_id=receipt_id,
+                purchase_datetime=match_datetime.isoformat() if hasattr(match_datetime, "isoformat") else match_datetime,
+                gross_amount=float(receipt_amount) if receipt_amount is not None else None,
+                vendor_name=vendor_name,
+                credit_card_match=bool(credit_flag) if credit_flag is not None else False,
+                amount_difference=float(amount_diff) if amount_diff is not None else None,
+                date_difference_days=date_diff,
+                match_score=float(score),
+                is_current_match=receipt_id == matched_file_id,
+            )
         )
+
 
     if matched_receipt_payload and not any(c["is_current_match"] for c in candidates):
         candidates.insert(
             0,
-            {
-                "file_id": matched_file_id,
-                "purchase_datetime": matched_purchase_dt.isoformat() if hasattr(matched_purchase_dt, "isoformat") else matched_purchase_dt,
-                "gross_amount": matched_receipt_payload.get("gross_amount"),
-                "vendor_name": matched_vendor_name,
-                "credit_card_match": bool(matched_credit_flag) if matched_credit_flag is not None else False,
-                "amount_difference": 0.0,
-                "date_difference_days": 0,
-                "match_score": 1.0,
-                "is_current_match": True,
-            },
+            CandidatePayload(
+                file_id=matched_file_id,
+                purchase_datetime=matched_purchase_dt.isoformat()
+                if hasattr(matched_purchase_dt, "isoformat")
+                else matched_purchase_dt,
+                gross_amount=matched_receipt_payload.get("gross_amount"),
+                vendor_name=matched_vendor_name,
+                credit_card_match=bool(matched_credit_flag) if matched_credit_flag is not None else False,
+                amount_difference=0.0,
+                date_difference_days=0,
+                match_score=1.0,
+                is_current_match=True,
+            ),
         )
 
     candidates.sort(
@@ -313,5 +373,13 @@ def line_candidates(line_id: int) -> Any:
     )
 
     line_payload["candidates_found"] = len(candidates)
+
+    line_payload = LinePayload(
+        **_shape_payload(line_payload, set(LinePayload.__annotations__.keys()))
+    )
+    candidates = [
+        CandidatePayload(**_shape_payload(candidate, set(CandidatePayload.__annotations__.keys())))
+        for candidate in candidates
+    ]
 
     return jsonify({"line": line_payload, "candidates": candidates}), 200

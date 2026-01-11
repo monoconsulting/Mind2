@@ -34,6 +34,7 @@ from models.ai_processing import (
 from services.ai_service import AIService
 from services.box_enrichment import run_box_enrichment
 from services.db.connection import db_cursor, get_connection
+from services.receipt_fallback_rules import is_service_receipt_candidate
 from services.status_constants import InvoiceLineMatchStatus, AiStatus
 from api.middleware import auth_required
 from observability.events import log_event
@@ -557,6 +558,42 @@ def _persist_extraction_result(
                 elif rate == 6:
                     total_vat_6 = vat_diff
 
+        service_receipt_fallback = False
+        ocr_text_lower = (unified.ocr_raw or "").lower()
+        if currency == "SEK" and not result.receipt_items and is_service_receipt_candidate(ocr_text_lower):
+            gross_base = gross_original if isinstance(gross_original, Decimal) else gross_sek
+            if isinstance(gross_base, Decimal):
+                service_receipt_fallback = True
+                if net_original is None:
+                    net_original = gross_base
+                if currency == "SEK" and net_sek is None:
+                    net_sek = net_original
+                if gross_original is None:
+                    gross_original = gross_base
+                if currency == "SEK" and gross_sek is None:
+                    gross_sek = gross_original
+                if total_vat_25 is None and total_vat_12 is None and total_vat_6 is None:
+                    total_vat_25 = Decimal("0.00")
+                    total_vat_12 = Decimal("0.00")
+                    total_vat_6 = Decimal("0.00")
+                    other_data_payload["vat_exempt_reason"] = "healthcare_service_receipt"
+                result.receipt_items = [
+                    ReceiptItem(
+                        main_id=file_id,
+                        article_id="",
+                        name="Service",
+                        number=1,
+                        item_price_ex_vat=net_original,
+                        item_price_inc_vat=gross_original,
+                        item_total_price_ex_vat=net_original,
+                        item_total_price_inc_vat=gross_original,
+                        currency=currency or "SEK",
+                        vat=Decimal("0.00"),
+                        vat_percentage=Decimal("0.00"),
+                    )
+                ]
+                other_data_payload["deterministic_receipt_items"] = "service_receipt_fallback"
+
         other_data_json = json.dumps(other_data_payload, ensure_ascii=False)
 
         updates: Dict[str, Any] = {
@@ -679,6 +716,151 @@ def _persist_accounting_proposals(
             conn.close()
 
 
+def _normalize_fc_card_brand(card_type: Optional[str]) -> Optional[str]:
+    if not card_type:
+        return None
+    lowered = str(card_type).lower()
+    if "visa" in lowered:
+        return "VISA"
+    if "master" in lowered or "mc" in lowered:
+        return "MASTERCARD"
+    if "amex" in lowered or "american express" in lowered:
+        return "AMEX"
+    if "maestro" in lowered:
+        return "MAESTRO"
+    return None
+
+
+def _extract_last4_from_mask(masked: Optional[str]) -> Optional[int]:
+    if not masked:
+        return None
+    masked_str = str(masked)
+    if not re.search(r"[\*xX•]", masked_str):
+        return None
+    matches = re.findall(r"(\d{4})", masked_str)
+    if not matches:
+        return None
+    try:
+        return int(matches[-1])
+    except Exception:
+        return None
+
+
+def _backfill_receipt_card_from_fc(
+    receipt_file_id: str,
+    *,
+    invoice_item_id: Optional[int] = None,
+    invoice_id: Optional[str] = None,
+    connection=None,
+) -> None:
+    owns_connection = connection is None
+    conn = connection or get_connection()
+    cursor = conn.cursor()
+    try:
+        if owns_connection:
+            conn.start_transaction()
+
+        cursor.execute(
+            """
+            SELECT credit_card_brand_short, credit_card_last_4_digits
+            FROM unified_files
+            WHERE id = %s
+            """,
+            (receipt_file_id,),
+        )
+        existing = cursor.fetchone()
+        if not existing:
+            if owns_connection:
+                conn.rollback()
+            return
+        existing_brand, existing_last4 = existing
+        if (existing_brand not in (None, "")) and (existing_last4 not in (None, 0)):
+            if owns_connection:
+                conn.commit()
+            return
+
+        card_type = None
+        card_number_masked = None
+        fc_reference_id = None
+
+        if invoice_item_id is not None:
+            cursor.execute(
+                """
+                SELECT cim.card_type, cim.card_number_masked, cim.id
+                FROM creditcard_invoice_items ci
+                JOIN creditcard_invoices_main cim ON cim.id = ci.main_id
+                WHERE ci.id = %s
+                """,
+                (invoice_item_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                card_type, card_number_masked, fc_reference_id = row
+        elif invoice_id:
+            cursor.execute(
+                "SELECT metadata_json FROM invoice_documents WHERE id=%s",
+                (invoice_id,),
+            )
+            row = cursor.fetchone()
+            if row and row[0]:
+                try:
+                    metadata = json.loads(row[0])
+                except Exception:
+                    metadata = {}
+                fc_reference_id = metadata.get("creditcard_main_id")
+                if fc_reference_id:
+                    cursor.execute(
+                        """
+                        SELECT card_type, card_number_masked
+                        FROM creditcard_invoices_main
+                        WHERE id = %s
+                        """,
+                        (fc_reference_id,),
+                    )
+                    card_row = cursor.fetchone()
+                    if card_row:
+                        card_type, card_number_masked = card_row
+
+        brand_short = _normalize_fc_card_brand(card_type)
+        last4 = _extract_last4_from_mask(card_number_masked)
+
+        updates: list[str] = []
+        params: list[Any] = []
+        if existing_brand in (None, "") and brand_short:
+            updates.append("credit_card_brand_short=%s")
+            params.append(brand_short)
+        if existing_last4 in (None, 0) and last4 is not None:
+            updates.append("credit_card_last_4_digits=%s")
+            params.append(last4)
+
+        if updates:
+            updates.append("updated_at=NOW()")
+            params.append(receipt_file_id)
+            cursor.execute(
+                "UPDATE unified_files SET " + ", ".join(updates) + " WHERE id = %s",
+                tuple(params),
+            )
+            log_event(
+                logger,
+                "matching.fc.card_backfill",
+                receipt_id=receipt_file_id,
+                fc_reference_id=fc_reference_id,
+                brand_short=brand_short if existing_brand in (None, "") else None,
+                last4=last4 if existing_last4 in (None, 0) else None,
+            )
+
+        if owns_connection:
+            conn.commit()
+    except Exception:
+        if owns_connection:
+            conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        if owns_connection:
+            conn.close()
+
+
 def _persist_credit_card_match(
     file_id: str,
     invoice_item_id: Optional[int],
@@ -692,6 +874,7 @@ def _persist_credit_card_match(
     owns_connection = connection is None
     conn = connection or get_connection()
     cursor = conn.cursor()
+
     try:
         if owns_connection:
             conn.start_transaction()
@@ -716,6 +899,11 @@ def _persist_credit_card_match(
                 ON DUPLICATE KEY UPDATE matched_amount = VALUES(matched_amount), matched_at = NOW()
                 """,
                 (file_id, invoice_item_id, matched_amount),
+            )
+            _backfill_receipt_card_from_fc(
+                file_id,
+                invoice_item_id=invoice_item_id,
+                connection=conn,
             )
         elif invoice_item_id is not None:
             cursor.execute(
@@ -840,14 +1028,77 @@ def classify_document_internal(req: DocumentClassificationRequest) -> DocumentCl
         conn.start_transaction()
         cursor = conn.cursor()
         try:
-            # Check if file exists first
-            cursor.execute("SELECT id FROM unified_files WHERE id = %s", (req.file_id,))
-            if cursor.fetchone() is None:
-                raise ValueError(f"File {req.file_id} not found")
+            # Load current file metadata (needed to prevent CC/FC file_type overwrite)
             cursor.execute(
-                "UPDATE unified_files SET file_type = %s WHERE id = %s",
-                (result.document_type, req.file_id),
+                "SELECT id, file_type, workflow_type, other_data FROM unified_files WHERE id = %s",
+                (req.file_id,),
             )
+            row = cursor.fetchone()
+            if row is None:
+                raise ValueError(f"File {req.file_id} not found")
+            _file_id, existing_file_type, existing_workflow_type, raw_other_data = row
+
+            file_type_norm = str(existing_file_type or "").lower()
+            workflow_type_norm = str(existing_workflow_type or "").lower()
+
+            is_cc_workflow = False
+            if file_type_norm.startswith("cc_"):
+                is_cc_workflow = True
+            elif workflow_type_norm in {"creditcard_invoice", "wf3_firstcard_invoice"}:
+                is_cc_workflow = True
+            else:
+                try:
+                    cursor.execute(
+                        """
+                        SELECT 1
+                          FROM invoice_documents
+                         WHERE id = %s
+                           AND invoice_type IN ('credit_card_invoice', 'company_card')
+                         LIMIT 1
+                        """,
+                        (req.file_id,),
+                    )
+                    if cursor.fetchone():
+                        is_cc_workflow = True
+                except Exception:
+                    logger.debug(
+                        "AI1 CC detection: invoice_documents lookup failed for %s",
+                        req.file_id,
+                        exc_info=True,
+                    )
+
+            if is_cc_workflow:
+                other_data_payload: dict[str, Any] = {}
+                if isinstance(raw_other_data, dict):
+                    other_data_payload = dict(raw_other_data)
+                elif raw_other_data:
+                    try:
+                        raw_value = (
+                            raw_other_data.decode("utf-8", errors="replace")
+                            if isinstance(raw_other_data, (bytes, bytearray))
+                            else raw_other_data
+                        )
+                        parsed = json.loads(raw_value)
+                        if isinstance(parsed, dict):
+                            other_data_payload = parsed
+                        else:
+                            other_data_payload = {"raw_other_data": raw_value}
+                    except Exception:
+                        other_data_payload = {"raw_other_data": raw_other_data}
+
+                other_data_payload["ai1_document_type"] = result.document_type
+                if result.confidence is not None:
+                    other_data_payload["ai1_confidence"] = result.confidence
+
+                cursor.execute(
+                    "UPDATE unified_files SET other_data = %s WHERE id = %s",
+                    (json.dumps(other_data_payload, ensure_ascii=False), req.file_id),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE unified_files SET file_type = %s WHERE id = %s",
+                    (result.document_type, req.file_id),
+                )
             _set_ai_stage(cursor, req.file_id, "AI1", result.confidence)
             conn.commit()
         except Exception:
