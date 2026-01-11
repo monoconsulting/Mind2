@@ -108,7 +108,13 @@ function collectStatementsForMonth(statements, year, month) {
     .filter((s) => {
       const start = normalizeDateOnly(s.period_start)
       const end = normalizeDateOnly(s.period_end)
-      if (!start || !end) return false
+      // Include statements without period dates - use invoice_date as fallback
+      if (!start || !end) {
+        const invoiceDate = normalizeDateOnly(s.invoice_date)
+        if (!invoiceDate) return true // Include if no dates at all
+        const invDate = new Date(`${invoiceDate}T00:00:00Z`)
+        return invDate >= windowStart && invDate <= windowEnd
+      }
       const rangeStart = new Date(`${start}T00:00:00Z`)
       const rangeEnd = new Date(`${end}T23:59:59Z`)
       return !(rangeEnd < windowStart || rangeStart > windowEnd)
@@ -118,9 +124,10 @@ function collectStatementsForMonth(statements, year, month) {
 
 function isWithinSelectedMonth(dateInput, year, month) {
   const normalized = normalizeDateOnly(dateInput)
-  if (!normalized) return false
+  // Include items without dates - they will show "–" in the UI
+  if (!normalized) return true
   const d = new Date(`${normalized}T00:00:00Z`)
-  if (Number.isNaN(+d)) return false
+  if (Number.isNaN(+d)) return true
   return d.getUTCFullYear() === year && d.getUTCMonth() + 1 === month
 }
 
@@ -166,6 +173,7 @@ export default function ManualMatch() {
 
   const [isReceiptModalOpen, setReceiptModalOpen] = useState(false)
   const [previewReceipt, setPreviewReceipt] = useState(null)
+  const [confirmModalOpen, setConfirmModalOpen] = useState(false)
 
   const lastFetchKeyRef = useRef(null)
   const dismissBanner = useCallback(() => setBanner(null), [])
@@ -178,6 +186,17 @@ export default function ManualMatch() {
   }, [year, month])
 
   const canMatch = Boolean(selectedItemId && selectedReceiptId && !matching)
+
+  // Selected item and receipt for confirmation modal
+  const selectedItem = useMemo(() => {
+    if (!selectedItemId) return null
+    return fcItems.find((i) => i.id === selectedItemId) || null
+  }, [fcItems, selectedItemId])
+
+  const selectedReceipt = useMemo(() => {
+    if (!selectedReceiptId) return null
+    return receipts.find((r) => r.id === selectedReceiptId) || null
+  }, [receipts, selectedReceiptId])
 
   const matchedReceiptIds = useMemo(() => {
     const ids = new Set()
@@ -401,16 +420,18 @@ export default function ManualMatch() {
   }, [statements, year, month])
 
   // Load FC items (invoice items/transactions)
+  // Fetches from ALL statements, then filters by transaction_date within selected month
   const loadFcItems = useCallback(async (options = {}) => {
     if (!year || !month) return
     const { force = false } = options
 
-    const monthStatements = resolveStatementsForMonth()
-    const statementKey = monthStatements.map((s) => s.id).join(',')
+    // Use ALL statements, not filtered by period
+    const allStatements = Array.isArray(statements) ? statements : []
+    const statementKey = allStatements.map((s) => s.id).join(',')
     const fetchKey = `items-${year}-${month}-${statementKey || 'none'}`
     if (!force && lastFetchKeyRef.current === fetchKey) return
 
-    if (monthStatements.length === 0) {
+    if (allStatements.length === 0) {
       setFcItems([])
       lastFetchKeyRef.current = fetchKey
       return
@@ -420,7 +441,7 @@ export default function ManualMatch() {
     setSelectedItemId(null)
     try {
       const responses = await Promise.all(
-        monthStatements.map(async (statement) => {
+        allStatements.map(async (statement) => {
           const res = await api.fetch(`/ai/api/reconciliation/firstcard/invoices/${statement.id}`)
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
           const data = await res.json()
@@ -433,27 +454,28 @@ export default function ManualMatch() {
         })
       )
 
+      // Filter transactions by their actual transaction_date within selected month
       const { from, to } = monthRange(year, month)
       const rangeStart = new Date(`${from}T00:00:00Z`)
       const rangeEnd = new Date(`${to}T23:59:59Z`)
 
-      const filtered = responses
+      const filteredItems = responses
         .flat()
         .filter((item) => {
-          const dateCandidate = item.purchase_date || item.transaction_date || item.purchase_datetime
+          const dateCandidate = item.transaction_date || item.purchase_date || item.purchase_datetime
           const normalized = normalizeDateOnly(dateCandidate)
-          if (!normalized) return false
+          if (!normalized) return true // Include items without date
           const d = new Date(`${normalized}T00:00:00Z`)
           return d >= rangeStart && d <= rangeEnd
         })
         .sort((a, b) => {
-          const da = normalizeDateOnly(a.purchase_date || a.transaction_date || a.purchase_datetime) || ''
-          const db = normalizeDateOnly(b.purchase_date || b.transaction_date || b.purchase_datetime) || ''
+          const da = normalizeDateOnly(a.transaction_date || a.purchase_date || a.purchase_datetime) || ''
+          const db = normalizeDateOnly(b.transaction_date || b.purchase_date || b.purchase_datetime) || ''
           if (da !== db) return da.localeCompare(db)
           return String(a.id).localeCompare(String(b.id))
         })
 
-      setFcItems(filtered)
+      setFcItems(filteredItems)
       lastFetchKeyRef.current = fetchKey
     } catch (err) {
       console.error('Failed to load FC items', err)
@@ -462,7 +484,7 @@ export default function ManualMatch() {
     } finally {
       setLoadingLeft(false)
     }
-  }, [year, month, resolveStatementsForMonth])
+  }, [year, month, statements])
 
   // Load receipts
   const loadReceipts = useCallback(async () => {
@@ -485,6 +507,10 @@ export default function ManualMatch() {
         })
         if (receiptSortColumn) params.set('sort_by', receiptSortColumn)
         if (receiptSortDirection) params.set('sort_order', receiptSortDirection)
+        // Use backend filter for unmatched receipts (more efficient than client-side)
+        if (filterStatus === 'unmatched') {
+          params.set('match_status', 'unmatched')
+        }
         const res = await api.fetch(`/ai/api/receipts?${params.toString()}`)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json()
@@ -527,12 +553,13 @@ export default function ManualMatch() {
     } finally {
       setLoadingRight(false)
     }
-  }, [year, month, receiptSortColumn, receiptSortDirection])
+  }, [year, month, receiptSortColumn, receiptSortDirection, filterStatus])
 
-  // Handle match
+  // Handle match - uses PUT endpoint for manual matching
   const handleMatch = useCallback(async () => {
     if (!canMatch) return
     setMatching(true)
+    setConfirmModalOpen(false)
     try {
       const item = fcItems.find((i) => i.id === selectedItemId)
       if (!item) {
@@ -540,18 +567,15 @@ export default function ManualMatch() {
         return
       }
 
-      const payload = {
-        line_id: item.id,
-        receipt_id: selectedReceiptId,
-      }
-      if (item.invoice_id) {
-        payload.invoice_id = item.invoice_id
-      }
-
-      const res = await api.fetch('/ai/api/reconciliation/firstcard/match', {
-        method: 'POST',
+      // Correct endpoint: PUT /lines/<line_id>
+      // Correct payload: { matched_file_id, invoice_id }
+      const res = await api.fetch(`/ai/api/reconciliation/firstcard/lines/${item.id}`, {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          matched_file_id: selectedReceiptId,
+          invoice_id: item.invoice_id || null,
+        }),
       })
 
       if (res.ok) {
@@ -561,7 +585,14 @@ export default function ManualMatch() {
         setSelectedReceiptId(null)
       } else {
         const errorData = await res.json().catch(() => ({}))
-        showError(errorData.error || 'Matchning misslyckades.')
+        // Handle specific error codes
+        if (errorData.reason === 'receipt_in_use') {
+          showError('Detta kvitto/faktura är redan matchat mot en annan rad.')
+        } else if (errorData.reason === 'line_state_conflict') {
+          showError('Raden kan inte matchas i nuvarande status.')
+        } else {
+          showError(errorData.error || errorData.reason || 'Matchning misslyckades.')
+        }
       }
     } catch (err) {
       console.error('Match error', err)
@@ -1015,7 +1046,7 @@ export default function ManualMatch() {
                               <button
                                 type="button"
                                 className={`btn btn-sm ${showMatchButton ? 'btn-primary' : 'btn-secondary opacity-50 cursor-not-allowed'}`}
-                                onClick={handleMatch}
+                                onClick={() => setConfirmModalOpen(true)}
                                 disabled={!showMatchButton}
                                 title="Matcha"
                               >
@@ -1053,6 +1084,78 @@ export default function ManualMatch() {
         hasNext={hasNext}
         hasPrevious={hasPrevious}
       />
+
+      {/* Confirmation Modal */}
+      {confirmModalOpen && selectedItem && selectedReceipt && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl max-w-lg w-full mx-4">
+            <div className="p-6">
+              <h3 className="text-lg font-semibold text-white mb-4">Vill du matcha dessa?</h3>
+
+              <div className="grid grid-cols-2 gap-4 mb-6">
+                {/* Left: FC Transaction */}
+                <div className="bg-gray-800 rounded-lg p-4">
+                  <div className="text-xs uppercase tracking-wide text-gray-400 mb-2">Korttransaktion</div>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Datum:</span>
+                      <span className="text-gray-100">{formatDate(selectedItem.purchase_date) || '-'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Belopp:</span>
+                      <span className="text-gray-100">{formatAmount(selectedItem.amount_original || selectedItem.gross_amount, selectedItem.currency_original)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Beskrivning:</span>
+                      <span className="text-gray-100 truncate max-w-32">{selectedItem.merchant_name || selectedItem.description || '-'}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right: Receipt/Invoice */}
+                <div className="bg-gray-800 rounded-lg p-4">
+                  <div className="text-xs uppercase tracking-wide text-gray-400 mb-2">
+                    {selectedReceipt.file_type === 'invoice' ? 'Faktura' : 'Kvitto'}
+                  </div>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Datum:</span>
+                      <span className="text-gray-100">{formatDate(selectedReceipt.purchase_datetime || selectedReceipt.purchase_date) || '-'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Belopp:</span>
+                      <span className="text-gray-100">{formatAmount(Number(selectedReceipt.gross_amount || selectedReceipt.total_gross || 0))}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Leverantor:</span>
+                      <span className="text-gray-100 truncate max-w-32">{selectedReceipt.merchant || selectedReceipt.company || selectedReceipt.filename || '-'}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setConfirmModalOpen(false)}
+                  disabled={matching}
+                >
+                  Avbryt
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleMatch}
+                  disabled={matching}
+                >
+                  {matching ? 'Matchar...' : 'Matcha'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

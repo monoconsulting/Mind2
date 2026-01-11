@@ -52,6 +52,8 @@ logger = logging.getLogger(__name__)
 MATCH_DATE_WINDOW_DAYS = 60
 MATCH_AMOUNT_TOLERANCE = Decimal("10")
 MAX_RECEIPT_CANDIDATES = 25
+AMBIGUOUS_AMOUNT_DELTA = Decimal("2")
+AMBIGUOUS_DATE_DELTA_DAYS = 1
 
 
 def _ensure_creditcard_pages_and_ocr(
@@ -614,6 +616,20 @@ def auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
             return value.split(" ")[0]
         return str(value)
 
+    def _is_ambiguous_pair(primary: dict[str, Any], secondary: dict[str, Any]) -> bool:
+        try:
+            amount_diff_1 = primary.get("amount_diff")
+            amount_diff_2 = secondary.get("amount_diff")
+            date_diff_1 = primary.get("date_diff")
+            date_diff_2 = secondary.get("date_diff")
+            if amount_diff_1 is None or amount_diff_2 is None or date_diff_1 is None or date_diff_2 is None:
+                return False
+            amount_gap = abs(Decimal(str(amount_diff_1)) - Decimal(str(amount_diff_2)))
+            date_gap = abs(int(date_diff_1) - int(date_diff_2))
+        except Exception:
+            return False
+        return amount_gap <= AMBIGUOUS_AMOUNT_DELTA and date_gap <= AMBIGUOUS_DATE_DELTA_DAYS
+
     pending: dict[int, dict[str, Any]] = {}
     metadata = _load_invoice_metadata(document_id) or {}
     _, credit_items = _load_credit_items_for_invoice(document_id, metadata)
@@ -673,6 +689,8 @@ def auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
                                    ) - %s
                                ) <= %s
                            )
+                        AND uf.file_type = 'receipt'
+                        AND uf.expense_type = 'corporate'
                         AND (uf.credit_card_match IS NULL OR uf.credit_card_match = 0)
                         AND il.id IS NULL
                   ORDER BY
@@ -797,6 +815,26 @@ def auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
             )
             continue
 
+        sorted_candidates = sorted(
+            candidates, key=lambda c: (c["amount_diff"], c["date_diff"])
+        )
+        if len(sorted_candidates) >= 2 and _is_ambiguous_pair(
+            sorted_candidates[0], sorted_candidates[1]
+        ):
+            log_event(
+                logger,
+                "matching.auto.ambiguous_candidates",
+                invoice_id=document_id,
+                line_id=line_id,
+                primary_receipt_id=sorted_candidates[0].get("receipt_id"),
+                secondary_receipt_id=sorted_candidates[1].get("receipt_id"),
+                primary_amount_diff=str(sorted_candidates[0].get("amount_diff")),
+                secondary_amount_diff=str(sorted_candidates[1].get("amount_diff")),
+                primary_date_diff=sorted_candidates[0].get("date_diff"),
+                secondary_date_diff=sorted_candidates[1].get("date_diff"),
+            )
+            continue
+
         item_id, matched_amount = _select_credit_item_for_line(line_ctx, credit_items)
         if item_id is None:
             log_event(
@@ -808,9 +846,7 @@ def auto_match_invoice_lines(document_id: str) -> tuple[int, int]:
             )
             continue
 
-        for candidate in sorted(
-            candidates, key=lambda c: (c["amount_diff"], c["date_diff"])
-        ):
+        for candidate in sorted_candidates:
             receipt_id = candidate["receipt_id"]
             if receipt_id in used_receipts:
                 continue

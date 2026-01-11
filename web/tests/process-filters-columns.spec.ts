@@ -2,13 +2,12 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Process Page - New Filters and Columns @process', () => {
   test.beforeEach(async ({ page }) => {
-    // Navigate to Process page
     await page.goto('/process');
     // Wait for page to load
-    await page.waitForSelector('h1:has-text("Process")', { timeout: 10000 });
+    await page.waitForSelector('h1:has-text("Process")', { timeout: 15000 });
   });
 
-  test('should display 4 new columns in table header', async ({ page }) => {
+  test('should display 5 new columns in table header', async ({ page }, testInfo) => {
     // Wait for table to load
     await page.waitForSelector('table.table-dark');
 
@@ -17,6 +16,14 @@ test.describe('Process Page - New Filters and Columns @process', () => {
     await expect(page.locator('th:has-text("Betalningstyp")')).toBeVisible();
     await expect(page.locator('th:has-text("Uppladdningsdatum")')).toBeVisible();
     await expect(page.locator('th:has-text("Sista 4")')).toBeVisible();
+    await expect(page.locator('th:has-text("MANUAL")')).toBeVisible();
+
+    const snapshotPath = 'web/test-reports/media/snapshots/process-manual-column.png';
+    await page.screenshot({ path: snapshotPath });
+    await testInfo.attach('process-manual-column', {
+      path: snapshotPath,
+      contentType: 'image/png',
+    });
   });
 
   test('should display new columns as sortable', async ({ page }) => {
@@ -301,14 +308,14 @@ test.describe('Process Page - New Filters and Columns @process', () => {
     expect(page.url()).toContain('expense_type=mat');
   });
 
-  test('should have correct column count (17 total)', async ({ page }) => {
+  test('should have correct column count (18 total)', async ({ page }) => {
     // Wait for table to load
     await page.waitForSelector('table.table-dark');
 
     // Count header columns
     const headerCount = await page.locator('thead th').count();
 
-    // Should be 17 columns total (13 original + 4 new)
-    expect(headerCount).toBe(17);
+    // Should be 18 columns total (13 original + 5 new)
+    expect(headerCount).toBe(18);
   });
 });

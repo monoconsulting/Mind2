@@ -398,6 +398,9 @@ def _transform_prompt_statement(statement: str) -> str | None:
     if "ai_system_prompts" not in lower:
         return statement
 
+    if "prompt-upsert" in lower and "on duplicate key update" in lower:
+        return stripped
+
     mojibake_sig = re.compile(r"(?:\u00c3|\u00c2|\u00e2\u20ac|\u251c|\u0393\u00c7)")
 
     def _is_repair_update(sql: str) -> bool:

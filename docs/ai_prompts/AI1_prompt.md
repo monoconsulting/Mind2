@@ -9,6 +9,7 @@ OUTPUT (STRICT)
 Return EXACTLY one label:
 - receipt
 - invoice
+- fc_invoice
 - other
 No quotes. No punctuation. No extra text.
 
@@ -20,6 +21,21 @@ CLASSIFICATION PRINCIPLES
 - Ignore extra whitespace and punctuation for keyword matching.
 
 ------------------------------------------------------------
+STEP 0 — FIRSTCARD / CREDIT CARD INVOICE OVERRIDE (IF ANY → fc_invoice)
+------------------------------------------------------------
+If ANY of the following FirstCard indicators appear, classify as: fc_invoice
+
+- "FIRST CARD" / "First Card" (case-insensitive phrase)
+- Pattern "First Card L###" (e.g., "First Card L646")
+- At least TWO of these three markers:
+  - KUNDNR
+  - FAKTURANR
+  - BETALA TILL
+- "(First Card)" in the payment recipient block
+
+If Step 0 matches, STOP and output: fc_invoice
+
+------------------------------------------------------------
 STEP 1 — STRONG INVOICE SIGNALS (IF ANY → invoice)
 ------------------------------------------------------------
 If ANY of the following invoice indicators appear, classify as: invoice
@@ -29,7 +45,7 @@ A) Explicit document title (strongest)
 - INVOICE
 - MOMSFAKTURA
 - CREDIT INVOICE / KREDITFAKTURA
-- KORTFAKTURA / CREDIT CARD INVOICE (treat as invoice)
+- KORTFAKTURA / CREDIT CARD INVOICE (treat as invoice unless Step 0 matched)
 
 B) Payment-by-invoice infrastructure (very strong)
 Any of these terms appearing (typically in the payment section):
@@ -133,5 +149,6 @@ OUTPUT REMINDER
 Return ONLY one of:
 receipt
 invoice
+fc_invoice
 other
 ```

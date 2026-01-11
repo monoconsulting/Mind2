@@ -1005,10 +1005,10 @@ def list_receipts() -> Any:
                 where.append("orgnr = %s")
                 params.append(q_orgnr)
             if q_from:
-                where.append("purchase_datetime >= %s")
+                where.append("COALESCE(u.purchase_datetime, u.created_at) >= %s")
                 params.append(q_from)
             if q_to:
-                where.append("purchase_datetime <= %s")
+                where.append("COALESCE(u.purchase_datetime, u.created_at) <= %s")
                 params.append(q_to)
             if q_file_type:
                 where.append("u.file_type = %s")
@@ -1065,11 +1065,12 @@ def list_receipts() -> Any:
             # Match status filtering (for unmatched receipts)
             if q_match_status == "unmatched":
                 # Receipts that are not matched to any credit card invoice line
+                # Uses matched_file_id which is the correct column for matching
                 where.append(
                     """u.id NOT IN (
-                        SELECT DISTINCT il.receipt_id
+                        SELECT DISTINCT il.matched_file_id
                         FROM invoice_lines il
-                        WHERE il.receipt_id IS NOT NULL
+                        WHERE il.matched_file_id IS NOT NULL
                     )"""
                 )
 

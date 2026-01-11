@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -34,6 +35,220 @@ from .utils.invoice_utils import (
 from api.reconciliation_firstcard.utils.db_helpers import ensure_invoice_document
 
 logger = logging.getLogger(__name__)
+
+_VAT_CONTEXT_RE = re.compile(r"\b(momsbelopp|moms|vat)\b", re.IGNORECASE)
+_VAT_TOKEN_DIAG_RE = re.compile(
+    r"\b(momsbelopp|moms|m0ms|vat|moms%)\b|brutto\s+moms\s+moms%",
+    re.IGNORECASE,
+)
+_VAT_FREE_RE = re.compile(r"\b(momsfri|momsfritt|momsfrit)\b|(?:\b0\s*%\s*moms\b)|(?:\bmoms\s*0[,\.]?\b)|(?:\bvat\s*0[,\.]?\b)", re.IGNORECASE)
+_VAT_RATE_RE = re.compile(r"(?<!\d)(25|12|6|0)\s*%")
+_VAT_RATE_AMOUNT_RE = re.compile(r"(?<!\d)(25|12|6|0)\s*%\s*[:\-]?\s*([0-9][0-9\s.,]*)")
+_VAT_AMOUNT_RE = re.compile(r"(?<!\d)(\d{1,3}(?:[\s\u00a0]\d{3})*(?:[.,]\d{2})|\d+[.,]\d{2})(?!\d)")
+_GROSS_TOKEN_RE = re.compile(r"\b(total|summa|att\s+betala|brutto)\b", re.IGNORECASE)
+_BRUTTO_MOMS_TABLE_RE = re.compile(
+    r"brutto\s+moms\s+moms%\s*([0-9][0-9\s.,]*)\s+([0-9][0-9\s.,]*)\s+(25|12|6|0)\s*%",
+    re.IGNORECASE,
+)
+
+
+def _parse_decimal_amount(value: str) -> Decimal | None:
+    if value is None:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    raw = raw.replace("\u00a0", "").replace(" ", "")
+    if "," in raw and "." in raw:
+        raw = raw.replace(".", "").replace(",", ".")
+    else:
+        raw = raw.replace(",", ".")
+    try:
+        return Decimal(raw)
+    except Exception:
+        return None
+
+
+def _extract_gross_total_from_text(text: str) -> Decimal | None:
+    if not text:
+        return None
+    lines = [ln.strip() for ln in text.replace("\r", "\n").splitlines() if ln.strip()]
+    candidates: list[Decimal] = []
+    for idx, line in enumerate(lines):
+        window = " ".join(lines[idx:idx + 2])
+        match = _BRUTTO_MOMS_TABLE_RE.search(window)
+        if match:
+            gross_amount = _parse_decimal_amount(match.group(1))
+            if gross_amount is not None:
+                candidates.append(gross_amount.quantize(Decimal("0.01")))
+
+        if not _GROSS_TOKEN_RE.search(line):
+            continue
+        amounts = [_parse_decimal_amount(m) for m in _VAT_AMOUNT_RE.findall(line)]
+        if not amounts and idx + 1 < len(lines):
+            amounts = [_parse_decimal_amount(m) for m in _VAT_AMOUNT_RE.findall(lines[idx + 1])]
+        for amount in amounts:
+            if amount is not None:
+                candidates.append(amount.quantize(Decimal("0.01")))
+
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    counts: dict[Decimal, int] = {}
+    for value in candidates:
+        counts[value] = counts.get(value, 0) + 1
+    sorted_counts = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    if sorted_counts and sorted_counts[0][1] >= 2:
+        if len(sorted_counts) == 1 or sorted_counts[0][1] > sorted_counts[1][1]:
+            return sorted_counts[0][0]
+    return None
+
+
+def _extract_vat_total_from_text(text: str) -> tuple[Decimal, int] | None:
+    if not text:
+        return None
+    lines = [ln.strip() for ln in text.replace("\r", "\n").splitlines() if ln.strip()]
+    if not lines:
+        return None
+
+    for idx in range(len(lines) - 5):
+        if "brutto" in lines[idx].lower() and "moms" in lines[idx + 1].lower() and "moms%" in lines[idx + 2].lower():
+            gross_vals = [_parse_decimal_amount(m) for m in _VAT_AMOUNT_RE.findall(lines[idx + 3])]
+            vat_vals = [_parse_decimal_amount(m) for m in _VAT_AMOUNT_RE.findall(lines[idx + 4])]
+            rate_match = _VAT_RATE_RE.search(lines[idx + 5])
+            if gross_vals and vat_vals and rate_match:
+                vat_amount = vat_vals[0]
+                if vat_amount is None:
+                    continue
+                return (vat_amount.quantize(Decimal("0.01")), int(rate_match.group(1)))
+
+    keyword_lines = {idx for idx, line in enumerate(lines) if _VAT_CONTEXT_RE.search(line)}
+
+    for idx in range(len(lines)):
+        window = " ".join(lines[idx:idx + 3])
+        match = _BRUTTO_MOMS_TABLE_RE.search(window)
+        if match:
+            vat_amount = _parse_decimal_amount(match.group(2))
+            if vat_amount is None:
+                continue
+            return (vat_amount.quantize(Decimal("0.01")), int(match.group(3)))
+
+    rate_candidates: dict[int, set[Decimal]] = {}
+    for idx, line in enumerate(lines):
+        has_keyword = _VAT_CONTEXT_RE.search(line) is not None
+        has_adj_keyword = has_keyword or (idx - 1 in keyword_lines) or (idx + 1 in keyword_lines)
+        if not has_adj_keyword:
+            continue
+        for match in _VAT_RATE_AMOUNT_RE.finditer(line):
+            rate_val = int(match.group(1))
+            amount_val = _parse_decimal_amount(match.group(2))
+            if amount_val is None:
+                continue
+            rate_candidates.setdefault(rate_val, set()).add(amount_val.quantize(Decimal("0.01")))
+
+    if not rate_candidates:
+        return None
+
+    resolved: list[tuple[int, Decimal]] = []
+    for rate, values in rate_candidates.items():
+        if len(values) == 1:
+            resolved.append((rate, next(iter(values))))
+        else:
+            return None
+
+    if len(resolved) != 1:
+        return None
+
+    return (resolved[0][1], resolved[0][0])
+
+
+def _extract_single_vat_rate_from_text(text: str) -> int | None:
+    if not text:
+        return None
+    rates = [int(match.group(1)) for match in _VAT_RATE_RE.finditer(text)]
+    if not rates:
+        return None
+    unique_rates = {rate for rate in rates if rate in {25, 12, 6}}
+    if len(unique_rates) != 1:
+        return None
+    return next(iter(unique_rates))
+
+def _extract_vat_totals_from_text(text: str) -> dict[str, Any]:
+    if not text:
+        return {"by_rate": {}, "generic": None, "ambiguous": False, "tokens_found": False}
+
+    lines = [ln.strip() for ln in text.replace("\r", "\n").splitlines() if ln.strip()]
+    if not lines:
+        return {"by_rate": {}, "generic": None, "ambiguous": False, "tokens_found": False}
+
+    keyword_lines = set()
+    tokens_found = False
+    for idx, line in enumerate(lines):
+        if _VAT_TOKEN_DIAG_RE.search(line):
+            keyword_lines.add(idx)
+            tokens_found = True
+        if _VAT_RATE_RE.search(line):
+            tokens_found = True
+
+    rate_candidates: dict[int, set[Decimal]] = {25: set(), 12: set(), 6: set(), 0: set()}
+    generic_candidates: set[Decimal] = set()
+    ambiguous = False
+
+    for idx, line in enumerate(lines):
+        line_lower = line.lower()
+        if "inkl" in line_lower and "moms" in line_lower:
+            continue
+
+        has_keyword = _VAT_CONTEXT_RE.search(line) is not None
+        has_adj_keyword = has_keyword or (idx - 1 in keyword_lines) or (idx + 1 in keyword_lines)
+
+        for match in _VAT_RATE_AMOUNT_RE.finditer(line):
+            rate_val = int(match.group(1))
+            amount_val = _parse_decimal_amount(match.group(2))
+            if amount_val is None:
+                continue
+            if has_keyword or has_adj_keyword:
+                rate_candidates.setdefault(rate_val, set()).add(amount_val)
+
+        if has_keyword:
+            if _VAT_FREE_RE.search(line_lower):
+                generic_candidates.add(Decimal("0.00"))
+                continue
+
+            if not _VAT_RATE_RE.search(line):
+                amounts = [_parse_decimal_amount(m) for m in _VAT_AMOUNT_RE.findall(line)]
+                amounts = [a for a in amounts if a is not None]
+                if len(amounts) == 1:
+                    generic_candidates.add(amounts[0])
+                elif len(amounts) > 1:
+                    ambiguous = True
+
+        if not has_keyword and has_adj_keyword:
+            for match in _VAT_RATE_AMOUNT_RE.finditer(line):
+                rate_val = int(match.group(1))
+                amount_val = _parse_decimal_amount(match.group(2))
+                if amount_val is not None:
+                    rate_candidates.setdefault(rate_val, set()).add(amount_val)
+
+    by_rate: dict[int, Decimal] = {}
+    for rate, values in rate_candidates.items():
+        if not values:
+            continue
+        if len(values) > 1:
+            ambiguous = True
+            continue
+        by_rate[rate] = next(iter(values))
+
+    generic = None
+    if generic_candidates:
+        if len(generic_candidates) > 1:
+            ambiguous = True
+        else:
+            generic = next(iter(generic_candidates))
+
+    return {"by_rate": by_rate, "generic": generic, "ambiguous": ambiguous, "tokens_found": tokens_found}
 
 
 def _update_file_status(file_id: str, status: str, confidence: float | None = None) -> bool:
@@ -408,20 +623,26 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
     try:
         with db_cursor() as cur:
             vendor_expr = "c.name"
+            vat_columns = ["total_vat_25", "total_vat_12", "total_vat_6", "vat"]
             try:
                 cur.execute(
                     """
-                    SELECT 1
+                    SELECT COLUMN_NAME
                       FROM information_schema.COLUMNS
                      WHERE TABLE_SCHEMA = DATABASE()
                        AND TABLE_NAME = 'unified_files'
-                       AND COLUMN_NAME = 'merchant_name'
-                     LIMIT 1
+                       AND COLUMN_NAME IN ('merchant_name', 'total_vat_25', 'total_vat_12', 'total_vat_6', 'vat')
                     """
                 )
-                if cur.fetchone():
+                existing_columns = {row[0] for row in (cur.fetchall() or [])}
+                if "merchant_name" in existing_columns:
                     vendor_expr = "COALESCE(c.name, uf.merchant_name)"
+                vat_selects = [
+                    f"uf.{col}" if col in existing_columns else f"NULL AS {col}"
+                    for col in vat_columns
+                ]
             except Exception:
+                vat_selects = [f"uf.{col}" for col in vat_columns]
                 vendor_expr = "c.name"
             cur.execute(
                 f"""
@@ -430,14 +651,20 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
                     uf.net_amount_sek,
                     uf.gross_amount_original,
                     uf.net_amount_original,
+                    uf.gross_amount,
+                    uf.net_amount,
                     uf.currency,
                     uf.exchange_rate,
                     {vendor_expr} AS vendor_name,
+                    uf.ocr_raw,
+                    uf.other_data,
                     (
                         SELECT COUNT(*)
                           FROM receipt_items ri
                          WHERE ri.main_id = uf.id
                     ) AS receipt_item_count
+                    {"," if vat_selects else ""}
+                    {", ".join(vat_selects)}
                 FROM unified_files uf
                 LEFT JOIN companies c ON uf.company_id = c.id
                 WHERE uf.id = %s
@@ -453,14 +680,36 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
                 net_amount_sek,
                 gross_amount_original,
                 net_amount_original,
+                gross_amount_legacy,
+                net_amount_legacy,
                 currency,
                 exchange_rate,
                 vendor_name,
+                ocr_raw,
+                other_data_raw,
                 receipt_item_count,
+                total_vat_25,
+                total_vat_12,
+                total_vat_6,
+                total_vat,
             ) = row
 
             vendor_name_norm = (vendor_name or "").strip()
             item_count = int(receipt_item_count or 0)
+            other_data: dict[str, Any] = {}
+            if other_data_raw:
+                try:
+                    if isinstance(other_data_raw, (bytes, bytearray)):
+                        other_data_raw = other_data_raw.decode("utf-8")
+                    other_data = json.loads(other_data_raw)
+                except Exception:
+                    other_data = {}
+            parsed_text = (
+                other_data.get("combined_ocr_text")
+                or other_data.get("parsed_text")
+                or other_data.get("ocr_text")
+            )
+            ocr_text = parsed_text or (ocr_raw or "")
 
             currency_norm = str(currency or "").strip().upper()
             if currency_norm in {"KR", "KR.", "SEK.", "SEK"}:
@@ -468,7 +717,266 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
             updates: list[str] = []
             params: list[Any] = []
 
+            def _to_decimal(value: Any) -> Decimal | None:
+                if value is None:
+                    return None
+                try:
+                    return Decimal(str(value))
+                except Exception:
+                    return None
+
+            def _vat_total_from_items() -> tuple[Decimal | None, str | None]:
+                if item_count <= 0:
+                    return (None, None)
+                try:
+                    cur.execute(
+                        """
+                        SELECT item_vat_total,
+                               vat,
+                               vat_percentage,
+                               item_total_price_inc_vat,
+                               item_total_price_ex_vat,
+                               item_price_inc_vat,
+                               item_price_ex_vat,
+                               number
+                        FROM receipt_items
+                        WHERE main_id = %s
+                        """,
+                        (file_id,),
+                    )
+                    rows = cur.fetchall() or []
+                except Exception:
+                    return (None, None)
+
+                if not rows:
+                    return (None, None)
+
+                vat_sum = Decimal("0.00")
+                used_rate = False
+                for (
+                    item_vat_total,
+                    item_vat,
+                    vat_percentage,
+                    total_inc,
+                    total_ex,
+                    price_inc,
+                    price_ex,
+                    number,
+                ) in rows:
+                    item_vat_value: Decimal | None = None
+                    if item_vat_total is not None:
+                        item_vat_value = _to_decimal(item_vat_total)
+                    elif item_vat is not None:
+                        item_vat_value = _to_decimal(item_vat)
+                    elif total_inc is not None and total_ex is not None:
+                        item_vat_value = _to_decimal(total_inc) - _to_decimal(total_ex)
+                    elif price_inc is not None and price_ex is not None and number is not None:
+                        item_vat_value = (_to_decimal(price_inc) - _to_decimal(price_ex)) * _to_decimal(number)
+                    elif vat_percentage is not None and total_inc is not None:
+                        rate = _to_decimal(vat_percentage)
+                        if rate is not None:
+                            divisor = Decimal("1") + (rate / Decimal("100"))
+                            if divisor != 0:
+                                item_vat_value = _to_decimal(total_inc) - (_to_decimal(total_inc) / divisor)
+                                used_rate = True
+                    elif vat_percentage is not None and total_ex is not None:
+                        rate = _to_decimal(vat_percentage)
+                        if rate is not None:
+                            item_vat_value = _to_decimal(total_ex) * rate / Decimal("100")
+                            used_rate = True
+
+                    if item_vat_value is None:
+                        return (None, None)
+                    vat_sum += item_vat_value
+
+                if vat_sum < 0:
+                    return (None, None)
+                return (
+                    vat_sum.quantize(Decimal("0.01")),
+                    "receipt_items_vat_rate" if used_rate else "receipt_items_vat_amount",
+                )
+
+            def _item_totals() -> tuple[Decimal | None, Decimal | None, Decimal | None]:
+                if item_count <= 0:
+                    return (None, None, None)
+                try:
+                    cur.execute(
+                        """
+                        SELECT SUM(item_total_price_ex_vat),
+                               SUM(item_total_price_inc_vat),
+                               SUM(item_vat_total)
+                        FROM receipt_items
+                        WHERE main_id = %s
+                        """,
+                        (file_id,),
+                    )
+                    row = cur.fetchone() or (None, None, None)
+                except Exception:
+                    return (None, None, None)
+                sum_ex, sum_inc, sum_vat = row
+                return (_to_decimal(sum_ex), _to_decimal(sum_inc), _to_decimal(sum_vat))
+
+            total_vat_25_dec = _to_decimal(total_vat_25)
+            total_vat_12_dec = _to_decimal(total_vat_12)
+            total_vat_6_dec = _to_decimal(total_vat_6)
+            total_vat_dec = _to_decimal(total_vat)
+
             if currency_norm == "SEK":
+                if gross_amount_original is None and gross_amount_legacy is not None:
+                    gross_amount_original = gross_amount_legacy
+                    updates.append("gross_amount_original=%s")
+                    params.append(gross_amount_original)
+
+                if net_amount_original is None and net_amount_legacy is not None:
+                    net_amount_original = net_amount_legacy
+                    updates.append("net_amount_original=%s")
+                    params.append(net_amount_original)
+
+                if ocr_text and (
+                    gross_amount_sek is None
+                    or net_amount_sek is None
+                    or gross_amount_original is None
+                    or net_amount_original is None
+                ):
+                    gross_candidate = _extract_gross_total_from_text(ocr_text)
+                    vat_candidate = _extract_vat_total_from_text(ocr_text)
+                    single_rate = _extract_single_vat_rate_from_text(ocr_text)
+
+                    if gross_candidate is not None:
+                        if gross_amount_original is None:
+                            gross_amount_original = gross_candidate
+                            updates.append("gross_amount_original=%s")
+                            params.append(gross_amount_original)
+                        else:
+                            gross_existing = _to_decimal(gross_amount_original)
+                            if gross_existing is not None and (gross_existing - gross_candidate).copy_abs() > Decimal("0.01"):
+                                gross_candidate = None
+
+                    if net_amount_sek is None and gross_amount_sek is not None and single_rate is not None:
+                        gross_dec = _to_decimal(gross_amount_sek)
+                        if gross_dec is not None:
+                            if single_rate == 25:
+                                vat_total_value = (gross_dec * Decimal("25") / Decimal("125")).quantize(Decimal("0.01"))
+                            elif single_rate == 12:
+                                vat_total_value = (gross_dec * Decimal("12") / Decimal("112")).quantize(Decimal("0.01"))
+                            else:
+                                vat_total_value = (gross_dec * Decimal("6") / Decimal("106")).quantize(Decimal("0.01"))
+                            candidate_net = (gross_dec - vat_total_value).quantize(Decimal("0.01"))
+                            diff = (gross_dec - (candidate_net + vat_total_value)).copy_abs()
+                            if candidate_net >= 0 and diff <= Decimal("0.01"):
+                                if net_amount_original is None:
+                                    net_amount_original = candidate_net
+                                    updates.append("net_amount_original=%s")
+                                    params.append(net_amount_original)
+                                if net_amount_sek is None:
+                                    net_amount_sek = candidate_net
+                                    updates.append("net_amount_sek=%s")
+                                    params.append(net_amount_sek)
+                                if single_rate == 25 and total_vat_25_dec is None:
+                                    total_vat_25_dec = vat_total_value
+                                    updates.append("total_vat_25=%s")
+                                    params.append(total_vat_25_dec)
+                                elif single_rate == 12 and total_vat_12_dec is None:
+                                    total_vat_12_dec = vat_total_value
+                                    updates.append("total_vat_12=%s")
+                                    params.append(total_vat_12_dec)
+                                elif single_rate == 6 and total_vat_6_dec is None:
+                                    total_vat_6_dec = vat_total_value
+                                    updates.append("total_vat_6=%s")
+                                    params.append(total_vat_6_dec)
+
+                    if vat_candidate is not None and gross_candidate is not None:
+                        vat_total_value, vat_rate = vat_candidate
+                        if gross_amount_original is not None:
+                            gross_dec = _to_decimal(gross_amount_original)
+                        else:
+                            gross_dec = gross_candidate
+                        if gross_dec is not None:
+                            candidate_net = (gross_dec - vat_total_value).quantize(Decimal("0.01"))
+                            diff = (gross_dec - (candidate_net + vat_total_value)).copy_abs()
+                            if candidate_net >= 0 and diff <= Decimal("0.01"):
+                                if net_amount_original is None:
+                                    net_amount_original = candidate_net
+                                    updates.append("net_amount_original=%s")
+                                    params.append(net_amount_original)
+                                if net_amount_sek is None:
+                                    net_amount_sek = candidate_net
+                                    updates.append("net_amount_sek=%s")
+                                    params.append(net_amount_sek)
+                                if gross_amount_sek is None and gross_amount_original is not None:
+                                    gross_amount_sek = gross_amount_original
+                                    updates.append("gross_amount_sek=%s")
+                                    params.append(gross_amount_sek)
+                                if vat_rate == 25 and total_vat_25_dec is None:
+                                    total_vat_25_dec = vat_total_value
+                                    updates.append("total_vat_25=%s")
+                                    params.append(total_vat_25_dec)
+                                elif vat_rate == 12 and total_vat_12_dec is None:
+                                    total_vat_12_dec = vat_total_value
+                                    updates.append("total_vat_12=%s")
+                                    params.append(total_vat_12_dec)
+                                elif vat_rate == 6 and total_vat_6_dec is None:
+                                    total_vat_6_dec = vat_total_value
+                                    updates.append("total_vat_6=%s")
+                                    params.append(total_vat_6_dec)
+                                elif vat_rate == 0 and total_vat_dec is None and total_vat is None:
+                                    total_vat_dec = vat_total_value
+                                    total_vat = str(total_vat_dec)
+                                    updates.append("vat=%s")
+                                    params.append(str(total_vat_dec))
+
+                if net_amount_sek is None and gross_amount_sek is not None and item_count > 0:
+                    sum_ex, sum_inc, sum_vat = _item_totals()
+                    gross_dec = _to_decimal(gross_amount_sek)
+                    if gross_dec is not None:
+                        if sum_ex is not None and sum_inc is not None:
+                            if (sum_inc - gross_dec).copy_abs() <= Decimal("0.01"):
+                                candidate_net = sum_ex.quantize(Decimal("0.01"))
+                                if net_amount_original is None:
+                                    net_amount_original = candidate_net
+                                    updates.append("net_amount_original=%s")
+                                    params.append(net_amount_original)
+                                if net_amount_sek is None:
+                                    net_amount_sek = candidate_net
+                                    updates.append("net_amount_sek=%s")
+                                    params.append(net_amount_sek)
+                        elif sum_ex is not None and sum_vat is not None:
+                            if ((sum_ex + sum_vat) - gross_dec).copy_abs() <= Decimal("0.01"):
+                                candidate_net = sum_ex.quantize(Decimal("0.01"))
+                                if net_amount_original is None:
+                                    net_amount_original = candidate_net
+                                    updates.append("net_amount_original=%s")
+                                    params.append(net_amount_original)
+                                if net_amount_sek is None:
+                                    net_amount_sek = candidate_net
+                                    updates.append("net_amount_sek=%s")
+                                    params.append(net_amount_sek)
+
+                if gross_amount_original is not None and (net_amount_original is None or net_amount_sek is None):
+                    vat_total_value: Decimal | None = None
+                    vat_buckets = [total_vat_25_dec, total_vat_12_dec, total_vat_6_dec]
+                    if any(v is not None for v in vat_buckets):
+                        vat_total_value = sum((v for v in vat_buckets if v is not None), Decimal("0.00"))
+                    elif total_vat_dec is not None:
+                        vat_total_value = total_vat_dec
+                    elif item_count > 0:
+                        vat_total_value, _ = _vat_total_from_items()
+
+                    if vat_total_value is not None:
+                        gross_dec = _to_decimal(gross_amount_original)
+                        if gross_dec is not None:
+                            candidate_net = (gross_dec - vat_total_value).quantize(Decimal("0.01"))
+                            diff = (gross_dec - (candidate_net + vat_total_value)).copy_abs()
+                            if candidate_net >= 0 and diff <= Decimal("0.01"):
+                                if net_amount_original is None:
+                                    net_amount_original = candidate_net
+                                    updates.append("net_amount_original=%s")
+                                    params.append(net_amount_original)
+                                if net_amount_sek is None:
+                                    net_amount_sek = candidate_net
+                                    updates.append("net_amount_sek=%s")
+                                    params.append(net_amount_sek)
+
                 if gross_amount_sek is None and gross_amount_original is not None:
                     gross_amount_sek = gross_amount_original
                     updates.append("gross_amount_sek=%s")
@@ -518,6 +1026,22 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
             has_sek_totals = gross_amount_sek is not None and net_amount_sek is not None
             has_original_totals = gross_amount_original is not None and net_amount_original is not None
 
+            if currency_norm and currency_norm != "SEK" and not has_sek_totals and exchange_rate in (None, 0):
+                return {
+                    "ai4_ready": False,
+                    "reason": "missing exchange_rate for FX totals",
+                    "gross_amount_sek": gross_amount_sek,
+                    "net_amount_sek": net_amount_sek,
+                    "vat_amount_sek": vat_amount_sek,
+                    "gross_amount_original": gross_amount_original,
+                    "net_amount_original": net_amount_original,
+                    "currency": currency_norm or None,
+                    "exchange_rate": exchange_rate,
+                    "vendor_name": vendor_name_norm or None,
+                    "receipt_item_count": item_count,
+                    "missing_totals": False,
+                }
+
             ai4_ready = has_sek_totals
             if not ai4_ready:
                 # Controlled indicator for the caller to mark needs_review and skip AI4.
@@ -534,22 +1058,6 @@ def _load_accounting_inputs(file_id: str) -> dict[str, Any] | None:
                     "vendor_name": vendor_name_norm or None,
                     "receipt_item_count": item_count,
                     "missing_totals": not has_sek_totals and not has_original_totals,
-                }
-
-            if currency_norm and currency_norm != "SEK" and exchange_rate in (None, 0):
-                return {
-                    "ai4_ready": False,
-                    "reason": "missing exchange_rate for non-SEK currency",
-                    "gross_amount_sek": gross_amount_sek,
-                    "net_amount_sek": net_amount_sek,
-                    "vat_amount_sek": vat_amount_sek,
-                    "gross_amount_original": gross_amount_original,
-                    "net_amount_original": net_amount_original,
-                    "currency": currency_norm or None,
-                    "exchange_rate": exchange_rate,
-                    "vendor_name": vendor_name_norm or None,
-                    "receipt_item_count": item_count,
-                    "missing_totals": False,
                 }
 
             if not vendor_name_norm:

@@ -1,0 +1,4 @@
+file_id,file_name,currency,gross_amount_display,net_amount_display,missing_count,missing_fields,warnings,latest_workflow_status,latest_stage_name,latest_stage_status,ai_history_rows,file_type,workflow_type,company_name
+659d0b0e-b162-4ce3-9cf8-80958b92ea13,693feefdbfe48_1765797629_-_Copy.jpeg,SEK,273.85,,4,"net_amount,vat_breakdown(total_vat_25/12/6),credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,7,receipt,receipt,BALHAUS
+5e75831c-daca-4381-b5d7-4e6774770276,691504667b0d7_1762985062.jpeg,SEK,75.00,,5,"net_amount,vat_breakdown(total_vat_25/12/6),credit_card_brand_short,credit_card_last_4_digits,receipt_items",,succeeded,KLAR,succeeded,7,receipt,receipt,Aleris Ortopedi
+3de121ab-a223-403b-ab19-7e4f60b89459,1_page_midjourney.jpg,USD,12.50,10.00,,"payment_type,vat_breakdown(total_vat_25/12/6),sek_amounts(gross_amount_sek/net_amount_sek),exchange_rate",,succeeded,KLAR,succeeded,7,receipt,receipt,Midjourney Inc

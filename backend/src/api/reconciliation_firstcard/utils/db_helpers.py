@@ -47,10 +47,10 @@ def _as_date(val: Any) -> Optional[date]:
     """Convert value to date object."""
     if val is None:
         return None
-    if isinstance(val, date):
-        return val
     if isinstance(val, datetime):
         return val.date()
+    if isinstance(val, date):
+        return val
     if isinstance(val, str):
         try:
             return datetime.fromisoformat(val.replace("Z", "+00:00")).date()
@@ -374,14 +374,14 @@ def _create_workflow_run(
 
 
 def _find_file_id_by_hash(file_hash: str) -> Optional[str]:
-    """Find existing file by content hash."""
+    """Find existing file by content hash (excluding soft-deleted files)."""
     if db_cursor is None:
         return None
 
     try:
         with db_cursor() as cur:
             cur.execute(
-                "SELECT id FROM unified_files WHERE content_hash=%s ORDER BY created_at DESC LIMIT 1",
+                "SELECT id FROM unified_files WHERE content_hash=%s AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
                 (file_hash,),
             )
             row = cur.fetchone()

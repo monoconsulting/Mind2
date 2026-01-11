@@ -1,0 +1,2 @@
+# Normalize migration files to LF to keep schema_migrations checksums stable.
+database/migrations/*.sql text eol=lf
