@@ -558,6 +558,11 @@ def _persist_extraction_result(
                 elif rate == 6:
                     total_vat_6 = vat_diff
 
+        if currency != "SEK":
+            total_vat_25 = None
+            total_vat_12 = None
+            total_vat_6 = None
+
         service_receipt_fallback = False
         ocr_text_lower = (unified.ocr_raw or "").lower()
         if currency == "SEK" and not result.receipt_items and is_service_receipt_candidate(ocr_text_lower):
@@ -900,6 +905,17 @@ def _persist_credit_card_match(
                 """,
                 (file_id, invoice_item_id, matched_amount),
             )
+            if matched_amount is not None:
+                cursor.execute(
+                    "SELECT gross_amount_sek FROM unified_files WHERE id = %s",
+                    (file_id,),
+                )
+                row = cursor.fetchone()
+                if row and row[0] in (None, 0):
+                    cursor.execute(
+                        "UPDATE unified_files SET gross_amount_sek = %s, updated_at = NOW() WHERE id = %s",
+                        (matched_amount, file_id),
+                    )
             _backfill_receipt_card_from_fc(
                 file_id,
                 invoice_item_id=invoice_item_id,

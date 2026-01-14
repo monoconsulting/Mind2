@@ -346,7 +346,10 @@ def invoice_detail(invoice_id: str) -> Any:
                            il.merchant_name,
                            il.description,
                            il.amount,
-                           NULL AS currency,
+                           il.currency_original,
+                           il.amount_original,
+                           il.amount_sek,
+                           il.exchange_rate,
                            il.extraction_confidence AS confidence,
                            il.match_status,
                            il.match_score,
@@ -369,7 +372,7 @@ def invoice_detail(invoice_id: str) -> Any:
                     """,
                     (invoice_id,),
                 )
-                line_rows = cur.fetchall() or []
+            line_rows = cur.fetchall() or []
         except Exception:
             logger.exception("Failed to load invoice lines for %s", invoice_id)
             line_rows = []
@@ -380,7 +383,10 @@ def invoice_detail(invoice_id: str) -> Any:
             merchant_name,
             description,
             amount,
-            currency,
+            currency_original,
+            amount_original,
+            amount_sek,
+            exchange_rate,
             confidence,
             match_status,
             match_score,
@@ -391,6 +397,9 @@ def invoice_detail(invoice_id: str) -> Any:
             receipt_created_at,
             receipt_vendor_name,
         ) in line_rows:
+            amount_value = float(amount) if amount is not None else None
+            amount_original_value = float(amount_original) if amount_original is not None else amount_value
+            amount_sek_value = float(amount_sek) if amount_sek is not None else amount_value
             matched_receipt: dict[str, Any] | None = None
             if matched_file_id:
                 matched_receipt = {
@@ -408,8 +417,12 @@ def invoice_detail(invoice_id: str) -> Any:
                     "id": int(line_id),
                     "invoice_id": invoice_id,
                     "transaction_date": transaction_date.isoformat() if hasattr(transaction_date, "isoformat") else transaction_date,
-                    "amount": float(amount) if amount is not None else None,
-                    "currency": currency,
+                    "amount": amount_value,
+                    "amount_original": amount_original_value,
+                    "amount_sek": amount_sek_value,
+                    "currency_original": currency_original,
+                    "exchange_rate": float(exchange_rate) if exchange_rate is not None else None,
+                    "currency": currency_original,
                     "description": description or merchant_name or "",
                     "merchant_name": merchant_name,
                     "match_status": match_status or InvoiceLineMatchStatus.PENDING.value,
@@ -435,12 +448,12 @@ def invoice_detail(invoice_id: str) -> Any:
                     "purchase_date": transaction_date.isoformat() if hasattr(transaction_date, "isoformat") else transaction_date,
                     "merchant_name": merchant_name,
                     "merchant_city": None,  # Not stored in invoice_lines
-                    "amount_original": float(amount) if amount is not None else None,
-                    "amount_sek": float(amount) if amount is not None else None,
-                    "gross_amount": float(amount) if amount is not None else None,
+                    "amount_original": amount_original_value,
+                    "amount_sek": amount_sek_value,
+                    "gross_amount": amount_sek_value if amount_sek_value is not None else amount_original_value,
                     "net_amount": None,
                     "vat_rate": None,
-                    "currency_original": currency,
+                    "currency_original": currency_original,
                     "matched": matched_flag,
                     "matched_receipt_id": matched_file_id,
                 }

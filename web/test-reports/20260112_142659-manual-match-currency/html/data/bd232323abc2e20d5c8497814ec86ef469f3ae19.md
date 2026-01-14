@@ -1,0 +1,385 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: M
+      - generic [ref=e7]: Mind Admin
+    - navigation [ref=e8]:
+      - button "Översikt" [ref=e9] [cursor=pointer]:
+        - img [ref=e10] [cursor=pointer]
+        - generic [ref=e13] [cursor=pointer]: Översikt
+      - button "Process" [ref=e14] [cursor=pointer]:
+        - img [ref=e15] [cursor=pointer]
+        - generic [ref=e16] [cursor=pointer]: Process
+      - button "Kvitton" [ref=e17] [cursor=pointer]:
+        - img [ref=e18] [cursor=pointer]
+        - generic [ref=e21] [cursor=pointer]: Kvitton
+      - button "Kortmatchning" [ref=e22] [cursor=pointer]:
+        - img [ref=e23] [cursor=pointer]
+        - generic [ref=e25] [cursor=pointer]: Kortmatchning
+      - button "Manuell matchning" [active] [ref=e26] [cursor=pointer]:
+        - img [ref=e27] [cursor=pointer]
+        - generic [ref=e30] [cursor=pointer]: Manuell matchning
+      - button "Kö" [ref=e31] [cursor=pointer]:
+        - img [ref=e32] [cursor=pointer]
+        - generic [ref=e35] [cursor=pointer]: Kö
+      - button "AI" [ref=e36] [cursor=pointer]:
+        - img [ref=e37] [cursor=pointer]
+        - generic [ref=e38] [cursor=pointer]: AI
+      - button "Export" [ref=e39] [cursor=pointer]:
+        - img [ref=e40] [cursor=pointer]
+        - generic [ref=e43] [cursor=pointer]: Export
+      - button "Användare" [ref=e44] [cursor=pointer]:
+        - img [ref=e45] [cursor=pointer]
+        - generic [ref=e46] [cursor=pointer]: Användare
+    - generic [ref=e48]:
+      - generic [ref=e49]:
+        - generic [ref=e50]: A
+        - generic [ref=e51]:
+          - generic [ref=e52]: Administratör
+          - generic [ref=e53]: Systemansvarig
+      - button "Logga ut" [ref=e54] [cursor=pointer]:
+        - img [ref=e55] [cursor=pointer]
+        - generic [ref=e58] [cursor=pointer]: Logga ut
+  - generic [ref=e59]:
+    - banner [ref=e60]:
+      - generic [ref=e61]: Manuell matchning
+      - generic [ref=e63]: Överblick över status för kvittohanteringen och centrala nyckeltal
+    - main [ref=e64]:
+      - generic [ref=e65]:
+        - generic [ref=e66]:
+          - generic [ref=e68]:
+            - heading "Välj period" [level=3] [ref=e69]
+            - paragraph [ref=e70]: Välj månad för att se FirstCard-transaktioner och kvitton
+          - generic [ref=e71]:
+            - generic [ref=e72]:
+              - generic [ref=e73]:
+                - generic [ref=e74]: År
+                - combobox [ref=e75]:
+                  - option "Välj år" [disabled]
+                  - option "2028"
+                  - option "2027"
+                  - option "2026" [selected]
+                  - option "2025"
+                  - option "2024"
+                  - option "1970"
+              - generic [ref=e76]:
+                - generic [ref=e77]: Månad
+                - combobox [ref=e78]:
+                  - option "Välj månad" [disabled]
+                  - option "Januari" [selected]
+                  - option "Februari"
+                  - option "Mars"
+                  - option "April"
+                  - option "Maj"
+                  - option "Juni"
+                  - option "Juli"
+                  - option "Augusti"
+                  - option "September"
+                  - option "Oktober"
+                  - option "November"
+                  - option "December"
+              - generic [ref=e79]: "Period: 2026-01"
+            - generic [ref=e81]:
+              - generic [ref=e82]: Visa
+              - combobox [ref=e83]:
+                - option "Alla" [selected]
+                - option "Matchade"
+                - option "Ej matchade"
+        - generic [ref=e84]:
+          - generic [ref=e85]:
+            - generic [ref=e87]:
+              - heading "FirstCard-transaktioner" [level=3] [ref=e88]
+              - paragraph [ref=e89]: 0 transaktioner
+            - generic [ref=e91]:
+              - generic [ref=e92]: Visar 0 av 0
+              - generic [ref=e93]:
+                - generic [ref=e94]: Per sida
+                - combobox "Per sida" [ref=e95]:
+                  - option "10"
+                  - option "15" [selected]
+                  - option "25"
+                  - option "50"
+            - table [ref=e98]:
+              - rowgroup [ref=e99]:
+                - row "Välj Datum ↑ Företag Belopp Status" [ref=e100]:
+                  - cell "Välj" [ref=e101]
+                  - cell "Datum ↑" [ref=e102] [cursor=pointer]:
+                    - generic [ref=e103] [cursor=pointer]:
+                      - text: Datum
+                      - generic [ref=e104] [cursor=pointer]: ↑
+                  - cell "Företag" [ref=e105] [cursor=pointer]:
+                    - generic [ref=e106] [cursor=pointer]: Företag
+                  - cell "Belopp" [ref=e107] [cursor=pointer]:
+                    - generic [ref=e108] [cursor=pointer]: Belopp
+                  - cell "Status" [ref=e109] [cursor=pointer]:
+                    - generic [ref=e110] [cursor=pointer]: Status
+              - rowgroup [ref=e111]:
+                - row "Inga transaktioner för vald period." [ref=e112]:
+                  - cell "Inga transaktioner för vald period." [ref=e113]
+          - generic [ref=e114]:
+            - generic [ref=e116]:
+              - heading "Kvitton" [level=3] [ref=e117]
+              - paragraph [ref=e118]: 271 kvitton
+            - generic [ref=e119]:
+              - generic [ref=e120]:
+                - generic [ref=e121]: Visar 1-15 av 271
+                - generic [ref=e122]:
+                  - generic [ref=e123]: Per sida
+                  - combobox "Per sida" [ref=e124]:
+                    - option "10"
+                    - option "15" [selected]
+                    - option "25"
+                    - option "50"
+              - generic [ref=e125]:
+                - button "Föregående" [disabled] [ref=e126]:
+                  - img [ref=e127]
+                  - text: Föregående
+                - generic [ref=e129]: Sida 1 av 19
+                - button "Nästa" [ref=e130] [cursor=pointer]:
+                  - text: Nästa
+                  - img [ref=e131] [cursor=pointer]
+            - table [ref=e135]:
+              - rowgroup [ref=e136]:
+                - row "Välj Datum ↑ Företag Belopp Status Åtgärd" [ref=e137]:
+                  - cell "Välj" [ref=e138]
+                  - cell "Datum ↑" [ref=e139] [cursor=pointer]:
+                    - generic [ref=e140] [cursor=pointer]:
+                      - text: Datum
+                      - generic [ref=e141] [cursor=pointer]: ↑
+                  - cell "Företag" [ref=e142] [cursor=pointer]:
+                    - generic [ref=e143] [cursor=pointer]: Företag
+                  - cell "Belopp" [ref=e144] [cursor=pointer]:
+                    - generic [ref=e145] [cursor=pointer]: Belopp
+                  - cell "Status" [ref=e146] [cursor=pointer]:
+                    - generic [ref=e147] [cursor=pointer]: Status
+                  - cell "Åtgärd" [ref=e148]
+              - rowgroup [ref=e149]:
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e150]:
+                  - cell [ref=e151]:
+                    - checkbox [ref=e152] [cursor=pointer]
+                  - cell "-" [ref=e153]
+                  - cell "-" [ref=e154]:
+                    - generic [ref=e155]: "-"
+                  - cell "0,00 kr" [ref=e156]
+                  - cell "Ej matchad" [ref=e157]:
+                    - generic [ref=e158]: Ej matchad
+                  - cell "Matcha Radera" [ref=e159]:
+                    - generic [ref=e160]:
+                      - button "Visa" [ref=e161] [cursor=pointer]:
+                        - img [ref=e162] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e165]
+                      - button "Radera" [ref=e166] [cursor=pointer]
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e167]:
+                  - cell [ref=e168]:
+                    - checkbox [ref=e169] [cursor=pointer]
+                  - cell "-" [ref=e170]
+                  - cell "-" [ref=e171]:
+                    - generic [ref=e172]: "-"
+                  - cell "0,00 kr" [ref=e173]
+                  - cell "Ej matchad" [ref=e174]:
+                    - generic [ref=e175]: Ej matchad
+                  - cell "Matcha Radera" [ref=e176]:
+                    - generic [ref=e177]:
+                      - button "Visa" [ref=e178] [cursor=pointer]:
+                        - img [ref=e179] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e182]
+                      - button "Radera" [ref=e183] [cursor=pointer]
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e184]:
+                  - cell [ref=e185]:
+                    - checkbox [ref=e186] [cursor=pointer]
+                  - cell "-" [ref=e187]
+                  - cell "-" [ref=e188]:
+                    - generic [ref=e189]: "-"
+                  - cell "0,00 kr" [ref=e190]
+                  - cell "Ej matchad" [ref=e191]:
+                    - generic [ref=e192]: Ej matchad
+                  - cell "Matcha Radera" [ref=e193]:
+                    - generic [ref=e194]:
+                      - button "Visa" [ref=e195] [cursor=pointer]:
+                        - img [ref=e196] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e199]
+                      - button "Radera" [ref=e200] [cursor=pointer]
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e201]:
+                  - cell [ref=e202]:
+                    - checkbox [ref=e203] [cursor=pointer]
+                  - cell "-" [ref=e204]
+                  - cell "-" [ref=e205]:
+                    - generic [ref=e206]: "-"
+                  - cell "0,00 kr" [ref=e207]
+                  - cell "Ej matchad" [ref=e208]:
+                    - generic [ref=e209]: Ej matchad
+                  - cell "Matcha Radera" [ref=e210]:
+                    - generic [ref=e211]:
+                      - button "Visa" [ref=e212] [cursor=pointer]:
+                        - img [ref=e213] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e216]
+                      - button "Radera" [ref=e217] [cursor=pointer]
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e218]:
+                  - cell [ref=e219]:
+                    - checkbox [ref=e220] [cursor=pointer]
+                  - cell "-" [ref=e221]
+                  - cell "-" [ref=e222]:
+                    - generic [ref=e223]: "-"
+                  - cell "0,00 kr" [ref=e224]
+                  - cell "Ej matchad" [ref=e225]:
+                    - generic [ref=e226]: Ej matchad
+                  - cell "Matcha Radera" [ref=e227]:
+                    - generic [ref=e228]:
+                      - button "Visa" [ref=e229] [cursor=pointer]:
+                        - img [ref=e230] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e233]
+                      - button "Radera" [ref=e234] [cursor=pointer]
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e235]:
+                  - cell [ref=e236]:
+                    - checkbox [ref=e237] [cursor=pointer]
+                  - cell "-" [ref=e238]
+                  - cell "-" [ref=e239]:
+                    - generic [ref=e240]: "-"
+                  - cell "0,00 kr" [ref=e241]
+                  - cell "Ej matchad" [ref=e242]:
+                    - generic [ref=e243]: Ej matchad
+                  - cell "Matcha Radera" [ref=e244]:
+                    - generic [ref=e245]:
+                      - button "Visa" [ref=e246] [cursor=pointer]:
+                        - img [ref=e247] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e250]
+                      - button "Radera" [ref=e251] [cursor=pointer]
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e252]:
+                  - cell [ref=e253]:
+                    - checkbox [ref=e254] [cursor=pointer]
+                  - cell "-" [ref=e255]
+                  - cell "-" [ref=e256]:
+                    - generic [ref=e257]: "-"
+                  - cell "0,00 kr" [ref=e258]
+                  - cell "Ej matchad" [ref=e259]:
+                    - generic [ref=e260]: Ej matchad
+                  - cell "Matcha Radera" [ref=e261]:
+                    - generic [ref=e262]:
+                      - button "Visa" [ref=e263] [cursor=pointer]:
+                        - img [ref=e264] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e267]
+                      - button "Radera" [ref=e268] [cursor=pointer]
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e269]:
+                  - cell [ref=e270]:
+                    - checkbox [ref=e271] [cursor=pointer]
+                  - cell "-" [ref=e272]
+                  - cell "-" [ref=e273]:
+                    - generic [ref=e274]: "-"
+                  - cell "0,00 kr" [ref=e275]
+                  - cell "Ej matchad" [ref=e276]:
+                    - generic [ref=e277]: Ej matchad
+                  - cell "Matcha Radera" [ref=e278]:
+                    - generic [ref=e279]:
+                      - button "Visa" [ref=e280] [cursor=pointer]:
+                        - img [ref=e281] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e284]
+                      - button "Radera" [ref=e285] [cursor=pointer]
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e286]:
+                  - cell [ref=e287]:
+                    - checkbox [ref=e288] [cursor=pointer]
+                  - cell "-" [ref=e289]
+                  - cell "-" [ref=e290]:
+                    - generic [ref=e291]: "-"
+                  - cell "0,00 kr" [ref=e292]
+                  - cell "Ej matchad" [ref=e293]:
+                    - generic [ref=e294]: Ej matchad
+                  - cell "Matcha Radera" [ref=e295]:
+                    - generic [ref=e296]:
+                      - button "Visa" [ref=e297] [cursor=pointer]:
+                        - img [ref=e298] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e301]
+                      - button "Radera" [ref=e302] [cursor=pointer]
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e303]:
+                  - cell [ref=e304]:
+                    - checkbox [ref=e305] [cursor=pointer]
+                  - cell "-" [ref=e306]
+                  - cell "-" [ref=e307]:
+                    - generic [ref=e308]: "-"
+                  - cell "0,00 kr" [ref=e309]
+                  - cell "Ej matchad" [ref=e310]:
+                    - generic [ref=e311]: Ej matchad
+                  - cell "Matcha Radera" [ref=e312]:
+                    - generic [ref=e313]:
+                      - button "Visa" [ref=e314] [cursor=pointer]:
+                        - img [ref=e315] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e318]
+                      - button "Radera" [ref=e319] [cursor=pointer]
+                - row "- BAUHAUS 289,00 kr Ej matchad Matcha Radera" [ref=e320]:
+                  - cell [ref=e321]:
+                    - checkbox [ref=e322] [cursor=pointer]
+                  - cell "-" [ref=e323]
+                  - cell "BAUHAUS" [ref=e324]:
+                    - generic [ref=e325]: BAUHAUS
+                  - cell "289,00 kr" [ref=e326]
+                  - cell "Ej matchad" [ref=e327]:
+                    - generic [ref=e328]: Ej matchad
+                  - cell "Matcha Radera" [ref=e329]:
+                    - generic [ref=e330]:
+                      - button "Visa" [ref=e331] [cursor=pointer]:
+                        - img [ref=e332] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e335]
+                      - button "Radera" [ref=e336] [cursor=pointer]
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e337]:
+                  - cell [ref=e338]:
+                    - checkbox [ref=e339] [cursor=pointer]
+                  - cell "-" [ref=e340]
+                  - cell "-" [ref=e341]:
+                    - generic [ref=e342]: "-"
+                  - cell "0,00 kr" [ref=e343]
+                  - cell "Ej matchad" [ref=e344]:
+                    - generic [ref=e345]: Ej matchad
+                  - cell "Matcha Radera" [ref=e346]:
+                    - generic [ref=e347]:
+                      - button "Visa" [ref=e348] [cursor=pointer]:
+                        - img [ref=e349] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e352]
+                      - button "Radera" [ref=e353] [cursor=pointer]
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e354]:
+                  - cell [ref=e355]:
+                    - checkbox [ref=e356] [cursor=pointer]
+                  - cell "-" [ref=e357]
+                  - cell "-" [ref=e358]:
+                    - generic [ref=e359]: "-"
+                  - cell "0,00 kr" [ref=e360]
+                  - cell "Ej matchad" [ref=e361]:
+                    - generic [ref=e362]: Ej matchad
+                  - cell "Matcha Radera" [ref=e363]:
+                    - generic [ref=e364]:
+                      - button "Visa" [ref=e365] [cursor=pointer]:
+                        - img [ref=e366] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e369]
+                      - button "Radera" [ref=e370] [cursor=pointer]
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e371]:
+                  - cell [ref=e372]:
+                    - checkbox [ref=e373] [cursor=pointer]
+                  - cell "-" [ref=e374]
+                  - cell "-" [ref=e375]:
+                    - generic [ref=e376]: "-"
+                  - cell "0,00 kr" [ref=e377]
+                  - cell "Ej matchad" [ref=e378]:
+                    - generic [ref=e379]: Ej matchad
+                  - cell "Matcha Radera" [ref=e380]:
+                    - generic [ref=e381]:
+                      - button "Visa" [ref=e382] [cursor=pointer]:
+                        - img [ref=e383] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e386]
+                      - button "Radera" [ref=e387] [cursor=pointer]
+                - row "- - 0,00 kr Ej matchad Matcha Radera" [ref=e388]:
+                  - cell [ref=e389]:
+                    - checkbox [ref=e390] [cursor=pointer]
+                  - cell "-" [ref=e391]
+                  - cell "-" [ref=e392]:
+                    - generic [ref=e393]: "-"
+                  - cell "0,00 kr" [ref=e394]
+                  - cell "Ej matchad" [ref=e395]:
+                    - generic [ref=e396]: Ej matchad
+                  - cell "Matcha Radera" [ref=e397]:
+                    - generic [ref=e398]:
+                      - button "Visa" [ref=e399] [cursor=pointer]:
+                        - img [ref=e400] [cursor=pointer]
+                      - button "Matcha" [disabled] [ref=e403]
+                      - button "Radera" [ref=e404] [cursor=pointer]
+```
