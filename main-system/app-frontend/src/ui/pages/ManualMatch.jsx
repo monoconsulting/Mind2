@@ -56,6 +56,38 @@ function formatAmount(value, currency = 'SEK') {
   }
 }
 
+function resolveFcCurrency(item) {
+  return item?.currency_original || item?.currency || null
+}
+
+function resolveFcSek(item) {
+  const candidate = item?.amount_sek ?? item?.gross_amount_sek ?? item?.amount ?? item?.gross_amount
+  const value = Number(candidate)
+  return Number.isFinite(value) ? value : null
+}
+
+function resolveFcOriginal(item) {
+  const candidate = item?.amount_original ?? item?.gross_amount ?? item?.amount
+  const value = Number(candidate)
+  return Number.isFinite(value) ? value : null
+}
+
+function resolveReceiptCurrency(item) {
+  return item?.currency || null
+}
+
+function resolveReceiptSek(item) {
+  const candidate = item?.gross_amount_sek ?? item?.gross_amount ?? item?.total_gross
+  const value = Number(candidate)
+  return Number.isFinite(value) ? value : null
+}
+
+function resolveReceiptOriginal(item) {
+  const candidate = item?.gross_amount_original ?? item?.gross_amount ?? item?.total_gross
+  const value = Number(candidate)
+  return Number.isFinite(value) ? value : null
+}
+
 function formatDate(isoDate) {
   if (!isoDate) return '-'
   try {
@@ -252,9 +284,17 @@ export default function ManualMatch() {
           aVal = (a.merchant_name || '').toLowerCase()
           bVal = (b.merchant_name || '').toLowerCase()
           break
-        case 'amount':
-          aVal = Number(a.amount_original || a.gross_amount || 0)
-          bVal = Number(b.amount_original || b.gross_amount || 0)
+        case 'amount_sek':
+          aVal = resolveFcSek(a) ?? 0
+          bVal = resolveFcSek(b) ?? 0
+          break
+        case 'currency':
+          aVal = (resolveFcCurrency(a) || '').toLowerCase()
+          bVal = (resolveFcCurrency(b) || '').toLowerCase()
+          break
+        case 'amount_original':
+          aVal = resolveFcOriginal(a) ?? 0
+          bVal = resolveFcOriginal(b) ?? 0
           break
         case 'status':
           aVal = a.matched !== 0 ? 1 : 0
@@ -296,8 +336,16 @@ export default function ManualMatch() {
           bVal = (b.merchant || b.company || '').toLowerCase()
           break
         case 'gross_amount':
-          aVal = Number(a.gross_amount || a.total_gross || 0)
-          bVal = Number(b.gross_amount || b.total_gross || 0)
+          aVal = resolveReceiptSek(a) ?? 0
+          bVal = resolveReceiptSek(b) ?? 0
+          break
+        case 'currency':
+          aVal = (resolveReceiptCurrency(a) || '').toLowerCase()
+          bVal = (resolveReceiptCurrency(b) || '').toLowerCase()
+          break
+        case 'gross_amount_original':
+          aVal = resolveReceiptOriginal(a) ?? 0
+          bVal = resolveReceiptOriginal(b) ?? 0
           break
         case 'status':
           aVal = matchedReceiptIds.has(a.id) ? 1 : 0
@@ -505,7 +553,10 @@ export default function ManualMatch() {
           page: String(page),
           page_size: String(pageSize),
         })
-        if (receiptSortColumn) params.set('sort_by', receiptSortColumn)
+        const apiSortBy = ['purchase_datetime', 'company', 'gross_amount'].includes(receiptSortColumn)
+          ? receiptSortColumn
+          : null
+        if (apiSortBy) params.set('sort_by', apiSortBy)
         if (receiptSortDirection) params.set('sort_order', receiptSortDirection)
         // Use backend filter for unmatched receipts (more efficient than client-side)
         if (filterStatus === 'unmatched') {
@@ -860,11 +911,27 @@ export default function ManualMatch() {
                         )}
                       </div>
                     </th>
-                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleFcSort('amount')}>
+                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleFcSort('amount_sek')}>
+                      <div className="flex items-center gap-1">
+                        SEK
+                        {fcSortColumn === 'amount_sek' && (
+                          <span>{fcSortDirection === 'asc' ? '' : ''}</span>
+                        )}
+                      </div>
+                    </th>
+                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleFcSort('currency')}>
+                      <div className="flex items-center gap-1">
+                        Valuta
+                        {fcSortColumn === 'currency' && (
+                          <span>{fcSortDirection === 'asc' ? '' : ''}</span>
+                        )}
+                      </div>
+                    </th>
+                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleFcSort('amount_original')}>
                       <div className="flex items-center gap-1">
                         Belopp
-                        {fcSortColumn === 'amount' && (
-                          <span>{fcSortDirection === 'asc' ? '↑' : '↓'}</span>
+                        {fcSortColumn === 'amount_original' && (
+                          <span>{fcSortDirection === 'asc' ? '' : ''}</span>
                         )}
                       </div>
                     </th>
@@ -881,7 +948,7 @@ export default function ManualMatch() {
                 <tbody>
                   {sortedFcItems.length === 0 && !loadingLeft ? (
                     <tr className="border-t border-gray-700">
-                      <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
                         Inga transaktioner för vald period.
                       </td>
                     </tr>
@@ -890,6 +957,9 @@ export default function ManualMatch() {
                       const isMatched = item.matched !== 0
                       const checked = selectedItemId === item.id
                       const canSelect = !isMatched
+                      const fcCurrency = resolveFcCurrency(item)
+                      const fcSek = resolveFcSek(item)
+                      const fcOriginal = resolveFcOriginal(item)
 
                       return (
                         <tr key={item.id} className={`border-t border-gray-700 ${canSelect ? 'hover:bg-gray-800/30' : 'opacity-60'}`}>
@@ -910,7 +980,17 @@ export default function ManualMatch() {
                             <div className="text-xs text-gray-400">ID: {item.id}</div>
                           </td>
                           <td className="px-4 py-3 text-gray-100 whitespace-nowrap align-top">
-                            {formatAmount(item.amount_original || item.gross_amount, item.currency_original)}
+                            {fcSek != null ? formatAmount(fcSek, 'SEK') : '-'}
+                          </td>
+                          <td className="px-4 py-3 text-gray-100 whitespace-nowrap align-top">
+                            {fcCurrency || '-'}
+                          </td>
+                          <td className="px-4 py-3 text-gray-100 whitespace-nowrap align-top">
+                            {fcOriginal != null && fcCurrency
+                              ? formatAmount(fcOriginal, fcCurrency)
+                              : fcOriginal != null
+                                ? formatAmount(fcOriginal, 'SEK')
+                                : '-'}
                           </td>
                           <td className="px-4 py-3 align-top">
                             <span className={`status-badge ${isMatched ? 'status-passed' : 'status-pending'}`}>
@@ -976,9 +1056,25 @@ export default function ManualMatch() {
                     </th>
                     <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleReceiptSort('gross_amount')}>
                       <div className="flex items-center gap-1">
-                        Belopp
+                        SEK
                         {receiptSortColumn === 'gross_amount' && (
-                          <span>{receiptSortDirection === 'asc' ? '↑' : '↓'}</span>
+                          <span>{receiptSortDirection === 'asc' ? '' : ''}</span>
+                        )}
+                      </div>
+                    </th>
+                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleReceiptSort('currency')}>
+                      <div className="flex items-center gap-1">
+                        Valuta
+                        {receiptSortColumn === 'currency' && (
+                          <span>{receiptSortDirection === 'asc' ? '' : ''}</span>
+                        )}
+                      </div>
+                    </th>
+                    <th className="px-4 py-3 cursor-pointer hover:bg-gray-700" onClick={() => handleReceiptSort('gross_amount_original')}>
+                      <div className="flex items-center gap-1">
+                        Belopp
+                        {receiptSortColumn === 'gross_amount_original' && (
+                          <span>{receiptSortDirection === 'asc' ? '' : ''}</span>
                         )}
                       </div>
                     </th>
@@ -996,7 +1092,7 @@ export default function ManualMatch() {
                 <tbody>
                   {sortedReceipts.length === 0 && !loadingRight ? (
                     <tr className="border-t border-gray-700">
-                      <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
                         Inga kvitton för vald period.
                       </td>
                     </tr>
@@ -1006,6 +1102,9 @@ export default function ManualMatch() {
                       const isMatched = matchedReceiptIds.has(r.id)
                       const selectable = !isMatched
                       const showMatchButton = checked && canMatch
+                      const receiptCurrency = resolveReceiptCurrency(r)
+                      const receiptSek = resolveReceiptSek(r)
+                      const receiptOriginal = resolveReceiptOriginal(r)
 
                       return (
                         <tr key={r.id} className="border-t border-gray-700 hover:bg-gray-800/30">
@@ -1026,7 +1125,17 @@ export default function ManualMatch() {
                             <div className="text-xs text-gray-400">{r.orgnr || ''}</div>
                           </td>
                           <td className="px-4 py-3 text-gray-100 whitespace-nowrap align-top">
-                            {formatAmount(Number(r.gross_amount || r.total_gross || 0))}
+                            {receiptSek != null ? formatAmount(receiptSek, 'SEK') : '-'}
+                          </td>
+                          <td className="px-4 py-3 text-gray-100 whitespace-nowrap align-top">
+                            {receiptCurrency || '-'}
+                          </td>
+                          <td className="px-4 py-3 text-gray-100 whitespace-nowrap align-top">
+                            {receiptOriginal != null && receiptCurrency
+                              ? formatAmount(receiptOriginal, receiptCurrency)
+                              : receiptOriginal != null
+                                ? formatAmount(receiptOriginal, 'SEK')
+                                : '-'}
                           </td>
                           <td className="px-4 py-3 align-top">
                             <span className={`status-badge ${isMatched ? 'status-passed' : 'status-pending'}`}>

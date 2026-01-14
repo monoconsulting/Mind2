@@ -118,6 +118,10 @@ def process_invoice_document(invoice_id: str) -> dict[str, Any]:
                 "merchant_name": line.merchant_name or "",
                 "description": line.description or (line.merchant_name or ""),
                 "amount": amount_float,
+                "currency_original": line.currency_original,
+                "amount_original": line.amount_original,
+                "exchange_rate": line.exchange_rate,
+                "amount_sek": line.amount_sek,
                 "confidence": line.confidence,
                 "raw_text": line.source_text or "",
             }
@@ -184,6 +188,22 @@ def _persist_invoice_lines(invoice_id: str, parsed_lines: list[dict[str, Any]]) 
                     amount = Decimal(str(line.get("amount", 0))).quantize(Decimal("0.01"))
                 except Exception:
                     amount = Decimal("0.00")
+                try:
+                    amount_original = line.get("amount_original")
+                    amount_original = Decimal(str(amount_original)).quantize(Decimal("0.01")) if amount_original is not None else None
+                except Exception:
+                    amount_original = None
+                try:
+                    amount_sek = line.get("amount_sek")
+                    amount_sek = Decimal(str(amount_sek)).quantize(Decimal("0.01")) if amount_sek is not None else None
+                except Exception:
+                    amount_sek = None
+                try:
+                    exchange_rate = line.get("exchange_rate")
+                    exchange_rate = Decimal(str(exchange_rate)) if exchange_rate is not None else None
+                except Exception:
+                    exchange_rate = None
+                currency_original = line.get("currency_original")
                 transaction_date = line.get("transaction_date")
                 merchant_name = line.get("merchant_name") or line.get("description") or ""
                 description = line.get("description") or merchant_name
@@ -192,13 +212,18 @@ def _persist_invoice_lines(invoice_id: str, parsed_lines: list[dict[str, Any]]) 
                 cur.execute(
                     (
                         "INSERT INTO invoice_lines "
-                        "(invoice_id, transaction_date, amount, merchant_name, description, match_status, extraction_confidence, ocr_source_text) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+                        "(invoice_id, transaction_date, amount, currency_original, amount_original, exchange_rate, amount_sek, "
+                        "merchant_name, description, match_status, extraction_confidence, ocr_source_text) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
                     ),
                     (
                         invoice_id,
                         transaction_date,
                         amount,
+                        currency_original,
+                        amount_original,
+                        exchange_rate,
+                        amount_sek,
                         merchant_name,
                         description,
                         InvoiceLineMatchStatus.PENDING.value,

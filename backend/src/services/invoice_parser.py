@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 
 _LINE_PATTERN = re.compile(
-    r"^(20\d{2}-\d{2}-\d{2})\s+(.+?)\s+(-?\d+[.,]\d{2})$",
+    r"^(20\d{2}-\d{2}-\d{2})\s+(.+?)\s+(-?[\d\s]+[.,]\d{2})$",
     re.MULTILINE,
 )
 _PERIOD_PATTERN = re.compile(
@@ -36,7 +36,8 @@ class ParsedInvoiceLine:
 
 
 def _normalise_amount(value: str) -> float:
-    cleaned = value.replace(",", ".").strip()
+    # Remove spaces (thousands separators) before normalizing decimal point
+    cleaned = value.replace(" ", "").replace(",", ".").strip()
     try:
         return float(cleaned)
     except ValueError:
@@ -60,8 +61,14 @@ def parse_credit_card_statement(text: str) -> Dict[str, Any]:
     if not text:
         return result
 
+    # Pre-processing: Split merged lines
+    # If a date pattern appears preceded by whitespace (and not start of line),
+    # force a newline before it. This handles OCR merging multiple rows.
+    # Regex: Look for whitespace followed by YYYY-MM-DD, replace with newline + date
+    processed_text = re.sub(r"(\s)(20\d{2}-\d{2}-\d{2})", r"\n\2", text)
+
     lines: List[ParsedInvoiceLine] = []
-    for match in _LINE_PATTERN.finditer(text):
+    for match in _LINE_PATTERN.finditer(processed_text):
         transaction_date, merchant, amount = match.groups()
         merchant_clean = merchant.strip()
         raw_snippet = match.group(0).strip()

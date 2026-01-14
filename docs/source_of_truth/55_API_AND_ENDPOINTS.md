@@ -487,6 +487,8 @@ Returns a detailed invoice payload (metadata, line items, and preview pages).
 Notes:
 - `invoice.pages[]` and `invoice.metadata.pages[]` are provided for frontend preview rendering.
 - Each page uses the receipt image endpoint for high-quality rendering.
+- `lines[]` entries include currency fields when available: `currency_original`, `amount_original`, `exchange_rate`, `amount_sek` (plus legacy `amount`).
+- `items[]` mirrors `lines[]` for backward compatibility and includes the same currency fields.
 
 ### 7.11 Get Invoice OCR/Processing Status
 
@@ -495,6 +497,29 @@ GET /reconciliation/firstcard/invoices/{invoice_id}/status
 ```
 
 Returns processing status plus OCR progress, including per-page preview URLs.
+
+### 7.12 List Invoice Lines
+
+```
+GET /reconciliation/firstcard/invoices/{invoice_id}/lines
+```
+
+Returns paginated invoice lines for the given FirstCard invoice.
+
+Response items include currency fields when available:
+- `currency_original`
+- `amount_original`
+- `exchange_rate`
+- `amount_sek`
+
+### 7.13 Line Match Candidates
+
+```
+GET /reconciliation/firstcard/lines/{line_id}/candidates?invoice_id=<invoice_id>
+```
+
+Returns the line payload plus up to 50 receipt candidates for matching.
+The `line` payload includes `amount_sek`, `amount_original`, and `currency_original`.
 
 ### 7.5 Auto-Match
 

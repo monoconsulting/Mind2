@@ -60,6 +60,10 @@ class LinePayload(TypedDict):
     transaction_date: str | None
     amount: float | None
     currency: str | None
+    currency_original: str | None
+    amount_original: float | None
+    amount_sek: float | None
+    exchange_rate: float | None
     description: str
     match_status: str
     matched_file_id: str | None
@@ -110,8 +114,8 @@ def invoice_lines(invoice_id: str) -> Any:
 
             cur.execute(
                 (
-                    "SELECT id, transaction_date, amount, merchant_name, description, "
-                    "match_status, match_score, matched_file_id "
+                    "SELECT id, transaction_date, amount, currency_original, amount_original, amount_sek, exchange_rate, "
+                    "merchant_name, description, match_status, match_score, matched_file_id "
                     "FROM invoice_lines WHERE invoice_id=%s "
                     "ORDER BY transaction_date ASC, id ASC LIMIT %s OFFSET %s"
                 ),
@@ -122,12 +126,19 @@ def invoice_lines(invoice_id: str) -> Any:
                     line_id,
                     transaction_date,
                     amount,
+                    currency_original,
+                    amount_original,
+                    amount_sek,
+                    exchange_rate,
                     merchant_name,
                     description,
                     match_status,
                     match_score,
                     matched_file_id,
                 ) = row
+                amount_value = float(amount) if amount is not None else None
+                amount_original_value = float(amount_original) if amount_original is not None else amount_value
+                amount_sek_value = float(amount_sek) if amount_sek is not None else amount_value
                 items.append(
                     {
                         "id": int(line_id),
@@ -136,7 +147,11 @@ def invoice_lines(invoice_id: str) -> Any:
                             if hasattr(transaction_date, "isoformat")
                             else transaction_date
                         ),
-                        "amount": float(amount) if amount is not None else None,
+                        "amount": amount_value,
+                        "amount_original": amount_original_value,
+                        "amount_sek": amount_sek_value,
+                        "currency_original": currency_original,
+                        "exchange_rate": float(exchange_rate) if exchange_rate is not None else None,
                         "merchant_name": merchant_name,
                         "description": description,
                         "match_status": match_status,
@@ -181,6 +196,10 @@ def line_candidates(line_id: int) -> Any:
                        il.invoice_id,
                        il.transaction_date,
                        il.amount,
+                       il.currency_original,
+                       il.amount_original,
+                       il.amount_sek,
+                       il.exchange_rate,
                        il.merchant_name,
                        il.description,
                        il.match_status,
@@ -209,6 +228,10 @@ def line_candidates(line_id: int) -> Any:
         line_invoice_id,
         transaction_date,
         amount,
+        currency_original,
+        amount_original,
+        amount_sek,
+        exchange_rate,
         merchant_name,
         description,
         match_status,
@@ -232,14 +255,20 @@ def line_candidates(line_id: int) -> Any:
             vendor_name=matched_vendor_name,
         )
 
-    display_amount = as_decimal(amount)
+    display_amount = as_decimal(amount_sek if amount_sek is not None else amount)
+    amount_original_value = as_decimal(amount_original) if amount_original is not None else as_decimal(amount)
+    amount_sek_value = as_decimal(amount_sek) if amount_sek is not None else as_decimal(amount)
 
     line_payload: LinePayload = LinePayload(
         id=int(line_id_val),
         invoice_id=line_invoice_id or invoice_id,
         transaction_date=transaction_date.isoformat() if hasattr(transaction_date, "isoformat") else transaction_date,
         amount=float(display_amount) if display_amount is not None else None,
-        currency=None,
+        currency=currency_original,
+        currency_original=currency_original,
+        amount_original=float(amount_original_value) if amount_original_value is not None else None,
+        amount_sek=float(amount_sek_value) if amount_sek_value is not None else None,
+        exchange_rate=float(exchange_rate) if exchange_rate is not None else None,
         description=description or merchant_name or "",
         match_status=match_status or "pending",
         matched_file_id=matched_file_id,

@@ -52,3 +52,53 @@ def test_parse_credit_card_statement_handles_empty_payload() -> None:
         "lines": [],
         "raw_text": "",
     }
+
+
+def test_parse_credit_card_statement_handles_spaced_amounts() -> None:
+    """Test handling of amounts with thousands separators (spaces)."""
+    sample_text = textwrap.dedent(
+        """
+        2025-03-05 Bauhaus 2 579,80
+        2025-03-05 Amazon 150,00
+        """
+    ).strip()
+
+    result = parse_credit_card_statement(sample_text)
+    assert len(result["lines"]) == 2
+    
+    line1 = result["lines"][0]
+    assert line1["merchant_name"] == "Bauhaus"
+    assert line1["amount"] == pytest.approx(2579.80)
+    
+    line2 = result["lines"][1]
+    assert line2["merchant_name"] == "Amazon"
+    assert line2["amount"] == pytest.approx(150.00)
+
+
+def test_parse_credit_card_statement_handles_merged_lines() -> None:
+    """Test splitting of multiple transactions merged onto a single line."""
+    # This simulates the OCR error where two transactions appear on one line
+    sample_text = "2025-03-05 Amazon 150,00 2025-03-05 Bauhaus 2 579,80"
+
+    result = parse_credit_card_statement(sample_text)
+    
+    # Needs to find 2 distinct lines, not 1 merged one
+    assert len(result["lines"]) == 2
+    
+    # Using sorted to ensure order doesn't fail test if implementation specifics vary,
+    # though valid order preservation is preferred.
+    # The new logic splits by inserting \n, so order should be preserved.
+    
+    # First transaction (Amazon)
+    line1 = result["lines"][0]
+    assert line1["transaction_date"] == "2025-03-05"
+    assert line1["merchant_name"] == "Amazon"
+    assert line1["amount"] == pytest.approx(150.00)
+    
+    # Second transaction (Bauhaus)
+    line2 = result["lines"][1]
+    assert line2["transaction_date"] == "2025-03-05"
+    # Note: Regex consumption might leave leading spaces in description if not careful,
+    # but .strip() in logic handles it.
+    assert line2["merchant_name"] == "Bauhaus" 
+    assert line2["amount"] == pytest.approx(2579.80)

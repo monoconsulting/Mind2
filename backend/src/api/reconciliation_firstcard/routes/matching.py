@@ -47,6 +47,42 @@ except Exception:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
+def _backfill_receipt_sek_from_line(receipt_file_id: str, line_id: int) -> None:
+    if db_cursor is None:
+        return
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT amount_sek, amount FROM invoice_lines WHERE id=%s",
+                (line_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return
+            amount_sek, amount = row
+            amount_value = amount_sek if amount_sek not in (None, 0) else amount
+            if amount_value in (None, 0):
+                return
+            cur.execute(
+                "SELECT gross_amount_sek FROM unified_files WHERE id=%s",
+                (receipt_file_id,),
+            )
+            receipt_row = cur.fetchone()
+            if not receipt_row:
+                return
+            existing_sek = receipt_row[0]
+            if existing_sek in (None, 0):
+                cur.execute(
+                    "UPDATE unified_files SET gross_amount_sek=%s, updated_at=NOW() WHERE id=%s",
+                    (amount_value, receipt_file_id),
+                )
+    except Exception:
+        logger.exception(
+            "Failed to backfill receipt SEK amount from invoice line %s -> %s",
+            line_id,
+            receipt_file_id,
+        )
+
 
 @recon_bp.post("/reconciliation/firstcard/match")
 def match_invoice_lines() -> Any:
@@ -250,6 +286,8 @@ def update_line_match(line_id: int) -> Any:
         )
     except Exception:
         logger.exception("Failed to backfill card details after manual match for %s", new_file_id)
+
+    _backfill_receipt_sek_from_line(new_file_id, line_id)
 
     log_event(
         logger,

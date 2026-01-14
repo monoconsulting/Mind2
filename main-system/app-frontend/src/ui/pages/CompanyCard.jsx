@@ -1125,9 +1125,17 @@ export default function CompanyCard() {
           aVal = (a.description || '').toLowerCase()
           bVal = (b.description || '').toLowerCase()
           break
-        case 'amount':
-          aVal = Number(a.amount) || 0
-          bVal = Number(b.amount) || 0
+        case 'amount_sek':
+          aVal = Number(a.amount_sek ?? a.amount) || 0
+          bVal = Number(b.amount_sek ?? b.amount) || 0
+          break
+        case 'currency':
+          aVal = String(a.currency_original || a.currency || '').toLowerCase()
+          bVal = String(b.currency_original || b.currency || '').toLowerCase()
+          break
+        case 'amount_original':
+          aVal = Number(a.amount_original ?? a.amount) || 0
+          bVal = Number(b.amount_original ?? b.amount) || 0
           break
         case 'match_status':
           aVal = (a.match_status || '').toLowerCase()
@@ -1194,9 +1202,21 @@ export default function CompanyCard() {
               </th>
               <th
                 className="px-4 py-3 cursor-pointer hover:bg-gray-800/40 select-none"
-                onClick={() => handleSortLines('amount')}
+                onClick={() => handleSortLines('amount_sek')}
               >
-                Belopp {sortLineColumn === 'amount' && (sortLineDirection === 'asc' ? '▲' : '▼')}
+                SEK {sortLineColumn === 'amount_sek' && (sortLineDirection === 'asc' ? '\x1e' : '\x1f')}
+              </th>
+              <th
+                className="px-4 py-3 cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSortLines('currency')}
+              >
+                Valuta {sortLineColumn === 'currency' && (sortLineDirection === 'asc' ? '\x1e' : '\x1f')}
+              </th>
+              <th
+                className="px-4 py-3 cursor-pointer hover:bg-gray-800/40 select-none"
+                onClick={() => handleSortLines('amount_original')}
+              >
+                Belopp {sortLineColumn === 'amount_original' && (sortLineDirection === 'asc' ? '\x1e' : '\x1f')}
               </th>
               <th
                 className="px-4 py-3 cursor-pointer hover:bg-gray-800/40 select-none"
@@ -1214,6 +1234,9 @@ export default function CompanyCard() {
               const badgeClass = toneClass[statusDetails.tone] ?? 'status-processing'
               const matchedReceipt = line.matched_receipt
               const isAssigning = assigningLineId === line.id
+              const lineCurrency = line.currency_original || line.currency
+              const lineSek = line.amount_sek ?? line.amount
+              const lineOriginal = line.amount_original ?? line.amount
 
               return (
                 <tr key={line.id} className="border-t border-gray-700">
@@ -1222,7 +1245,13 @@ export default function CompanyCard() {
                     <div className="font-medium">{line.description || '–'}</div>
                     <div className="text-xs text-gray-400">Rad-ID: {line.id}</div>
                   </td>
-                  <td className="px-4 py-3 text-gray-100 whitespace-nowrap">{line && line.currency ? formatCurrency(line.amount, line.currency) : formatAmount(line.amount)}</td>
+                  <td className="px-4 py-3 text-gray-100 whitespace-nowrap">{lineSek != null ? formatCurrency(lineSek, 'SEK') : '-'}</td>
+                  <td className="px-4 py-3 text-gray-200 whitespace-nowrap">{lineCurrency || '-'}</td>
+                  <td className="px-4 py-3 text-gray-100 whitespace-nowrap">{lineOriginal != null && lineCurrency
+                    ? formatCurrency(lineOriginal, lineCurrency)
+                    : lineOriginal != null
+                      ? formatCurrency(lineOriginal, 'SEK')
+                      : '-'}</td>
                   <td className="px-4 py-3 text-gray-200">
                     <span className={`status-badge ${badgeClass}`}>{statusDetails.label}</span>
                   </td>
@@ -1274,7 +1303,7 @@ export default function CompanyCard() {
               )
             }) : (
               <tr className="border-t border-gray-700">
-                <td colSpan={6} className="px-4 py-8 text-center text-gray-500">-</td>
+                <td colSpan={8} className="px-4 py-8 text-center text-gray-500">-</td>
               </tr>
             )}
           </tbody>
@@ -1353,7 +1382,11 @@ export default function CompanyCard() {
           <div>
             <h3>Matchningskandidater</h3>
             <p className="text-sm text-gray-400 mt-1">
-              Rad {candidateState.line.id}: {candidateState.line.description} - {(candidateState.line?.currency ? formatCurrency(candidateState.line.amount, candidateState.line.currency) : formatAmount(candidateState.line.amount))}
+              Rad {candidateState.line.id}: {candidateState.line.description} - {candidateState.line?.amount_sek != null
+                ? formatCurrency(candidateState.line.amount_sek, 'SEK')
+                : candidateState.line?.amount != null
+                  ? formatCurrency(candidateState.line.amount, 'SEK')
+                  : '-'}
             </p>
           </div>
           <button type="button" className="icon-button" onClick={closeCandidates} aria-label="Stäng">

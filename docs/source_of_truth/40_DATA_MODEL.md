@@ -58,6 +58,11 @@ Key columns include:
 - Imported from card statement exports.
 - Key columns: id, company_id, card_holder, transaction_date, posting_date, amount, currency, merchant_name, external_reference, match_status.
 
+### 2.6.1 FirstCard Invoice Lines (invoice_lines)
+
+- Stores parsed FirstCard/CompanyCard statement lines for reconciliation.
+- Key columns (indicative): id, invoice_id, transaction_date, merchant_name, description, amount (display/match), currency_original, amount_original, exchange_rate, amount_sek, match_status, match_score, matched_file_id.
+
 ### 2.7 Accounting Proposals Table
 
 - Stores AI-generated booking suggestions.
