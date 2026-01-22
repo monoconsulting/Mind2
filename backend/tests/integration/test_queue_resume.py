@@ -3,15 +3,14 @@ import uuid
 import time
 from services.db.connection import db_cursor
 from services.db.files import create_unified_file
-from api.app import create_app
+from api.app import app as flask_app
 
 @pytest.fixture
 def app():
-    app = create_app()
-    app.config.update({
+    flask_app.config.update({
         "TESTING": True,
     })
-    return app
+    return flask_app
 
 @pytest.fixture
 def client(app):
@@ -165,17 +164,12 @@ def test_queue_visibility_and_resume(client):
                 assert row[1] == 'queued'
                 
             print("SUCCESS: Test passed!")
-        except Exception as e:
-            print(f"FAILURE: Test failed with {e}")
-            import traceback
-            traceback.print_exc()
 
 if __name__ == "__main__":
-    # Create app and client manually
-    app = create_app()
-    app.config.update({"TESTING": True})
-    with app.app_context():
-        client = app.test_client()
+    # Use the module-level app instance
+    flask_app.config.update({"TESTING": True})
+    with flask_app.app_context():
+        client = flask_app.test_client()
         try:
             test_queue_visibility_and_resume(client)
         except Exception as e:

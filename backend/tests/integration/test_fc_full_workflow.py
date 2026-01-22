@@ -1,9 +1,17 @@
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock, patch
 
 # Mock services.tasks.common to avoid heavy imports
 mock_common = MagicMock()
 sys.modules["services.tasks.common"] = mock_common
+
+# Mock API routes that cause circular imports when importing services.tasks
+# The circular chain is: services.tasks -> file_management_tasks -> api.reconciliation_firstcard.utils.db_helpers
+#                     -> api.reconciliation_firstcard -> routes -> routes.matching -> services.tasks
+mock_db_helpers = MagicMock()
+mock_db_helpers.ensure_invoice_document = MagicMock(return_value=1)
+sys.modules["api.reconciliation_firstcard.utils.db_helpers"] = mock_db_helpers
+
 
 # Define the enums that are needed
 class InvoiceProcessingStatus:
@@ -17,6 +25,7 @@ class InvoiceProcessingStatus:
     OCR_DONE = "ocr_done"
     value = "some_value"
 
+
 class InvoiceDocumentStatus:
     MATCHING = "matching"
     IMPORTED = "imported"
@@ -26,9 +35,11 @@ class InvoiceDocumentStatus:
     COMPLETED = "completed"
     value = "some_value"
 
+
 class AiStatus:
     MANUAL_REVIEW = "manual_review"
     value = "some_value"
+
 
 mock_common.InvoiceProcessingStatus = InvoiceProcessingStatus
 mock_common.InvoiceDocumentStatus = InvoiceDocumentStatus
@@ -37,8 +48,9 @@ mock_common.db_cursor = MagicMock()
 mock_common.log_event = MagicMock()
 
 import pytest
-from unittest.mock import patch
+
 from services.tasks.workflow_tasks import wf3_firstcard_invoice
+
 
 @patch("services.tasks.workflow_tasks.FirstCardWorkflowCoordinator")
 @patch("services.tasks.workflow_tasks._ensure_creditcard_pages_and_ocr")
@@ -72,49 +84,52 @@ def test_wf3_firstcard_invoice_success(
     MockAIService,
     mock_classify,
     mock_ensure_ocr,
-    MockCoordinator
+    MockCoordinator,
 ):
     # Setup mocks
     mock_ensure_workflow.return_value = {"file_id": "inv-123"}
     mock_load_meta.return_value = {}
     mock_load_file_info.return_value = {"file_type": "cc_pdf", "workflow_type": "creditcard_invoice"}
     mock_ensure_ocr.return_value = ("OCR TEXT", {"pages": []})
-    
+
     mock_classify.return_value.document_type = "fc_invoice"
-    
+
     mock_ai_service = MockAIService.return_value
     mock_ai_service.prompt_provider_names = {}
     mock_ai_service.prompt_model_names = {}
     mock_ai_service.prompts = {}
-    
+
     # Mock extraction response
     mock_extraction = MagicMock()
-    mock_extraction.lines = [MagicMock(amount_sek=100.0, purchase_date=MagicMock(isoformat=lambda: "2023-01-01"))]
+    mock_extraction.lines = [
+        MagicMock(amount_sek=100.0, purchase_date=MagicMock(isoformat=lambda: "2023-01-01"))
+    ]
     mock_extraction.header.invoice_number = "INV-001"
     mock_extraction.header.amount_to_pay = 100.0
     mock_extraction.overall_confidence = 0.9
     mock_ai_service.parse_credit_card_invoice.return_value = mock_extraction
-    
+
     mock_persist_main.return_value = 1
     mock_persist_items.return_value = 1
     mock_persist_lines.return_value = 1
-    
+
     mock_auto_match.return_value = (1, 1)
     mock_refresh.return_value = (1, 1)
     mock_run_box.return_value = {"success": True}
-    
+
     # Run the task
     wf3_firstcard_invoice(123)
-    
+
     # Verify coordinator calls
     coordinator = MockCoordinator.return_value
     coordinator.begin_fc_import_stage.assert_any_call(123, "firstcard_invoice", "Workflow running")
-    coordinator.complete_fc_import_stage.assert_any_call(123, "firstcard_invoice", success=True, message=pytest.any_str)
-    
+    coordinator.complete_fc_import_stage.assert_any_call(
+        123, "firstcard_invoice", success=True, message=ANY
+    )
+
     # Verify status transitions
-    # Note: transition_processing_status is called multiple times.
-    # We check if it was called with expected statuses.
     calls = [args[1] for args, _ in mock_trans_proc.call_args_list]
     assert InvoiceProcessingStatus.OCR_DONE in calls
     assert InvoiceProcessingStatus.AI_PROCESSING in calls
     assert InvoiceProcessingStatus.READY_FOR_MATCHING in calls
+
