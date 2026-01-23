@@ -211,6 +211,19 @@ if (Test-Path $dockerlogsBat) {
     }
 } else {
     Write-Host "  WARNING: dockerlogs.bat not found at $dockerlogsBat" -ForegroundColor Yellow
+    Write-Host "  Falling back to direct docker compose logs collection..." -ForegroundColor Gray
+    try {
+        $env:COMPOSE_PROFILES = "main"
+        docker compose ps -a | Out-File -FilePath "$dockerLogsDir\docker_compose_ps.txt" -Encoding UTF8
+        docker compose logs --no-color --tail 10000 | Out-File -FilePath "$dockerLogsDir\docker_compose_logs.txt" -Encoding UTF8
+        docker info | Out-File -FilePath "$dockerLogsDir\_docker_info.txt" -Encoding UTF8
+        $hasComposePsFile = $true
+        $hasComposeLogsFile = $true
+        $hasDockerInfoFile = $true
+        $dockerLogsSuccess = $true
+    } catch {
+        Write-Host "  WARNING: direct docker log capture failed: $_" -ForegroundColor Yellow
+    }
 }
 
 # Verify critical files exist
