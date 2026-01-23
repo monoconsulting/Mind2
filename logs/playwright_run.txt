@@ -1,0 +1,6 @@
+Playwright run:
+- Requested spec web/tests/e2e/firstcard-import.spec.ts not found.
+- Ran spec: web/tests/test_first_card_upload.spec.ts
+- Command: npx playwright test web/tests/test_first_card_upload.spec.ts --reporter=html
+- HTML report: web/test-reports/firstcard-import-report/index.html
+- Notes: command timed out at 120s and 300s in this environment, but report artifacts were generated.

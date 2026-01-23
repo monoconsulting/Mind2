@@ -353,7 +353,13 @@ function Should-Exclude {
     # Always exclude .env files
     if ($fileName -like ".env*") { return $true }
 
+    $isWebTestReports = $relativePath -match "^web\\test-reports(\\|$)"
+    if ($isWebTestReports) { return $false }
+
     foreach ($pattern in $excludePatterns) {
+        if ($pattern -eq "test-reports" -and $isWebTestReports) {
+            continue
+        }
         if ($relativePath -match "\\$pattern\\|^$pattern\\|\\$pattern$|^$pattern$") {
             return $true
         }
@@ -427,6 +433,15 @@ if (Test-Path $bucketSummaryPath) {
     } catch { }
 }
 
+$playwrightRunPath = Join-Path $sourceDir "logs\playwright_run.txt"
+$playwrightRunContent = ""
+if (Test-Path $playwrightRunPath) {
+    $playwrightRunContent = Get-Content $playwrightRunPath -Raw -ErrorAction SilentlyContinue
+    try {
+        Copy-Item $playwrightRunPath -Destination "$logsDir\playwright_run.txt" -Force
+    } catch { }
+}
+
 # manifest.md
 $manifestContent = @"
 # MIND Audit Snapshot Manifest
@@ -445,6 +460,7 @@ create_codebase.bat
 - **DB Backup**: mysqldump via docker compose exec (full + schema-only)
 - **Docker Logs**: dockerlogs.bat -> scripts/collect_docker_logs.py
 - **Tests**: pytest -q (local -> logs/pytest.txt); pytest -q via docker compose exec ai-api (logs/pytest_container.txt)
+- **Playwright**: run details recorded in logs/playwright_run.txt (if present)
 - **Git Evidence**: git status/diff outputs saved to logs/
 
 ## Declared Exclusions
@@ -567,6 +583,9 @@ $(if ($celeryWorkerContainers.Count -gt 0) { "- **Individual log files**: $($cel
 ### Test Evidence
 - **pytest execution**: $pytestStatus
 $(if (Test-Path "$logsDir\pytest.txt") { "- **Output file**: logs/pytest.txt" } else { "- **Output file**: NOT PRESENT" })
+
+### Playwright Evidence
+$(if ($playwrightRunContent) { $playwrightRunContent } else { "No Playwright run recorded in logs/playwright_run.txt." })
 
 ### Dirty Worktree Handling
 $(if ($bucketSummaryContent) { $bucketSummaryContent } else { "No bucket summary provided." })
