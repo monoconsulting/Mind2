@@ -552,7 +552,11 @@ $composePsStatus = if ($hasComposePsFile) { "PRESENT - docker_compose_ps.txt exi
 $dockerInfoStatus = if ($hasDockerInfoFile) { "PRESENT - _docker_info.txt exists" } else { "MISSING - _docker_info.txt not generated" }
 $pytestStatus = if ($pytestSuccess) { "PASSED - see logs/pytest.txt" } elseif (Test-Path "$logsDir\pytest.txt") { "EXECUTED WITH FAILURES - see logs/pytest.txt" } else { "NOT EXECUTED - pytest could not run" }
 
-$agentMessage = @"
+$repoAgentMessagePath = Join-Path $sourceDir "logs\agent_final_message_source.md"
+if (Test-Path $repoAgentMessagePath) {
+    $agentMessage = Get-Content $repoAgentMessagePath -Raw -ErrorAction SilentlyContinue
+} else {
+    $agentMessage = @"
 # Agent Final Message
 
 ## Snapshot Summary
@@ -605,6 +609,7 @@ $(if (-not $hasCeleryWorkerLogs) { "- Celery workers were not found in docker_co
 $(if (-not $pytestSuccess) { "- pytest did not pass all tests - see logs/pytest.txt for details" })
 $(if (-not $dbDumpSuccess) { "- Database dump failed - MySQL container may not have been running" })
 "@
+}
 
 $agentMessage | Out-File -FilePath "$manifestDir\agent_final_message.md" -Encoding UTF8
 Write-Host "  Created agent_final_message.md (truthful)" -ForegroundColor Gray
