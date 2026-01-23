@@ -354,7 +354,13 @@ function Should-Exclude {
     if ($fileName -like ".env*") { return $true }
 
     $isWebTestReports = $relativePath -match "^web\\test-reports(\\|$)"
-    if ($isWebTestReports) { return $false }
+    if ($isWebTestReports) {
+        $allowedReportRoot = "web\\test-reports\\firstcard-import-report"
+        if ($relativePath -like "$allowedReportRoot*") {
+            return $false
+        }
+        return $true
+    }
 
     foreach ($pattern in $excludePatterns) {
         if ($pattern -eq "test-reports" -and $isWebTestReports) {
