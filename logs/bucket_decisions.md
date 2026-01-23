@@ -18,6 +18,12 @@
 
 ## Task Branch
 - Branch: fix/celery-startup-and-manifest
+- Commits:
+  - 2db9613 fix: break celery import cycle and normalize audit inventory
+  - b644e8c chore: include pytest and git evidence in audit zip
+  - af58a50 chore: preserve repo git evidence in audit zip
+  - 1e602b6 chore: capture docker logs without dockerlogs.bat
+  - ba543da docs: update bucket decisions for audit
 
 ## Bucket B (Parallel/legitimate work moved to salvage branch)
 - Branch: salvage/parallel-worktree-cleanup
