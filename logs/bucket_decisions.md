@@ -13,7 +13,11 @@
 - logs/git_diff_stat.txt
 - logs/git_diff.txt
 - logs/git_diff_cached.txt
+- logs/pytest.txt
 - logs/bucket_decisions.md
+
+## Task Branch
+- Branch: fix/celery-startup-and-manifest
 
 ## Bucket B (Parallel/legitimate work moved to salvage branch)
 - Branch: salvage/parallel-worktree-cleanup
