@@ -1,0 +1,36 @@
+diff --git a/backend/src/api/app.py b/backend/src/api/app.py
+index dabade4..6445719 100644
+--- a/backend/src/api/app.py
++++ b/backend/src/api/app.py
+@@ -18,8 +18,7 @@ except Exception:  # pragma: no cover - optional early
+ from api.export import export_bp
+ from api.receipts import receipts_bp
+ from api.companies import companies_bp
+-from api.reconciliation_firstcard import recon_bp
+-import api.reconciliation_firstcard.routes  # noqa: F401  # ensure routes are registered
++from api.reconciliation_firstcard import recon_bp, register_routes
+ from api.rules import rules_bp
+ from api.auth import auth_bp
+ from api.fetcher import fetcher_bp
+@@ -42,6 +41,7 @@ app.config['JSON_AS_ASCII'] = False
+ app.config['JSON_SORT_KEYS'] = False
+ 
+ limiter.init_app(app)
++register_routes()
+ app.register_blueprint(receipts_bp)
+ app.register_blueprint(companies_bp)
+ app.register_blueprint(recon_bp)
+diff --git a/backend/src/api/reconciliation_firstcard/__init__.py b/backend/src/api/reconciliation_firstcard/__init__.py
+index 96439fa..d1bf70e 100644
+--- a/backend/src/api/reconciliation_firstcard/__init__.py
++++ b/backend/src/api/reconciliation_firstcard/__init__.py
+@@ -13,4 +13,8 @@ from flask import Blueprint
+ # Create the blueprint
+ recon_bp = Blueprint("reconciliation_firstcard", __name__)
+ 
+-__all__ = ["recon_bp"]
++def register_routes() -> None:
++    # Import routes lazily to avoid circular imports during Celery startup.
++    from . import routes  # noqa: F401, E402
++
++__all__ = ["recon_bp", "register_routes"]
