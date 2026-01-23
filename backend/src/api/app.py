@@ -18,8 +18,7 @@ except Exception:  # pragma: no cover - optional early
 from api.export import export_bp
 from api.receipts import receipts_bp
 from api.companies import companies_bp
-from api.reconciliation_firstcard import recon_bp
-import api.reconciliation_firstcard.routes  # noqa: F401  # ensure routes are registered
+from api.reconciliation_firstcard import recon_bp, register_routes
 from api.rules import rules_bp
 from api.auth import auth_bp
 from api.fetcher import fetcher_bp
@@ -42,6 +41,7 @@ app.config['JSON_AS_ASCII'] = False
 app.config['JSON_SORT_KEYS'] = False
 
 limiter.init_app(app)
+register_routes()
 app.register_blueprint(receipts_bp)
 app.register_blueprint(companies_bp)
 app.register_blueprint(recon_bp)
