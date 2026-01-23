@@ -274,12 +274,19 @@ try {
     Write-Host "  WARNING: pytest execution failed: $_" -ForegroundColor Yellow
 }
 
-# Save pytest output
+# Save pytest output (container execution)
 if ($pytestOutput) {
-    $pytestOutput | Out-File -FilePath "$logsDir\pytest.txt" -Encoding UTF8
-    Write-Host "  Saved pytest output to logs/pytest.txt" -ForegroundColor Gray
+    $pytestOutput | Out-File -FilePath "$logsDir\pytest_container.txt" -Encoding UTF8
+    Write-Host "  Saved container pytest output to logs/pytest_container.txt" -ForegroundColor Gray
 } else {
     "pytest was not executed or produced no output" | Out-File -FilePath "$logsDir\pytest_not_run.txt" -Encoding UTF8
+}
+
+# Prefer repo-run pytest output if present (per audit rules)
+$repoPytest = Join-Path $sourceDir "logs\pytest.txt"
+if (Test-Path $repoPytest) {
+    Copy-Item $repoPytest -Destination "$logsDir\pytest.txt" -Force
+    Write-Host "  Copied repo pytest output to logs/pytest.txt" -ForegroundColor Gray
 }
 
 # ============================================
@@ -406,7 +413,7 @@ create_codebase.bat
 ## Scripts Invoked
 - **DB Backup**: mysqldump via docker compose exec (full + schema-only)
 - **Docker Logs**: dockerlogs.bat -> scripts/collect_docker_logs.py
-- **Tests**: pytest -q via docker compose exec ai-api
+- **Tests**: pytest -q (local -> logs/pytest.txt); pytest -q via docker compose exec ai-api (logs/pytest_container.txt)
 - **Git Evidence**: git status/diff outputs saved to logs/
 
 ## Declared Exclusions
