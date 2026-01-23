@@ -41,6 +41,7 @@ from .file_management_tasks import (
 )
 from .history import _history
 from .invoice_tasks import _to_decimal
+from services.ocr import OCR_MIN_NONWHITESPACE_CHARS
 from .utils.invoice_utils import (
     _collect_invoice_ocr_text,
     _load_invoice_file_records,
@@ -371,26 +372,88 @@ def _ensure_creditcard_pages_and_ocr(
             )
 
     combined_text = "\n\n--- PAGE BREAK ---\n\n".join(texts).strip()
-    if not combined_text:
-        logger.warning("Credit card invoice %s produced no OCR text.", file_id)
+
+    # Calculate non-whitespace character count for OCR quality check
+    nonwhitespace_count = len(combined_text.replace(" ", "").replace("\n", "").replace("\t", ""))
+    ocr_is_meaningful = nonwhitespace_count >= OCR_MIN_NONWHITESPACE_CHARS
+
+    if not combined_text or not ocr_is_meaningful:
+        logger.warning(
+            "Credit card invoice %s produced insufficient OCR text (chars=%d, nonws=%d, threshold=%d).",
+            file_id,
+            len(combined_text or ""),
+            nonwhitespace_count,
+            OCR_MIN_NONWHITESPACE_CHARS,
+        )
         log_event(
             logger,
-            "convert.creditcard.ocr_empty",
+            "convert.creditcard.ocr_insufficient",
             file_id=file_id,
             page_count=len(page_refs) or 1,
+            char_count=len(combined_text or ""),
+            nonwhitespace_count=nonwhitespace_count,
+            threshold=OCR_MIN_NONWHITESPACE_CHARS,
         )
+
+        # Mark parent file as OCR_FAILED
+        _update_file_status(file_id, AiStatus.OCR_FAILED.value)
+
+        # Mark individual pages as OCR_FAILED if they had no/little text
+        for page in page_refs:
+            page_id = page.get("file_id")
+            if page_id:
+                _update_file_status(page_id, AiStatus.OCR_FAILED.value)
+
+        # Persist metadata about the failure for manual review
+        other_data["combined_ocr_text"] = combined_text
+        other_data["ocr_failed"] = True
+        other_data["ocr_failure_reason"] = "insufficient_text"
+        other_data["ocr_char_count"] = len(combined_text or "")
+        other_data["ocr_nonwhitespace_count"] = nonwhitespace_count
+        other_data["ocr_threshold"] = OCR_MIN_NONWHITESPACE_CHARS
+        update_other_data(file_id, other_data)
+
+        _history(
+            file_id,
+            "ocr",
+            "failed",
+            ai_stage_name="OCR",
+            log_text=f"OCR produced insufficient text ({nonwhitespace_count} non-whitespace chars, threshold={OCR_MIN_NONWHITESPACE_CHARS})",
+            error_message="OCR text below minimum threshold",
+        )
+
+        return combined_text, other_data
+
+    # OCR succeeded with meaningful text
     other_data["combined_ocr_text"] = combined_text
+    other_data["ocr_failed"] = False
+    other_data["ocr_char_count"] = len(combined_text)
+    other_data["ocr_nonwhitespace_count"] = nonwhitespace_count
     update_other_data(file_id, other_data)
     _update_file_status(file_id, InvoiceProcessingStatus.OCR_DONE.value)
 
-    if combined_text:
-        log_event(
-            logger,
-            "convert.creditcard.ocr_completed",
-            file_id=file_id,
-            page_count=len(page_refs) or 1,
-            characters=len(combined_text),
-        )
+    # Mark pages as OCR_DONE
+    for page in page_refs:
+        page_id = page.get("file_id")
+        if page_id:
+            _update_file_status(page_id, AiStatus.OCR_DONE.value)
+
+    log_event(
+        logger,
+        "convert.creditcard.ocr_completed",
+        file_id=file_id,
+        page_count=len(page_refs) or 1,
+        characters=len(combined_text),
+        nonwhitespace_count=nonwhitespace_count,
+    )
+
+    _history(
+        file_id,
+        "ocr",
+        "success",
+        ai_stage_name="OCR",
+        log_text=f"OCR completed successfully ({len(combined_text)} chars, {nonwhitespace_count} non-whitespace)",
+    )
 
     return combined_text, other_data
 

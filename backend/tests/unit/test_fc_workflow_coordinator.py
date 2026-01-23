@@ -1,5 +1,5 @@
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # Mock services.tasks.common to avoid heavy imports
 mock_common = MagicMock()

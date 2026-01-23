@@ -35,13 +35,26 @@ test.describe('Manual Match - FirstCard to Receipts @manual-match', () => {
     const fcTable = page.locator('table').first();
     const receiptsTable = page.locator('table').last();
 
-    await expect(fcTable.locator('th')).toContainText('SEK');
-    await expect(fcTable.locator('th')).toContainText('Valuta');
-    await expect(fcTable.locator('th')).toContainText('Belopp');
+    await expect(fcTable.locator('thead th')).toContainText([
+      'Välj',
+      'Datum',
+      'Företag',
+      'SEK',
+      'Valuta',
+      'Belopp',
+      'Status',
+    ]);
 
-    await expect(receiptsTable.locator('th')).toContainText('SEK');
-    await expect(receiptsTable.locator('th')).toContainText('Valuta');
-    await expect(receiptsTable.locator('th')).toContainText('Belopp');
+    await expect(receiptsTable.locator('thead th')).toContainText([
+      'Välj',
+      'Datum',
+      'Företag',
+      'SEK',
+      'Valuta',
+      'Belopp',
+      'Status',
+      'Åtgärd',
+    ]);
   });
 
 

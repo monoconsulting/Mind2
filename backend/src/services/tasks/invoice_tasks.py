@@ -182,6 +182,18 @@ def _persist_invoice_lines(invoice_id: str, parsed_lines: list[dict[str, Any]]) 
     inserted = 0
     try:
         with db_cursor() as cur:
+            # When re-importing (resume/restart), clear any history rows first.
+            # invoice_line_history.invoice_line_id has an FK to invoice_lines.id, so deleting
+            # invoice_lines directly can fail if history exists.
+            cur.execute(
+                """
+                DELETE FROM invoice_line_history
+                 WHERE invoice_line_id IN (
+                   SELECT id FROM invoice_lines WHERE invoice_id=%s
+                 )
+                """,
+                (invoice_id,),
+            )
             cur.execute("DELETE FROM invoice_lines WHERE invoice_id=%s", (invoice_id,))
             for line in parsed_lines:
                 try:
@@ -204,6 +216,29 @@ def _persist_invoice_lines(invoice_id: str, parsed_lines: list[dict[str, Any]]) 
                 except Exception:
                     exchange_rate = None
                 currency_original = line.get("currency_original")
+                if isinstance(currency_original, str):
+                    currency_original = currency_original.strip().upper() or None
+                else:
+                    currency_original = None
+
+                if not currency_original:
+                    currency_original = "SEK"
+
+                if currency_original == "SEK":
+                    if amount_sek is None:
+                        amount_sek = amount
+                    if amount_original is None:
+                        amount_original = amount_sek
+                    if exchange_rate is None:
+                        exchange_rate = Decimal("0")
+                else:
+                    if amount_sek is None:
+                        amount_sek = amount
+                    if exchange_rate is None and amount_sek is not None and amount_original not in (None, 0):
+                        try:
+                            exchange_rate = (amount_sek / amount_original).quantize(Decimal("0.000001"))
+                        except Exception:
+                            exchange_rate = None
                 transaction_date = line.get("transaction_date")
                 merchant_name = line.get("merchant_name") or line.get("description") or ""
                 description = line.get("description") or merchant_name

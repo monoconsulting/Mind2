@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from functools import lru_cache
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,13 +13,30 @@ try:
 except Exception:  # pragma: no cover
     Image = None  # type: ignore
 
+# Ensure PaddleX does not default to MKLDNN for OCR (known to trigger onednn runtime failures).
+os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "0")
+# Keep Paddle on the stable executor path to avoid PIR/onednn crashes in OCR workers.
+os.environ.setdefault("FLAGS_enable_pir_api", "0")
+os.environ.setdefault("FLAGS_enable_pir_in_executor", "0")
+
 try:
     from paddleocr import PaddleOCR  # type: ignore
 except Exception:  # pragma: no cover
     PaddleOCR = None  # type: ignore
 
 
-_OCR_ENGINE: Optional["PaddleOCR"] = None
+OCR_PRIMARY_LANG = "sv"
+OCR_FALLBACK_LANG = "en"
+OCR_MIN_NONWHITESPACE_CHARS = 15
+
+_OCR_ENGINES: dict[str, Optional["PaddleOCR"]] = {}
+_OCR_ENGINE_ERRORS: dict[str, str] = {}
+
+
+def count_non_whitespace_chars(text: str | None) -> int:
+    if not text:
+        return 0
+    return len(re.sub(r"\s+", "", text))
 
 
 def _env_bool(key: str, default: bool) -> bool:
@@ -211,13 +229,86 @@ def _list_images(base: str | Path, receipt_id: str) -> List[Path]:
     )
 
 
-def _get_ocr_engine() -> Optional["PaddleOCR"]:
+@lru_cache(maxsize=None)
+def _paddle_model_roots() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for key in ("PADDLEOCR_HOME", "PADDLE_HOME", "PADDLEX_HOME"):
+        env_home = os.getenv(key)
+        if env_home:
+            roots.append(Path(env_home).expanduser().resolve())
+    roots.append((Path.home() / ".paddleocr").resolve())
+    roots.append((Path.home() / ".paddlex").resolve())
+    # Deduplicate while preserving order
+    seen = set()
+    unique: list[Path] = []
+    for root in roots:
+        if root in seen:
+            continue
+        seen.add(root)
+        unique.append(root)
+    return tuple(unique)
+
+
+@lru_cache(maxsize=None)
+def _paddle_models_present(lang: str) -> tuple[bool, dict[str, bool], Path | None, tuple[Path, ...]]:
+    roots = _paddle_model_roots()
+    checks = {"det": False, "rec": False, "cls": False}
+    lang_token = lang.lower().strip()
+    if not lang_token:
+        return False, checks, None, roots
+
+    lang_tokens = [lang_token]
+    if lang_token in {"sv", "en"}:
+        lang_tokens.append("latin")
+
+    try:
+        for root in roots:
+            if not root.exists():
+                continue
+            for path in root.rglob("*"):
+                if not path.is_dir():
+                    continue
+                lower = str(path).lower()
+                if "det" in lower:
+                    checks["det"] = True
+                if "rec" in lower and any(token in lower for token in lang_tokens):
+                    checks["rec"] = True
+                if "cls" in lower:
+                    checks["cls"] = True
+                if checks["det"] and checks["rec"]:
+                    return True, checks, root, roots
+    except Exception:
+        return False, checks, None, roots
+
+    return False, checks, None, roots
+
+
+def _get_ocr_engine(lang: str) -> Optional["PaddleOCR"]:
     import logging
     logger = logging.getLogger(__name__)
 
-    global _OCR_ENGINE
-    if _OCR_ENGINE is None and PaddleOCR is not None:
-        lang = os.getenv("OCR_LANG", "sv+en")
+    global _OCR_ENGINES
+    if "+" in lang or "," in lang:
+        if lang not in _OCR_ENGINE_ERRORS:
+            _OCR_ENGINE_ERRORS[lang] = "Invalid OCR language; use a single language per engine."
+            logger.error("OCR: invalid language requested (%s).", lang)
+        return None
+
+    if lang in _OCR_ENGINE_ERRORS:
+        return None
+
+    if lang not in _OCR_ENGINES and PaddleOCR is not None:
+        models_ok, checks, root, roots = _paddle_models_present(lang)
+        if not models_ok:
+            logger.warning(
+                "PaddleOCR models missing for lang=%s. Attempting init to allow auto-download. "
+                "Expected det/rec under %s; found det=%s, rec=%s, cls=%s.",
+                lang,
+                ", ".join(str(r) for r in roots),
+                checks["det"],
+                checks["rec"],
+                checks["cls"],
+            )
         use_angle_cls = _env_bool("OCR_USE_ANGLE_CLS", True)
         show_log = _env_bool("OCR_SHOW_LOG", False)
 
@@ -228,9 +319,9 @@ def _get_ocr_engine() -> Optional["PaddleOCR"]:
             "lang": lang,
             "use_angle_cls": use_angle_cls,
         }
-        # Newer PaddleOCR versions may accept these detector resize controls.
-        init_kwargs["det_limit_side_len"] = det_limit_side_len
-        init_kwargs["det_limit_type"] = det_limit_type
+        # Newer PaddleOCR versions prefer the text_det_* names. We'll try those first.
+        init_kwargs["text_det_limit_side_len"] = det_limit_side_len
+        init_kwargs["text_det_limit_type"] = det_limit_type
 
         # Older versions used show_log; newer versions ignore/remove it. Try safely.
         if show_log:
@@ -244,44 +335,63 @@ def _get_ocr_engine() -> Optional["PaddleOCR"]:
                 det_limit_side_len,
                 det_limit_type,
             )
-            _OCR_ENGINE = PaddleOCR(**init_kwargs)
+            _OCR_ENGINES[lang] = PaddleOCR(**init_kwargs)
         except TypeError as exc:
             logger.warning(
-                "PaddleOCR init failed with full kwargs (%s); retrying with reduced kwargs",
+                "PaddleOCR init failed with text_det kwargs (%s); retrying with legacy det_limit_* kwargs",
                 exc,
             )
-            reduced_kwargs = {"lang": lang, "use_angle_cls": use_angle_cls}
+            legacy_kwargs = {
+                "lang": lang,
+                "use_angle_cls": use_angle_cls,
+                "det_limit_side_len": det_limit_side_len,
+                "det_limit_type": det_limit_type,
+            }
+            if show_log:
+                legacy_kwargs["show_log"] = True
             try:
-                _OCR_ENGINE = PaddleOCR(**reduced_kwargs)
+                _OCR_ENGINES[lang] = PaddleOCR(**legacy_kwargs)
             except TypeError as exc2:
                 logger.warning(
-                    "PaddleOCR init failed with reduced kwargs (%s); retrying without angle classifier",
+                    "PaddleOCR init failed with legacy kwargs (%s); retrying with reduced kwargs",
                     exc2,
                 )
-                _OCR_ENGINE = PaddleOCR(lang=lang)
+                reduced_kwargs = {"lang": lang, "use_angle_cls": use_angle_cls}
+                try:
+                    _OCR_ENGINES[lang] = PaddleOCR(**reduced_kwargs)
+                except TypeError as exc3:
+                    logger.warning(
+                        "PaddleOCR init failed with reduced kwargs (%s); retrying without angle classifier",
+                        exc3,
+                    )
+                    _OCR_ENGINES[lang] = PaddleOCR(lang=lang)
         except Exception:
             logger.exception("Failed to initialize PaddleOCR")
-            _OCR_ENGINE = None
+            _OCR_ENGINES[lang] = None
         else:
             logger.info("PaddleOCR initialized successfully")
-    return _OCR_ENGINE
+    return _OCR_ENGINES.get(lang)
 
 
-def _extract_text_from_images(images: List[Path]) -> Dict[str, Any]:
+def _extract_text_from_images(
+    images: List[Path],
+    *,
+    engine: Optional["PaddleOCR"],
+    lang: str,
+) -> Dict[str, Any]:
     import logging
     logger = logging.getLogger(__name__)
 
     full_text: List[str] = []
     boxes: List[Dict[str, Any]] = []
 
-    engine = _get_ocr_engine()
     if not images or Image is None:
         logger.warning(f"OCR: No images or PIL not available. Images: {len(images) if images else 0}")
-        return {"text": "", "boxes": []}
+        return {"text": "", "boxes": [], "error": "no_images_or_pil"}
 
     if engine is None:
-        logger.error("OCR: PaddleOCR engine not available - cannot process images")
-        return {"text": "", "boxes": []}
+        logger.error("OCR: PaddleOCR engine not available for lang=%s - cannot process images", lang)
+        return {"text": "", "boxes": [], "error": f"engine_unavailable:{lang}"}
 
     # Quality-first OCR settings (defaults chosen to be conservative but effective).
     input_long_side = _env_int("OCR_INPUT_LONG_SIDE", 4500)
@@ -413,6 +523,30 @@ def _extract_text_from_images(images: List[Path]) -> Dict[str, Any]:
                                 )
                             handled = True
                 if not handled and isinstance(ocr_result_item, dict):
+                    # PaddleOCR 3.3.x may return rec_* keys at the top-level dict.
+                    if "rec_texts" in ocr_result_item and "rec_polys" in ocr_result_item:
+                        rec_texts = ocr_result_item.get("rec_texts", []) or []
+                        rec_polys = ocr_result_item.get("rec_polys", []) or []
+                        rec_scores = ocr_result_item.get("rec_scores", []) or []
+                        for i, text_value in enumerate(rec_texts):
+                            if i >= len(rec_polys):
+                                continue
+                            polygon = rec_polys[i]
+                            confidence = rec_scores[i] if i < len(rec_scores) else None
+                            append_detection(
+                                text_value,
+                                polygon,
+                                confidence,
+                                base_width=base_width,
+                                base_height=base_height,
+                                offset_x=offset_x,
+                                offset_y=offset_y,
+                                text_out=local_text,
+                                boxes_out=local_boxes,
+                            )
+                        handled = True
+                    if handled:
+                        continue
                     res = ocr_result_item.get("res")
                     if isinstance(res, dict):
                         rec_texts = res.get("rec_texts", [])
@@ -664,21 +798,52 @@ def _extract_line_items(text: str, total_amount: Optional[float]) -> List[Dict[s
 
 def run_ocr(receipt_id: str, storage_dir: str | Path | None = None) -> Dict[str, Any]:
     """Perform OCR/extraction using PaddleOCR (with graceful fallback)."""
+    import logging
+    logger = logging.getLogger(__name__)
+
     base = storage_dir or os.getenv("STORAGE_DIR", "/data/storage")
     base_path = Path(base)
     receipt_path = _receipt_dir(base_path, receipt_id)
     receipt_path.mkdir(parents=True, exist_ok=True)
     images = _list_images(base_path, receipt_id)
+    image_count = len(images)
 
-    ocr_result = _extract_text_from_images(images)
-    boxes = ocr_result.get("boxes", [])
+    sv_engine = _get_ocr_engine(OCR_PRIMARY_LANG)
+    sv_result = _extract_text_from_images(images, engine=sv_engine, lang=OCR_PRIMARY_LANG)
+    sv_text = sv_result.get("text") or ""
+    sv_count = count_non_whitespace_chars(sv_text)
+
+    fallback_triggered = sv_count < OCR_MIN_NONWHITESPACE_CHARS
+    lang_used = OCR_PRIMARY_LANG
+    best_result = sv_result
+    best_count = sv_count
+
+    en_result: dict[str, Any] | None = None
+    if fallback_triggered:
+        en_engine = _get_ocr_engine(OCR_FALLBACK_LANG)
+        en_result = _extract_text_from_images(images, engine=en_engine, lang=OCR_FALLBACK_LANG)
+        en_text = (en_result.get("text") if en_result else "") or ""
+        en_count = count_non_whitespace_chars(en_text)
+        if en_count > best_count:
+            best_result = en_result
+            best_count = en_count
+            lang_used = OCR_FALLBACK_LANG
+
+    boxes = best_result.get("boxes", [])
     _write_boxes(base_path, receipt_id, boxes)
 
-    line_items = ocr_result.get("line_items", [])
+    line_items = best_result.get("line_items", [])
     if line_items:
         _write_line_items(base_path, receipt_id, line_items)
 
-    if not ocr_result.get("text"):
+    if best_count < OCR_MIN_NONWHITESPACE_CHARS:
+        short_text = best_result.get("text") or ""
+        logger.warning(
+            "OCR: text too short after sv/en attempts (receipt_id=%s, chars=%s, images=%s).",
+            receipt_id,
+            best_count,
+            image_count,
+        )
         return {
             "merchant_name": None,
             "purchase_datetime": None,
@@ -688,10 +853,17 @@ def run_ocr(receipt_id: str, storage_dir: str | Path | None = None) -> Dict[str,
             "boxes_saved": True,
             "vat_breakdown": {},
             "line_items": [],
+            "text": "",
+            "raw_text": short_text,
+            "lang_used": lang_used,
+            "char_count": best_count,
+            "fallback_triggered": fallback_triggered,
+            "image_count": image_count,
+            "error": best_result.get("error") or (en_result or {}).get("error"),
         }
 
-    gross_val = ocr_result.get("gross")
-    vat_breakdown = ocr_result.get("vat_breakdown", {})
+    gross_val = best_result.get("gross")
+    vat_breakdown = best_result.get("vat_breakdown", {})
     vat_sum = sum(vat_breakdown.values())
 
     net_val = None
@@ -702,13 +874,17 @@ def run_ocr(receipt_id: str, storage_dir: str | Path | None = None) -> Dict[str,
         net_val = None
 
     return {
-        "merchant_name": ocr_result.get("merchant"),
-        "purchase_datetime": ocr_result.get("purchase_datetime"),
+        "merchant_name": best_result.get("merchant"),
+        "purchase_datetime": best_result.get("purchase_datetime"),
         "gross_amount": float(gross_val) if gross_val is not None else None,
         "net_amount": net_val,
         "confidence": 0.85,
-        "text": ocr_result.get("text"),
+        "text": best_result.get("text"),
         "boxes_saved": True,
         "vat_breakdown": vat_breakdown,
         "line_items": line_items,
+        "lang_used": lang_used,
+        "char_count": best_count,
+        "fallback_triggered": fallback_triggered,
+        "image_count": image_count,
     }

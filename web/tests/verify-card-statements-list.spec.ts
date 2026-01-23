@@ -73,4 +73,103 @@ test.describe('Card Statements List', () => {
     expect(refreshedTimestamp).not.toBe('');
     expect(refreshedTimestamp).not.toBe(initialTimestamp);
   });
+
+  test('invoice lines persist currency fields after restart @fc-currency', async ({ page }) => {
+    test.setTimeout(180000);
+    await page.waitForSelector('table.min-w-full');
+
+    const statementId = await page.evaluate(async () => {
+      const res = await fetch('/ai/api/reconciliation/firstcard/statements', {
+        method: 'GET',
+        credentials: 'include',
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const statements = Array.isArray(data?.statements) ? data.statements : [];
+      const first = statements[0];
+      return typeof first?.id === 'string' ? first.id : null;
+    });
+    expect(statementId).toBeTruthy();
+
+    const restartOk = await page.evaluate(async (invoiceId) => {
+      const res = await fetch(`/ai/api/reconciliation/firstcard/statements/${invoiceId}/restart`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      return res.ok;
+    }, statementId);
+    expect(restartOk).toBeTruthy();
+
+    // Refresh view so that backend state is consistent for follow-up reads.
+    await page.getByRole('button', { name: 'Uppdatera' }).click();
+    await page.waitForLoadState('networkidle');
+
+    const pollStart = Date.now();
+    const pollTimeoutMs = 120000;
+    const pollIntervalMs = 2000;
+
+    let pollResult: {
+      lineCount: number;
+      hasAmountSek: boolean;
+      hasCurrencyOriginal: boolean;
+      hasFxLine: boolean;
+      fxHasFields: boolean;
+    } | null = null;
+
+    while (Date.now() - pollStart < pollTimeoutMs) {
+      pollResult = await page.evaluate(async (invoiceId) => {
+        const res = await fetch(`/ai/api/reconciliation/firstcard/invoices/${invoiceId}`, {
+          method: 'GET',
+          credentials: 'include',
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        const lines = Array.isArray(data?.lines) ? data.lines : [];
+        return {
+          lineCount: lines.length,
+          hasAmountSek: lines.some((l) => typeof l?.amount_sek === 'number'),
+          hasCurrencyOriginal: lines.some(
+            (l) => typeof l?.currency_original === 'string' && l.currency_original.trim(),
+          ),
+          hasFxLine: lines.some(
+            (l) =>
+              typeof l?.currency_original === 'string' &&
+              l.currency_original.trim().toUpperCase() !== 'SEK',
+          ),
+          fxHasFields: lines.some(
+            (l) =>
+              typeof l?.currency_original === 'string' &&
+              l.currency_original.trim().toUpperCase() !== 'SEK' &&
+              typeof l?.amount_original === 'number' &&
+              typeof l?.exchange_rate === 'number' &&
+              typeof l?.amount_sek === 'number',
+          ),
+        };
+      }, statementId);
+
+      if (
+        pollResult &&
+        pollResult.lineCount > 0 &&
+        pollResult.hasAmountSek &&
+        pollResult.hasCurrencyOriginal &&
+        (!pollResult.hasFxLine || pollResult.fxHasFields)
+      ) {
+        break;
+      }
+
+      await page.waitForTimeout(pollIntervalMs);
+    }
+
+    expect(pollResult).not.toBeNull();
+    if (!pollResult) return;
+
+    expect(pollResult.lineCount).toBeGreaterThan(0);
+    expect(pollResult.hasAmountSek).toBeTruthy();
+    expect(pollResult.hasCurrencyOriginal).toBeTruthy();
+
+    // Foreign currency rows may not exist on every statement, but when they do, all FX fields must be present.
+    if (pollResult.hasFxLine) {
+      expect(pollResult.fxHasFields).toBeTruthy();
+    }
+  });
 });

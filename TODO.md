@@ -116,6 +116,12 @@ Då en post är vald i varje kolumn ska knappen "Matcha" tändas längst till h�
 4. ta bort knappen MATCHA som finns längst uppe på sidan
 
    
+Utökad funktionalite:
+Chatta med agenten och fyll i data från modal
+
+Hantering av personliga kvitton
+
+Belopp sparas inte när man ändrar i modalen
 
 
 
@@ -176,4 +182,11 @@ Importfunktionaliteten som sker antingen via manuell uppladdning eller ftp - beh
 
 - [ ] I preview modal - skapa knapp för att rensa logger
 - [ ] I kortmatchning logg - knapp för att rensa loggar
+
+## FEATURES TO COME
+Skapa dedikerad yta för upp och nedladdning
+Scannat: Mindupload
+Inläst: mindupload/archived
+
+Hur kan man tagga kvitton som icke-företagskvitton?
 

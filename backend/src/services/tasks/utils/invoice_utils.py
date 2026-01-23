@@ -13,11 +13,10 @@ from ..common import (
 )
 
 _INVOICE_PAGE_COMPLETE_STATUSES = {
-    AiStatus.OCR_DONE.value,
-    InvoiceProcessingStatus.OCR_DONE.value,
-    InvoiceProcessingStatus.READY_FOR_MATCHING.value,
-    InvoiceProcessingStatus.MATCHING_COMPLETED.value,
-    InvoiceProcessingStatus.COMPLETED.value,
+    "ocr_done",
+    "ready_for_matching",
+    "matching_completed",
+    "completed",
 }
 
 

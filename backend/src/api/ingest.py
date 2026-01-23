@@ -64,6 +64,8 @@ def upload_files() -> Any:
     uploaded_count = 0
     skipped_count = 0
     errors = []
+    uploaded_files = []
+    skipped_files = []
 
     storage_dir = os.getenv('STORAGE_DIR', '/data/storage')
     fs = FileStorage(storage_dir)
@@ -84,6 +86,11 @@ def upload_files() -> Any:
             if _hash_exists(file_hash):
                 logger.warning(f"File {idx}: SKIPPED - Duplicate detected: {safe_filename}")
                 skipped_count += 1
+                skipped_files.append({
+                    "filename": safe_filename,
+                    "reason": "duplicate",
+                    "reason_text": "Filen finns redan i systemet",
+                })
                 continue
 
             detection = detect_file(data, safe_filename)
@@ -97,7 +104,12 @@ def upload_files() -> Any:
             
             if not workflow_key:
                 logger.warning(f"File {idx}: SKIPPED - Unsupported file type for workflow: {detection.kind}")
-                errors.append(f"Unsupported file type: {safe_filename}")
+                skipped_count += 1
+                skipped_files.append({
+                    "filename": safe_filename,
+                    "reason": "unsupported_type",
+                    "reason_text": f"Filtypen stöds inte ({detection.kind})",
+                })
                 continue
 
             unified_file = create_unified_file(
@@ -190,6 +202,11 @@ def upload_files() -> Any:
                     )
                 logger.info(f"File {idx}: Dispatched {workflow_key} run {workflow_run_id} for file {file_id}")
                 uploaded_count += 1
+                uploaded_files.append({
+                    "filename": safe_filename,
+                    "file_id": file_id,
+                    "workflow_run_id": workflow_run_id,
+                })
             else:
                 if workflow_run_id and workflow_key == "WF1_RECEIPT":
                     complete_import_stage(
@@ -203,6 +220,11 @@ def upload_files() -> Any:
         except DuplicateFileError:
             logger.warning(f"File {idx}: SKIPPED - Duplicate file (hash={file_hash[:16]}...)")
             skipped_count += 1
+            skipped_files.append({
+                "filename": safe_filename,
+                "reason": "duplicate",
+                "reason_text": "Filen finns redan i systemet",
+            })
         except Exception as e:
             error_msg = f"File processing error for {file.filename}: {str(e)}"
             logger.error(f"File {idx}: ERROR - {error_msg}", exc_info=True)
@@ -211,10 +233,18 @@ def upload_files() -> Any:
 
     logger.info(f"=== UPLOAD REQUEST COMPLETE === Uploaded: {uploaded_count}, Skipped: {skipped_count}, Errors: {len(errors)}")
 
+    response_data = {
+        "ok": len(errors) == 0,
+        "uploaded": uploaded_count,
+        "skipped": skipped_count,
+        "uploaded_files": uploaded_files,
+        "skipped_files": skipped_files,
+    }
     if errors:
-        return jsonify({"ok": False, "uploaded": uploaded_count, "skipped": skipped_count, "errors": errors}), 500
+        response_data["errors"] = errors
+        return jsonify(response_data), 500
 
-    return jsonify({"ok": True, "uploaded": uploaded_count, "skipped": skipped_count}), 200
+    return jsonify(response_data), 200
 
 
 def _parse_other_data(raw: Any) -> dict[str, Any]:

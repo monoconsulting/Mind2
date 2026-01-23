@@ -22,6 +22,8 @@ from .. import recon_bp
 from ..utils.db_helpers import (
     create_invoice_document,
     find_file_id_by_hash,
+    find_soft_deleted_file_by_hash,
+    restore_soft_deleted_file,
     ensure_invoice_document,
     write_invoice_metadata,
 )
@@ -84,6 +86,7 @@ def upload_invoice() -> Any:
 
     fs = _storage()
 
+    restored_from_deleted = False
     try:
         unified_file = create_unified_file(
             file_id=invoice_id,
@@ -104,16 +107,65 @@ def upload_invoice() -> Any:
         )
         workflow_run_id = unified_file.workflow_run_id
     except DuplicateFileError:
+        # First check if there's an active (non-deleted) duplicate
         existing_id = find_file_id_by_hash(file_hash)
-        return (
-            jsonify(
-                {
-                    "error": "duplicate_file",
-                    "invoice_id": existing_id,
-                }
-            ),
-            409,
-        )
+        if existing_id:
+            return (
+                jsonify(
+                    {
+                        "error": "duplicate_file",
+                        "invoice_id": existing_id,
+                    }
+                ),
+                409,
+            )
+
+        # Check if there's a soft-deleted duplicate that can be restored
+        deleted_id = find_soft_deleted_file_by_hash(file_hash)
+        if deleted_id:
+            logger.info(
+                "Found soft-deleted duplicate for hash %s, restoring file %s",
+                file_hash[:16],
+                deleted_id,
+            )
+            if not restore_soft_deleted_file(deleted_id):
+                logger.error("Failed to restore soft-deleted file %s", deleted_id)
+                return jsonify({"error": "restore_failed"}), 500
+
+            # Use the restored file_id instead of the new one
+            invoice_id = deleted_id
+            restored_from_deleted = True
+
+            # Create a new workflow run for the restored file
+            from services.workflow_runs import create_workflow_run
+            workflow_run_id = create_workflow_run(
+                workflow_key="WF3_FIRSTCARD_INVOICE",
+                source_channel="kortmatchning_upload",
+                file_id=invoice_id,
+                content_hash=file_hash,
+            )
+
+            # Update unified_files with the new workflow_run_id
+            if workflow_run_id and db_cursor:
+                try:
+                    with db_cursor() as cur:
+                        cur.execute(
+                            "UPDATE unified_files SET workflow_run_id=%s WHERE id=%s",
+                            (workflow_run_id, invoice_id),
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to update workflow_run_id for restored file %s: %s",
+                        invoice_id,
+                        exc,
+                    )
+        else:
+            # Unexpected: duplicate error but no file found (neither active nor deleted)
+            logger.error(
+                "DuplicateFileError but no file found for hash %s",
+                file_hash[:16],
+            )
+            return jsonify({"error": "duplicate_unknown"}), 500
 
     fs.save_original(invoice_id, safe_name, data)
     logger.info(

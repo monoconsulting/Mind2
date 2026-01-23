@@ -44,7 +44,43 @@ from .workflow_base import (
     mark_stage,
     log_import_event,
 )
+from services.ocr import OCR_MIN_NONWHITESPACE_CHARS, count_non_whitespace_chars
 logger = logging.getLogger(__name__)
+
+
+def _merge_ocr_page_results(
+    results: list[tuple[int, str, str]],
+) -> dict[str, Any]:
+    all_text: list[str] = []
+    failed_pages: list[str] = []
+    missing_results = 0
+    total_pages = len(results or [])
+    pages_with_text = 0
+    total_chars_merged = 0
+
+    for result in results or []:
+        if not result or len(result) != 3:
+            missing_results += 1
+            continue
+        _, page_id, text = result
+        text = text or ""
+        char_count = count_non_whitespace_chars(text)
+        if char_count >= OCR_MIN_NONWHITESPACE_CHARS:
+            all_text.append(text)
+            pages_with_text += 1
+            total_chars_merged += char_count
+        else:
+            failed_pages.append(str(page_id))
+
+    combined_text = "\n\n--- PAGE BREAK ---\n\n".join(all_text)
+    return {
+        "combined_text": combined_text,
+        "failed_pages": failed_pages,
+        "missing_results": missing_results,
+        "total_pages": total_pages,
+        "pages_with_text": pages_with_text,
+        "total_chars_merged": total_chars_merged,
+    }
 
 # TASK_INVENTORY: ACTIVE (2025-11-28). WF1 OCR stage for receipt workflow.
 @celery_app.task(name="wf1_run_ocr")
@@ -93,10 +129,13 @@ def wf1_run_ocr(workflow_run_id: int) -> int:
 
     elapsed = int((time.time() - start_time) * 1000)
 
-    if result:
-        _update_file_fields(file_id, ocr_raw=result.get("text"))
-        text_len = len(result.get("text", ""))
-        message = f"OCR succeeded, extracted {text_len} chars in {elapsed}ms."
+    text = (result or {}).get("text") or ""
+    char_count = (result or {}).get("char_count")
+    if char_count is None:
+        char_count = count_non_whitespace_chars(text)
+    if result and char_count >= OCR_MIN_NONWHITESPACE_CHARS:
+        _update_file_fields(file_id, ocr_raw=text)
+        message = f"OCR succeeded, extracted {char_count} chars in {elapsed}ms."
         mark_stage(workflow_run_id, "ocr", "succeeded", message=message, end=True)
         complete_import_stage(workflow_run_id, "r_ocr", success=True, message=message)
         _update_file_status(file_id, AiStatus.OCR_DONE.value)
@@ -106,10 +145,15 @@ def wf1_run_ocr(workflow_run_id: int) -> int:
             workflow_run_id=workflow_run_id,
             file_id=file_id,
             duration_ms=elapsed,
-            characters=text_len,
+            characters=char_count,
+            lang_used=(result or {}).get("lang_used"),
+            fallback_triggered=(result or {}).get("fallback_triggered"),
         )
     else:
-        message = f"OCR failed: {error_msg or 'OCR returned no results'}"
+        message = (
+            f"OCR failed: {error_msg or 'OCR returned too-short text'} "
+            f"(chars={char_count}, min={OCR_MIN_NONWHITESPACE_CHARS})."
+        )
         mark_stage(workflow_run_id, "ocr", "failed", message=message, end=True)
         complete_import_stage(workflow_run_id, "r_ocr", success=False, message=message)
         # Do not raise an exception, allow the workflow to be inspected.
@@ -121,6 +165,9 @@ def wf1_run_ocr(workflow_run_id: int) -> int:
             file_id=file_id,
             error=error_msg or "no_text",
             duration_ms=elapsed,
+            characters=char_count,
+            lang_used=(result or {}).get("lang_used"),
+            fallback_triggered=(result or {}).get("fallback_triggered"),
         )
         _update_file_status(file_id, AiStatus.OCR_FAILED.value)
 
@@ -440,22 +487,55 @@ def wf2_run_page_ocr(
     )
     stage_key = f"ocr_page_{effective_page_number}"
 
-    mark_stage(workflow_run_id, stage_key, "running", start=True)
+    mark_stage(workflow_run_id, stage_key, "running", start=True, update_workflow_status=False)
     start_time = time.time()
+    storage_dir = os.getenv("STORAGE_DIR", "/data/storage")
+    fs = FileStorage(storage_dir)
+    image_names = [
+        name
+        for name in fs.list(page_file_id)
+        if name.lower().endswith((".jpg", ".jpeg", ".png", ".tif", ".tiff"))
+    ]
+    image_count = len(image_names)
     log_event(
         logger,
         "wf2.page_ocr.start",
         workflow_run_id=workflow_run_id,
         page_file_id=page_file_id,
         page_number=effective_page_number,
+        storage_dir=storage_dir,
+        image_count=image_count,
     )
+
+    if image_count == 0:
+        message = f"No images found for page_file_id {page_file_id} in {storage_dir}."
+        mark_stage(
+            workflow_run_id,
+            stage_key,
+            "failed",
+            message=message,
+            end=True,
+            update_workflow_status=False,
+        )
+        log_event(
+            logger,
+            "wf2.page_ocr.failed",
+            workflow_run_id=workflow_run_id,
+            page_file_id=page_file_id,
+            page_number=effective_page_number,
+            error="no_images",
+            duration_ms=0,
+            image_count=image_count,
+        )
+        _update_file_status(page_file_id, AiStatus.OCR_FAILED.value)
+        return (workflow_run_id, page_file_id, "")
 
     result: dict[str, Any] | None = None
     error_msg: str | None = None
     text = ""
 
     try:
-        result = run_ocr(page_file_id, os.getenv("STORAGE_DIR", "/data/storage"))
+        result = run_ocr(page_file_id, storage_dir)
     except Exception as exc:
         result = None
         error_msg = f"{type(exc).__name__}: {str(exc)}"
@@ -470,11 +550,37 @@ def wf2_run_page_ocr(
 
     elapsed = int((time.time() - start_time) * 1000)
 
-    if result:
-        text = result.get("text", "")
+    lang_used = (result or {}).get("lang_used")
+    fallback_triggered = (result or {}).get("fallback_triggered")
+    text = (result or {}).get("text") or ""
+    char_count = count_non_whitespace_chars(text)
+
+    page_other = dict(page_info.get("other_data", {}) or {}) if page_info else {}
+    page_other.update(
+        {
+            "ocr_lang_used": lang_used,
+            "ocr_char_count": char_count,
+            "ocr_fallback_triggered": bool(fallback_triggered),
+            "ocr_image_count": image_count,
+        }
+    )
+    update_other_data(page_file_id, page_other)
+
+    if result and char_count >= OCR_MIN_NONWHITESPACE_CHARS:
         _update_file_fields(page_file_id, ocr_raw=text)
-        message = f"OCR succeeded for page {effective_page_number}, extracted {len(text)} chars in {elapsed}ms."
-        mark_stage(workflow_run_id, stage_key, "succeeded", message=message, end=True)
+        message = (
+            f"OCR succeeded for page {effective_page_number}, extracted {char_count} chars "
+            f"in {elapsed}ms (lang={lang_used})."
+        )
+        mark_stage(
+            workflow_run_id,
+            stage_key,
+            "succeeded",
+            message=message,
+            end=True,
+            update_workflow_status=False,
+        )
+        _update_file_status(page_file_id, AiStatus.OCR_DONE.value)
         log_event(
             logger,
             "wf2.page_ocr.succeeded",
@@ -482,11 +588,26 @@ def wf2_run_page_ocr(
             page_file_id=page_file_id,
             page_number=effective_page_number,
             duration_ms=elapsed,
-            characters=len(text),
+            characters=char_count,
+            lang_used=lang_used,
+            fallback_triggered=fallback_triggered,
+            image_count=image_count,
         )
     else:
-        message = f"OCR failed for page {effective_page_number}: {error_msg or 'OCR returned no results'}"
-        mark_stage(workflow_run_id, stage_key, "failed", message=message, end=True)
+        lang_summary = f"lang_used={lang_used}, fallback_triggered={fallback_triggered}"
+        message = (
+            f"OCR failed for page {effective_page_number}: "
+            f"{error_msg or 'OCR returned too-short text'} "
+            f"(chars={char_count}, min={OCR_MIN_NONWHITESPACE_CHARS}, images={image_count}, {lang_summary})."
+        )
+        mark_stage(
+            workflow_run_id,
+            stage_key,
+            "failed",
+            message=message,
+            end=True,
+            update_workflow_status=False,
+        )
         log_event(
             logger,
             "wf2.page_ocr.failed",
@@ -495,7 +616,13 @@ def wf2_run_page_ocr(
             page_number=effective_page_number,
             error=error_msg or 'no_text',
             duration_ms=elapsed,
+            characters=char_count,
+            lang_used=lang_used,
+            fallback_triggered=fallback_triggered,
+            image_count=image_count,
         )
+        _update_file_status(page_file_id, AiStatus.OCR_FAILED.value)
+        text = ""
 
     return (workflow_run_id, page_file_id, text)
 
@@ -516,17 +643,13 @@ def wf2_merge_ocr_results(results: list[tuple[int, str, str]], workflow_run_id: 
 
     mark_stage(workflow_run_id, "merge_ocr", "running", start=True)
 
-    all_text = []
-    failed_pages = []
-    for result in results:
-        if result and len(result) == 3:
-            _, page_id, text = result
-            if text:
-                all_text.append(text)
-            else:
-                failed_pages.append(page_id)
-
-    combined_text = "\n\n--- PAGE BREAK ---\n\n".join(all_text)
+    merge_stats = _merge_ocr_page_results(results)
+    combined_text = merge_stats["combined_text"]
+    failed_pages = merge_stats["failed_pages"]
+    missing_results = merge_stats["missing_results"]
+    total_pages = merge_stats["total_pages"]
+    pages_with_text = merge_stats["pages_with_text"]
+    total_chars_merged = merge_stats["total_chars_merged"]
     
     # Save the combined text to the parent PDF's other_data
     parent_file_info = _load_unified_file_info(file_id) or {}
@@ -534,11 +657,12 @@ def wf2_merge_ocr_results(results: list[tuple[int, str, str]], workflow_run_id: 
     other_data["combined_ocr_text"] = combined_text
     if failed_pages:
         other_data["failed_ocr_pages"] = failed_pages
+    if missing_results:
+        other_data["ocr_missing_results"] = missing_results
+    other_data["ocr_pages_total"] = total_pages
+    other_data["ocr_pages_with_text"] = pages_with_text
+    other_data["ocr_total_chars"] = total_chars_merged
     update_other_data(file_id, other_data)
-
-    # Update parent ocr_raw to enable downstream AI
-    _update_file_fields(file_id, ocr_raw=combined_text)
-    _update_file_status(file_id, AiStatus.OCR_DONE.value)
 
     # Mark pages as completed to avoid orphan queue noise
     for result in results:
@@ -546,16 +670,35 @@ def wf2_merge_ocr_results(results: list[tuple[int, str, str]], workflow_run_id: 
             _, page_id, _ = result
             _update_file_status(page_id, AiStatus.COMPLETED.value)
 
-    message = f"Merged OCR text from {len(all_text)} pages. {len(failed_pages)} pages failed."
-    status = "succeeded"
+    message = (
+        f"Merged OCR text from {pages_with_text}/{total_pages} pages "
+        f"({total_chars_merged} chars)."
+    )
+    status = "succeeded" if pages_with_text > 0 else "failed"
     if failed_pages:
-        status = "failed"
         message += f" Failed pages: {', '.join(failed_pages)}"
-    elif not combined_text:
-        status = "failed"
-        message = "OCR merge produced no text."
+    if status == "failed":
+        message = "OCR merge produced no usable text."
 
     mark_stage(workflow_run_id, "merge_ocr", status, message=message, end=True)
+    log_event(
+        logger,
+        "wf2.merge_ocr.completed",
+        workflow_run_id=workflow_run_id,
+        file_id=file_id,
+        total_pages=total_pages,
+        pages_with_text=pages_with_text,
+        failed_pages=failed_pages,
+        total_chars_merged=total_chars_merged,
+        status=status,
+    )
+
+    if status == "succeeded":
+        # Update parent ocr_raw to enable downstream AI
+        _update_file_fields(file_id, ocr_raw=combined_text)
+        _update_file_status(file_id, AiStatus.OCR_DONE.value)
+    else:
+        _update_file_status(file_id, AiStatus.OCR_FAILED.value)
 
     if status != "succeeded":
         return workflow_run_id

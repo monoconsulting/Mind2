@@ -393,6 +393,148 @@ def _find_file_id_by_hash(file_hash: str) -> Optional[str]:
     return None
 
 
+def _find_soft_deleted_file_by_hash(file_hash: str) -> Optional[str]:
+    """Find a soft-deleted file by its content hash.
+
+    Returns the most recently deleted file_id with the given hash,
+    or None if no soft-deleted file matches.
+    """
+    if db_cursor is None:
+        return None
+
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT id FROM unified_files WHERE content_hash=%s AND deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT 1",
+                (file_hash,),
+            )
+            row = cur.fetchone()
+            if row:
+                return str(row[0])
+    except Exception:
+        pass
+
+    return None
+
+
+def _restore_soft_deleted_file(file_id: str) -> bool:
+    """Restore a soft-deleted file and its related invoice_documents.
+
+    This function:
+    1. Sets deleted_at=NULL on the unified_files record (main file)
+    2. Sets deleted_at=NULL on any related page files (original_file_id = file_id)
+    3. Sets deleted_at=NULL on any related invoice_documents
+    4. Clears old AI processing history to allow fresh reprocessing
+    5. Clears invoice_line_history (required due to FK constraint)
+    6. Clears invoice_lines so AI5 can extract fresh data
+    7. Resets the ai_status to 'uploaded' for fresh workflow processing
+
+    Returns True if restoration was successful, False otherwise.
+    """
+    if db_cursor is None:
+        return False
+
+    try:
+        with db_cursor() as cur:
+            # Restore the main unified_file and reset status for reprocessing
+            cur.execute(
+                """
+                UPDATE unified_files
+                   SET deleted_at = NULL,
+                       ai_status = 'uploaded'
+                 WHERE id = %s
+                """,
+                (file_id,),
+            )
+            unified_updated = cur.rowcount
+
+            # Restore related page files (cc_image files with original_file_id = file_id)
+            # These are created during PDF-to-image conversion and soft-deleted together
+            cur.execute(
+                """
+                UPDATE unified_files
+                   SET deleted_at = NULL
+                 WHERE original_file_id = %s
+                   AND id != %s
+                   AND deleted_at IS NOT NULL
+                """,
+                (file_id, file_id),
+            )
+            pages_restored = cur.rowcount
+
+            # Restore related invoice_documents (both by id and by file_id reference)
+            cur.execute(
+                """
+                UPDATE invoice_documents
+                   SET deleted_at = NULL,
+                       processing_status = %s,
+                       status = %s
+                 WHERE id = %s
+                """,
+                (
+                    InvoiceProcessingStatus.UPLOADED.value,
+                    InvoiceDocumentStatus.IMPORTED.value,
+                    file_id,
+                ),
+            )
+
+            # Also check for invoice_documents linked via metadata
+            # (some invoice_documents may reference the file in their metadata)
+            cur.execute(
+                """
+                UPDATE invoice_documents
+                   SET deleted_at = NULL,
+                       processing_status = %s,
+                       status = %s
+                 WHERE metadata_json LIKE %s
+                   AND deleted_at IS NOT NULL
+                """,
+                (
+                    InvoiceProcessingStatus.UPLOADED.value,
+                    InvoiceDocumentStatus.IMPORTED.value,
+                    f'%"file_id":"{file_id}"%',
+                ),
+            )
+
+            # Clear old AI processing history for this file and pages to allow fresh processing
+            cur.execute(
+                """
+                DELETE FROM ai_processing_history
+                 WHERE file_id = %s
+                    OR file_id IN (SELECT id FROM unified_files WHERE original_file_id = %s)
+                """,
+                (file_id, file_id),
+            )
+
+            # Clear old invoice_line_history FIRST (FK constraint to invoice_lines)
+            cur.execute(
+                """
+                DELETE FROM invoice_line_history
+                 WHERE invoice_line_id IN (
+                     SELECT id FROM invoice_lines WHERE invoice_id = %s
+                 )
+                """,
+                (file_id,),
+            )
+
+            # Then clear old invoice_lines so AI5 can extract fresh data
+            cur.execute(
+                "DELETE FROM invoice_lines WHERE invoice_id = %s",
+                (file_id,),
+            )
+
+            logger.info(
+                "Restored soft-deleted file %s (main: %d, pages: %d)",
+                file_id,
+                unified_updated,
+                pages_restored,
+            )
+            return True
+    except Exception as exc:
+        logger.error("Failed to restore soft-deleted file %s: %s", file_id, exc)
+        return False
+
+
 def _find_invoice_id_for_main(main_id: int) -> Optional[str]:
     """Find invoice_document.id from creditcard_invoices_main.id."""
     if db_cursor is None:
@@ -568,6 +710,8 @@ create_invoice_document = _create_invoice_document
 write_invoice_metadata = _write_invoice_metadata
 create_workflow_run = _create_workflow_run
 find_file_id_by_hash = _find_file_id_by_hash
+find_soft_deleted_file_by_hash = _find_soft_deleted_file_by_hash
+restore_soft_deleted_file = _restore_soft_deleted_file
 find_invoice_id_for_main = _find_invoice_id_for_main
 find_invoice_line_id_for_item = _find_invoice_line_id_for_item
 ensure_processing_state = _ensure_processing_state

@@ -24,6 +24,12 @@ services:
       - LOG_LEVEL=${LOG_LEVEL}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - STORAGE_DIR=/data/storage
+      - FLAGS_enable_pir_api=0
+      - FLAGS_enable_pir_in_executor=0
+      - FLAGS_use_mkldnn=0
+      - OCR_DET_LIMIT_SIDE_LEN=1024
+      - OCR_INPUT_LONG_SIDE=3000
+      - OCR_INPUT_MAX_LONG_SIDE=3500
       - FTP_LOCAL_DIR=/data/inbox
       - FTP_HOST=${FTP_HOST}
       - FTP_PORT=${FTP_PORT}
@@ -66,6 +72,12 @@ services:
       - OCR_LANG=${OCR_LANG}
       - OCR_USE_ANGLE_CLS=${OCR_USE_ANGLE_CLS}
       - OCR_SHOW_LOG=${OCR_SHOW_LOG}
+      - FLAGS_enable_pir_api=0
+      - FLAGS_enable_pir_in_executor=0
+      - FLAGS_use_mkldnn=0
+      - OCR_DET_LIMIT_SIDE_LEN=1024
+      - OCR_INPUT_LONG_SIDE=3000
+      - OCR_INPUT_MAX_LONG_SIDE=3500
     depends_on: [redis]
     networks: [main]
     profiles: [main]
@@ -94,6 +106,12 @@ services:
       - OCR_LANG=${OCR_LANG}
       - OCR_USE_ANGLE_CLS=${OCR_USE_ANGLE_CLS}
       - OCR_SHOW_LOG=${OCR_SHOW_LOG}
+      - FLAGS_enable_pir_api=0
+      - FLAGS_enable_pir_in_executor=0
+      - FLAGS_use_mkldnn=0
+      - OCR_DET_LIMIT_SIDE_LEN=1024
+      - OCR_INPUT_LONG_SIDE=3000
+      - OCR_INPUT_MAX_LONG_SIDE=3500
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     depends_on: [redis]
     networks: [main]
@@ -123,6 +141,12 @@ services:
       - OCR_LANG=${OCR_LANG}
       - OCR_USE_ANGLE_CLS=${OCR_USE_ANGLE_CLS}
       - OCR_SHOW_LOG=${OCR_SHOW_LOG}
+      - FLAGS_enable_pir_api=0
+      - FLAGS_enable_pir_in_executor=0
+      - FLAGS_use_mkldnn=0
+      - OCR_DET_LIMIT_SIDE_LEN=1024
+      - OCR_INPUT_LONG_SIDE=3000
+      - OCR_INPUT_MAX_LONG_SIDE=3500
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     depends_on: [redis]
     networks: [main]

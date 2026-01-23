@@ -755,14 +755,16 @@ function UploadModal({ open, onClose, onUploadComplete }) {
   const [uploading, setUploading] = React.useState(false)
   const [selectedFiles, setSelectedFiles] = React.useState([])
   const [error, setError] = React.useState(null)
-  const [success, setSuccess] = React.useState(null)
+  const [uploadResult, setUploadResult] = React.useState(null)
+  const [showSkippedDetails, setShowSkippedDetails] = React.useState(false)
   const fileInputRef = React.useRef(null)
 
   React.useEffect(() => {
     if (open) {
       setSelectedFiles([])
       setError(null)
-      setSuccess(null)
+      setUploadResult(null)
+      setShowSkippedDetails(false)
     }
   }, [open])
 
@@ -774,7 +776,8 @@ function UploadModal({ open, onClose, onUploadComplete }) {
     const files = Array.from(event.target.files || [])
     setSelectedFiles(files)
     setError(null)
-    setSuccess(null)
+    setUploadResult(null)
+    setShowSkippedDetails(false)
   }
 
   const handleUpload = async () => {
@@ -785,7 +788,8 @@ function UploadModal({ open, onClose, onUploadComplete }) {
 
     setUploading(true)
     setError(null)
-    setSuccess(null)
+    setUploadResult(null)
+    setShowSkippedDetails(false)
 
     const formData = new FormData()
     selectedFiles.forEach((file) => {
@@ -808,7 +812,12 @@ function UploadModal({ open, onClose, onUploadComplete }) {
         throw new Error(result.errors.join(', '));
       }
 
-      setSuccess(`${result.uploaded || selectedFiles.length} fil(er) uppladdade`)
+      setUploadResult({
+        uploaded: result.uploaded || 0,
+        skipped: result.skipped || 0,
+        uploadedFiles: result.uploaded_files || [],
+        skippedFiles: result.skipped_files || [],
+      })
       setSelectedFiles([])
       if (fileInputRef.current) {
         fileInputRef.current.value = ''
@@ -867,10 +876,44 @@ function UploadModal({ open, onClose, onUploadComplete }) {
               <span>{error}</span>
             </div>
           )}
-          {success && (
-            <div className="alert alert-success">
-              <FiCheckCircle />
-              <span>{success}</span>
+          {uploadResult && (
+            <div className="space-y-2">
+              {uploadResult.uploaded > 0 && (
+                <div className="alert alert-success">
+                  <FiCheckCircle />
+                  <span>Uppladdade: {uploadResult.uploaded} fil(er)</span>
+                </div>
+              )}
+              {uploadResult.skipped > 0 && (
+                <div className="alert alert-warning">
+                  <FiAlertCircle />
+                  <div className="flex flex-col gap-1 w-full">
+                    <div className="flex items-center justify-between">
+                      <span>Skippade: {uploadResult.skipped} fil(er) (dubbletter)</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowSkippedDetails(!showSkippedDetails)}
+                        className="text-xs underline ml-2"
+                      >
+                        {showSkippedDetails ? 'Dölj detaljer' : 'Visa detaljer'}
+                      </button>
+                    </div>
+                    {showSkippedDetails && uploadResult.skippedFiles.length > 0 && (
+                      <ul className="text-xs mt-1 list-disc list-inside opacity-80">
+                        {uploadResult.skippedFiles.map((file, idx) => (
+                          <li key={idx}>{file.filename} - {file.reason_text}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              )}
+              {uploadResult.uploaded === 0 && uploadResult.skipped === 0 && (
+                <div className="alert alert-info">
+                  <FiAlertCircle />
+                  <span>Inga filer bearbetades</span>
+                </div>
+              )}
             </div>
           )}
         </div>

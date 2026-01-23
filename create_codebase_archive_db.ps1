@@ -1,9 +1,9 @@
 # PowerShell script to create codebase archive WITH DATABASE DUMP
 $sourceDir = "E:\projects\Mind2"
 
-# Get current date in YYYY-MM-DD format
+# Get current date in required format: MIND_codebase_YYYY-MM-DD_HH-MM.zip
 $timestamp = Get-Date -Format "yyyy-MM-dd"
-$timestampWithTime = Get-Date -Format "yyMMdd_HH-mm"
+$timestampForZip = Get-Date -Format "yyyy-MM-dd_HH-mm"
 
 # Create backup folders if they don't exist
 $codebaseBackupDir = "$sourceDir\.codebasebackup"
@@ -15,10 +15,10 @@ if (-not (Test-Path $dbBackupDir)) {
     New-Item -ItemType Directory -Path $dbBackupDir -Force | Out-Null
 }
 
-$zipFile = "$codebaseBackupDir\codebase_$timestampWithTime.zip"
+$zipFile = "$codebaseBackupDir\MIND_codebase_$timestampForZip.zip"
 $dumpFile = "$dbBackupDir\mind_db_dump_$timestamp.sql"
 
-Write-Host "Creating codebase archive WITH DATABASE: codebase_$timestampWithTime.zip" -ForegroundColor Green
+Write-Host "Creating codebase archive WITH DATABASE: MIND_codebase_$timestampForZip.zip" -ForegroundColor Green
 Write-Host ""
 
 # Read database configuration from .env file

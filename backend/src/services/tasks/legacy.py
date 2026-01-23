@@ -37,6 +37,7 @@ from .utils.invoice_utils import (
     _invoice_page_progress,
     _load_invoice_metadata,
 )
+from services.ocr import OCR_MIN_NONWHITESPACE_CHARS, count_non_whitespace_chars
 
 logger = logging.getLogger(__name__)
 
@@ -81,13 +82,18 @@ def process_ocr(file_id: str) -> dict[str, Any]:
             result = None
             ocr_error = f"{exc.__class__.__name__}: {exc}"
 
-    if result:
+    text = (result or {}).get("text") or ""
+    char_count = (result or {}).get("char_count")
+    if char_count is None:
+        char_count = count_non_whitespace_chars(text)
+
+    if result and char_count >= OCR_MIN_NONWHITESPACE_CHARS:
         _update_file_fields(
             file_id,
             merchant=result.get("merchant_name"),
             gross=float(result["gross_amount"]) if result.get("gross_amount") is not None else None,
             purchase_iso=result.get("purchase_datetime"),
-            ocr_raw=result.get("text"),
+            ocr_raw=text,
         )
         ok = _update_file_status(file_id, status=AiStatus.OCR_DONE.value, confidence=float(result.get("confidence") or 0.9))
     else:
@@ -101,7 +107,7 @@ def process_ocr(file_id: str) -> dict[str, Any]:
                 "status": "ocr_error",
                 "ok": False,
             }
-        ok = _update_file_status(file_id, status=AiStatus.OCR_DONE.value, confidence=0.5)
+        ok = _update_file_status(file_id, status=AiStatus.OCR_FAILED.value, confidence=0.5)
 
     _history(file_id, job="ocr", status="success" if ok else "error")
 

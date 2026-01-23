@@ -486,7 +486,6 @@ def restart_statement_workflow(sid: str) -> Any:
     
     workflow_run_id = fc_coordinator.create_workflow_run_for_fc_document(
         file_id=sid,
-        workflow_type="creditcard_invoice",
         workflow_key="WF3_FIRSTCARD_INVOICE",
     )
 

@@ -372,7 +372,7 @@ def invoice_detail(invoice_id: str) -> Any:
                     """,
                     (invoice_id,),
                 )
-            line_rows = cur.fetchall() or []
+                line_rows = cur.fetchall() or []
         except Exception:
             logger.exception("Failed to load invoice lines for %s", invoice_id)
             line_rows = []

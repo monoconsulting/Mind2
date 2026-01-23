@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -10,6 +13,9 @@ from .common import (
     InvoiceProcessingStatus,
     AiStatus,
     CreditCardInvoiceExtractionRequest,
+    CreditCardInvoiceExtractionResponse,
+    CreditCardInvoiceHeader,
+    CreditCardInvoiceLine,
     DocumentClassificationRequest,
     celery_app,
     db_cursor,
@@ -25,6 +31,7 @@ from .creditcard_tasks import (
     auto_match_invoice_lines,
     refresh_invoice_match_state,
 )
+from services.ocr import OCR_MIN_NONWHITESPACE_CHARS
 from .file_management_tasks import (
     _collect_text_hints,
     _load_ai_context,
@@ -74,6 +81,13 @@ from .workflow_base import (
 from services.ai_service import AIService, AiProviderError
 from api.ai_processing import classify_document_internal
 from services.workflow_coordinator import FirstCardWorkflowCoordinator
+from services.fc_cards_tabular import (
+    build_fc_cards_document_payload,
+    has_fc_cards_boxes,
+    load_fc_cards_boxes_from_storage_or_payload,
+    reconstruct_fc_cards_table_from_boxes,
+    store_fc_cards_table_in_db,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +111,85 @@ def _looks_like_firstcard_invoice(ocr_text: str) -> bool:
         return True
 
     return False
+
+
+def _should_use_fc_tabular(
+    parent_info: dict[str, Any],
+    other_data: dict[str, Any],
+    page_ids: list[str],
+    storage_dir: str,
+) -> bool:
+    """Decide if the deterministic FC tabular extractor should run.
+
+    Args:
+        parent_info: Parent unified_files row metadata.
+        other_data: Parsed other_data metadata.
+        page_ids: Page file ids to probe for OCR boxes.
+        storage_dir: Storage root directory.
+
+    Returns:
+        True when the FC tabular extractor should run.
+    """
+    workflow_type = str(parent_info.get("workflow_type") or "").lower()
+    file_type = str(parent_info.get("file_type") or "").lower()
+    source_filename = str(
+        parent_info.get("original_filename")
+        or parent_info.get("original_file_name")
+        or ""
+    ).upper()
+    detected_kind = str(other_data.get("detected_kind") or "").lower()
+
+    is_fc_candidate = workflow_type == "creditcard_invoice" and (
+        file_type in {"cc_pdf", "cc_image"}
+        or source_filename.startswith("FC_")
+        or detected_kind == "pdf"
+    )
+    if not is_fc_candidate:
+        return False
+
+    for page_id in page_ids:
+        if has_fc_cards_boxes(storage_dir, page_id):
+            return True
+
+    return False
+
+
+def _build_creditcard_lines_from_fc_rows(
+    rows: list[Any],
+) -> list[CreditCardInvoiceLine]:
+    """Convert FC tabular rows into CreditCardInvoiceLine objects.
+
+    Args:
+        rows: FC tabular rows.
+
+    Returns:
+        List of CreditCardInvoiceLine objects.
+    """
+    lines: list[CreditCardInvoiceLine] = []
+    for idx, row in enumerate(rows, start=1):
+        purchase_date = None
+        if getattr(row, "date_iso", None):
+            try:
+                purchase_date = datetime.fromisoformat(row.date_iso).date()
+            except Exception:
+                purchase_date = None
+
+        line = CreditCardInvoiceLine(
+            line_no=idx,
+            purchase_date=purchase_date,
+            merchant_name=getattr(row, "merchant_raw", None) or None,
+            merchant_city=getattr(row, "merchant_city", None) or None,
+            description=getattr(row, "merchant_raw", None) or None,
+            currency_original=getattr(row, "currency_original", None),
+            amount_original=getattr(row, "amount_original_value", None),
+            exchange_rate=getattr(row, "exchange_rate", None),
+            amount_sek=getattr(row, "amount_value", None),
+            gross_amount=getattr(row, "amount_value", None),
+            confidence=getattr(row, "row_confidence", None),
+            source_text=getattr(row, "merchant_raw", None),
+        )
+        lines.append(line)
+    return lines
 
 # TASK_INVENTORY: ACTIVE (2025-11-28). Dispatches workflow_run records to WF1/WF2/WF3 Celery chains.
 def dispatch_workflow(workflow_run_id: int) -> bool:
@@ -414,7 +507,27 @@ def wf2_finalize(workflow_run_id: int) -> int:
     return workflow_run_id
 
 # TASK_INVENTORY: ACTIVE (2025-11-28). WF3 FirstCard invoice orchestration (OCR → AI6 → AI5 match).
-@celery_app.task(name="wf3_firstcard_invoice")
+try:  # pragma: no cover - used to keep unit/integration tests lightweight
+    from celery import Celery as _CeleryAppType
+except Exception:  # pragma: no cover
+    _CeleryAppType = None  # type: ignore
+
+
+def _wf3_task(name: str):
+    if _CeleryAppType is not None and isinstance(celery_app, _CeleryAppType):
+        return celery_app.task(name=name)
+
+    def _decorator(fn):
+        return fn
+
+    return _decorator
+
+
+def _wf3_value(value):
+    return getattr(value, "value", value)
+
+
+@_wf3_task("wf3_firstcard_invoice")
 def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     """
     Workflow 3: FirstCard Invoice Processing.
@@ -531,7 +644,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
         metadata.update(
             {
                 "page_count": page_count,
-                "processing_status": InvoiceProcessingStatus.OCR_DONE.value,
+                "processing_status": _wf3_value(InvoiceProcessingStatus.OCR_DONE),
                 "combined_ocr_text": combined_text,
                 "merged_ocr_length": ocr_length,
             }
@@ -584,6 +697,95 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
             success=True,
             message=f"OCR klar ({ocr_length} tecken)",
         )
+
+    # WF3 OCR GATING: Stop pipeline if OCR is empty or below minimum threshold
+    nonwhitespace_count = other_data.get("ocr_nonwhitespace_count", 0)
+    ocr_failed = other_data.get("ocr_failed", False)
+
+    if ocr_failed or not combined_text or nonwhitespace_count < OCR_MIN_NONWHITESPACE_CHARS:
+        reason = (
+            f"OCR produced insufficient text for parsing "
+            f"(chars={len(combined_text or '')}, nonwhitespace={nonwhitespace_count}, "
+            f"threshold={OCR_MIN_NONWHITESPACE_CHARS}). "
+            "Document moved to manual review."
+        )
+        logger.warning(
+            "WF3 OCR gate BLOCKED for %s: %s",
+            file_id,
+            reason,
+        )
+        log_event(
+            logger,
+            "wf3.ocr_gate.blocked",
+            file_id=file_id,
+            workflow_run_id=workflow_run_id,
+            char_count=len(combined_text or ""),
+            nonwhitespace_count=nonwhitespace_count,
+            threshold=OCR_MIN_NONWHITESPACE_CHARS,
+        )
+
+        # Mark OCR stage as failed via coordinator
+        fc_coordinator.begin_fc_import_stage(
+            workflow_run_id,
+            "ocr_gate",
+            message="Kontrollerar OCR-kvalitet",
+        )
+        fc_coordinator.complete_fc_import_stage(
+            workflow_run_id,
+            "ocr_gate",
+            success=False,
+            message=reason,
+        )
+
+        # Move to manual review
+        manual_review_stage = _wf3_value(getattr(AiStatus, "MANUAL_REVIEW", "manual_review"))
+        fc_coordinator.begin_fc_import_stage(workflow_run_id, manual_review_stage, message=reason)
+        fc_coordinator.complete_fc_import_stage(workflow_run_id, manual_review_stage, success=True, message=reason)
+        _move_to_manual_review(file_id, reason)
+
+        # Update processing status to reflect failure
+        transition_processing_status(
+            file_id,
+            InvoiceProcessingStatus.FAILED,
+            (
+                InvoiceProcessingStatus.OCR_PENDING,
+                InvoiceProcessingStatus.OCR_DONE,
+                InvoiceProcessingStatus.UPLOADED,
+            ),
+        )
+        transition_document_status(
+            file_id,
+            InvoiceDocumentStatus.FAILED,
+            (
+                InvoiceDocumentStatus.IMPORTED,
+                InvoiceDocumentStatus.MATCHING,
+            ),
+        )
+
+        # Complete workflow as failed
+        fc_coordinator.complete_fc_import_stage(
+            workflow_run_id,
+            "firstcard_invoice",
+            success=False,
+            message=reason,
+        )
+        log_finalize_failure(workflow_run_id, f"OCR-gating: {reason}")
+
+        # Return early - do NOT proceed to fc_parse or any parsing stages
+        return workflow_run_id
+
+    # OCR gate passed - proceed with processing
+    fc_coordinator.begin_fc_import_stage(
+        workflow_run_id,
+        "ocr_gate",
+        message="OCR-kvalitet kontrollerad",
+    )
+    fc_coordinator.complete_fc_import_stage(
+        workflow_run_id,
+        "ocr_gate",
+        success=True,
+        message=f"OCR godkänd ({nonwhitespace_count} tecken)",
+    )
 
     if combined_text:
         classification = classify_document_internal(
@@ -643,8 +845,9 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
                 f"AI1 klassificerade dokumentet som '{classification.document_type}' "
                 "men endast FC-fakturor till├Ñts i detta fl├╢de."
             )
-            fc_coordinator.begin_fc_import_stage(workflow_run_id, AiStatus.MANUAL_REVIEW.value, message=reason)
-            fc_coordinator.complete_fc_import_stage(workflow_run_id, AiStatus.MANUAL_REVIEW.value, success=True, message=reason)
+            manual_review_stage = _wf3_value(getattr(AiStatus, "MANUAL_REVIEW", "manual_review"))
+            fc_coordinator.begin_fc_import_stage(workflow_run_id, manual_review_stage, message=reason)
+            fc_coordinator.complete_fc_import_stage(workflow_run_id, manual_review_stage, success=True, message=reason)
             _move_to_manual_review(file_id, reason)
             log_finalize_failure(workflow_run_id, reason)
             fc_coordinator.complete_fc_import_stage(
@@ -681,8 +884,8 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
         )
 
     page_ids = [page.get("file_id") for page in (other_data.get("pages") or []) if page.get("file_id")]
-
-    from services.ai_service import AIService
+    if not page_ids:
+        page_ids = [file_id]
 
     ai_service = AIService()
     request = CreditCardInvoiceExtractionRequest(
@@ -697,120 +900,218 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     ai6_model = ai_service.prompt_model_names.get("credit_card_invoice_parsing", "unknown")
     ai6_prompt = ai_service.prompts.get("credit_card_invoice_parsing", "")
     raw_response = ""
-    fc_coordinator.begin_fc_import_stage(workflow_run_id, "fc_parse", message="AI6 tolkning av faktura")
-    try:
-        extraction = ai_service.run_ai6_credit_card_invoice_parsing(request)
-        elapsed = int((time.time() - start_time) * 1000)
+    fc_coordinator.begin_fc_import_stage(workflow_run_id, "fc_parse", message="Tolkning av faktura")
 
-        raw_response = ai_service.last_raw_response or ""
-        _history(
-            file_id,
-            "ai6",
-            "success",
-            ai_stage_name="AI6-CreditCardInvoiceParsing",
-            log_text=f"Successfully parsed credit card invoice ({len(extraction.lines)} lines)",
-            confidence=extraction.overall_confidence,
-            processing_time_ms=elapsed,
-            provider=ai6_provider,
-            model_name=ai6_model,
-            prompt_text=ai6_prompt,
-            response_text=raw_response,
-        )
-        fc_coordinator.complete_fc_import_stage(
-            workflow_run_id,
-            "fc_parse",
-            success=True,
-            message=f"Tolkade {len(extraction.lines)} rader",
-        )
-        ai7_stats = run_box_enrichment(file_id)
-        if not ai7_stats.get("success"):
-            logger.warning(
-                "AI7 box enrichment failed for %s after AI6: %s",
+    extraction = None
+    fc_tabular_used = False
+    storage_dir = os.getenv("STORAGE_DIR", "/data/storage")
+    use_fc_tabular = _should_use_fc_tabular(parent_info, other_data, page_ids, storage_dir)
+    if use_fc_tabular:
+        try:
+            fc_pages = []
+            for idx, page_id in enumerate(page_ids):
+                load_result = load_fc_cards_boxes_from_storage_or_payload(
+                    storage_dir,
+                    page_id,
+                    payload=other_data,
+                )
+                boxes = load_result.get("boxes") or []
+                if not boxes:
+                    logger.warning(
+                        "WF3 FC tabular missing OCR boxes for page %s (source=%s).",
+                        page_id,
+                        load_result.get("source"),
+                    )
+                    continue
+                page = reconstruct_fc_cards_table_from_boxes(
+                    page_file_id=page_id,
+                    page_index=idx,
+                    boxes=boxes,
+                )
+                fc_pages.append(page)
+
+            if fc_pages:
+                doc_payload = build_fc_cards_document_payload(fc_pages)
+                store_fc_cards_table_in_db(file_id, doc_payload)
+                raw_response = json.dumps(doc_payload, ensure_ascii=False)
+                fc_rows = [
+                    row
+                    for page in fc_pages
+                    for row in page.rows
+                    if row.amount_value is not None and row.date_iso
+                ]
+                if fc_rows:
+                    fc_lines = _build_creditcard_lines_from_fc_rows(fc_rows)
+                    header = CreditCardInvoiceHeader(
+                        invoice_number=metadata.get("creditcard_invoice_number") or f"INV-{file_id}",
+                    )
+                    extraction = CreditCardInvoiceExtractionResponse(
+                        invoice_id=invoice_id,
+                        header=header,
+                        lines=fc_lines,
+                        overall_confidence=0.92,
+                    )
+                    fc_tabular_used = True
+                    _history(
+                        file_id,
+                        "fc_tabular",
+                        "success",
+                        ai_stage_name="FC-Tabular",
+                        log_text=f"Parsed FC statement using OCR boxes ({len(fc_lines)} lines)",
+                        confidence=extraction.overall_confidence,
+                        processing_time_ms=int((time.time() - start_time) * 1000),
+                        provider="paddleocr",
+                        model_name="fc-tabular",
+                        prompt_text="",
+                        response_text=raw_response,
+                    )
+                    fc_coordinator.complete_fc_import_stage(
+                        workflow_run_id,
+                        "fc_parse",
+                        success=True,
+                        message=f"Tabell tolkad: {len(fc_lines)} rader",
+                    )
+                    ai7_stats = run_box_enrichment(file_id)
+                    if not ai7_stats.get("success"):
+                        logger.warning(
+                            "AI7 box enrichment failed for %s after FC tabular parse: %s",
+                            file_id,
+                            ai7_stats.get("error", "unknown"),
+                        )
+                else:
+                    logger.warning(
+                        "WF3 FC tabular parse produced 0 usable rows for %s; falling back to AI6.",
+                        file_id,
+                    )
+            else:
+                logger.warning(
+                    "WF3 FC tabular parse produced 0 pages for %s; falling back to AI6.",
+                    file_id,
+                )
+        except Exception as exc:
+            logger.exception(
+                "WF3 FC tabular parse failed for %s; falling back to AI6.",
                 file_id,
-                ai7_stats.get("error", "unknown"),
             )
-    except AiProviderError as exc:
-        fc_coordinator.complete_fc_import_stage(
-            workflow_run_id,
-            "fc_parse",
-            success=False,
-            message=f"AI6 provider failed: {exc}",
-        )
-        transition_processing_status(
-            invoice_id,
-            InvoiceProcessingStatus.FAILED,
-            (
-                InvoiceProcessingStatus.AI_PROCESSING,
-                InvoiceProcessingStatus.OCR_DONE,
-                InvoiceProcessingStatus.OCR_PENDING,
-            ),
-        )
-        transition_document_status(
-            invoice_id,
-            InvoiceDocumentStatus.FAILED,
-            (
-                InvoiceDocumentStatus.IMPORTED,
-                InvoiceDocumentStatus.MATCHING,
-            ),
-        )
-        _fail_invoice_processing(invoice_id, f"AI6 provider failed: {exc}")
-        fc_coordinator.complete_fc_import_stage(
-            workflow_run_id,
-            "firstcard_invoice",
-            success=False,
-            message=f"AI6 provider failed: {exc}",
-        )
-        log_finalize_failure(workflow_run_id, f"AI6 provider failed: {exc}")
-        return workflow_run_id
-    except Exception as exc:
-        elapsed = int((time.time() - start_time) * 1000)
-        error_msg = f"{type(exc).__name__}: {exc}"
-        raw_response = ai_service.last_raw_response or ""
 
-        _history(
-            file_id,
-            "ai6",
-            "error",
-            ai_stage_name="AI6-CreditCardInvoiceParsing",
-            log_text="Failed to parse credit card invoice.",
-            error_message=error_msg,
-            processing_time_ms=elapsed,
-            provider=ai6_provider,
-            model_name=ai6_model,
-            prompt_text=ai6_prompt,
-            response_text=raw_response,
-        )
-        fc_coordinator.complete_fc_import_stage(
-            workflow_run_id,
-            "fc_parse",
-            success=False,
-            message=error_msg,
-        )
-        transition_processing_status(
-            file_id,
-            InvoiceProcessingStatus.FAILED,
-            (
-                InvoiceProcessingStatus.AI_PROCESSING,
-                InvoiceProcessingStatus.OCR_DONE,
-                InvoiceProcessingStatus.OCR_PENDING,
-            ),
-        )
-        transition_document_status(
-            file_id,
-            InvoiceDocumentStatus.FAILED,
-            (
-                InvoiceDocumentStatus.IMPORTED,
-                InvoiceDocumentStatus.MATCHING,
-            ),
-        )
-        fc_coordinator.complete_fc_import_stage(
-            workflow_run_id,
-            "firstcard_invoice",
-            success=False,
-            message=f"AI6 parsing failed: {type(exc).__name__}: {exc}",
-        )
-        log_finalize_failure(workflow_run_id, f"AI6 misslyckades: {exc}")
-        raise
+    if not fc_tabular_used:
+        try:
+            parse_fn = getattr(ai_service, "parse_credit_card_invoice", None)
+            if callable(parse_fn):
+                extraction = parse_fn(request)
+            else:
+                extraction = ai_service.run_ai6_credit_card_invoice_parsing(request)
+            elapsed = int((time.time() - start_time) * 1000)
+
+            raw_response = ai_service.last_raw_response or ""
+            _history(
+                file_id,
+                "ai6",
+                "success",
+                ai_stage_name="AI6-CreditCardInvoiceParsing",
+                log_text=f"Successfully parsed credit card invoice ({len(extraction.lines)} lines)",
+                confidence=extraction.overall_confidence,
+                processing_time_ms=elapsed,
+                provider=ai6_provider,
+                model_name=ai6_model,
+                prompt_text=ai6_prompt,
+                response_text=raw_response,
+            )
+            fc_coordinator.complete_fc_import_stage(
+                workflow_run_id,
+                "fc_parse",
+                success=True,
+                message=f"Tolkade {len(extraction.lines)} rader",
+            )
+            ai7_stats = run_box_enrichment(file_id)
+            if not ai7_stats.get("success"):
+                logger.warning(
+                    "AI7 box enrichment failed for %s after AI6: %s",
+                    file_id,
+                    ai7_stats.get("error", "unknown"),
+                )
+        except AiProviderError as exc:
+            fc_coordinator.complete_fc_import_stage(
+                workflow_run_id,
+                "fc_parse",
+                success=False,
+                message=f"AI6 provider failed: {exc}",
+            )
+            transition_processing_status(
+                invoice_id,
+                InvoiceProcessingStatus.FAILED,
+                (
+                    InvoiceProcessingStatus.AI_PROCESSING,
+                    InvoiceProcessingStatus.OCR_DONE,
+                    InvoiceProcessingStatus.OCR_PENDING,
+                ),
+            )
+            transition_document_status(
+                invoice_id,
+                InvoiceDocumentStatus.FAILED,
+                (
+                    InvoiceDocumentStatus.IMPORTED,
+                    InvoiceDocumentStatus.MATCHING,
+                ),
+            )
+            _fail_invoice_processing(invoice_id, f"AI6 provider failed: {exc}")
+            fc_coordinator.complete_fc_import_stage(
+                workflow_run_id,
+                "firstcard_invoice",
+                success=False,
+                message=f"AI6 provider failed: {exc}",
+            )
+            log_finalize_failure(workflow_run_id, f"AI6 provider failed: {exc}")
+            return workflow_run_id
+        except Exception as exc:
+            elapsed = int((time.time() - start_time) * 1000)
+            error_msg = f"{type(exc).__name__}: {exc}"
+            raw_response = ai_service.last_raw_response or ""
+
+            _history(
+                file_id,
+                "ai6",
+                "error",
+                ai_stage_name="AI6-CreditCardInvoiceParsing",
+                log_text="Failed to parse credit card invoice.",
+                error_message=error_msg,
+                processing_time_ms=elapsed,
+                provider=ai6_provider,
+                model_name=ai6_model,
+                prompt_text=ai6_prompt,
+                response_text=raw_response,
+            )
+            fc_coordinator.complete_fc_import_stage(
+                workflow_run_id,
+                "fc_parse",
+                success=False,
+                message=error_msg,
+            )
+            transition_processing_status(
+                file_id,
+                InvoiceProcessingStatus.FAILED,
+                (
+                    InvoiceProcessingStatus.AI_PROCESSING,
+                    InvoiceProcessingStatus.OCR_DONE,
+                    InvoiceProcessingStatus.OCR_PENDING,
+                ),
+            )
+            transition_document_status(
+                file_id,
+                InvoiceDocumentStatus.FAILED,
+                (
+                    InvoiceDocumentStatus.IMPORTED,
+                    InvoiceDocumentStatus.MATCHING,
+                ),
+            )
+            fc_coordinator.complete_fc_import_stage(
+                workflow_run_id,
+                "firstcard_invoice",
+                success=False,
+                message=f"AI6 parsing failed: {type(exc).__name__}: {exc}",
+            )
+            log_finalize_failure(workflow_run_id, f"AI6 misslyckades: {exc}")
+            raise
 
     main_id = _persist_creditcard_invoice_main(file_id, extraction.header, combined_text)
     if not main_id:
@@ -843,12 +1144,31 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
 
     invoice_line_payloads: list[dict[str, Any]] = []
     for line in extraction.lines:
-        amount_candidate = (
-            line.amount_sek
-            or line.gross_amount
-            or line.amount_original
-            or Decimal("0.00")
-        )
+        currency_original = (line.currency_original or "SEK")
+        if isinstance(currency_original, str):
+            currency_original = currency_original.strip().upper() or "SEK"
+        else:
+            currency_original = "SEK"
+
+        amount_original = line.amount_original
+        amount_sek = line.amount_sek or line.gross_amount
+        exchange_rate = line.exchange_rate
+
+        if currency_original == "SEK":
+            if amount_sek is None and amount_original is not None:
+                amount_sek = amount_original
+            if amount_original is None and amount_sek is not None:
+                amount_original = amount_sek
+            if exchange_rate is None:
+                exchange_rate = Decimal("0")
+        else:
+            if exchange_rate is None and amount_sek is not None and amount_original not in (None, 0):
+                try:
+                    exchange_rate = (amount_sek / amount_original).quantize(Decimal("0.000001"))
+                except Exception:
+                    exchange_rate = None
+
+        amount_candidate = amount_sek or line.gross_amount or amount_original or Decimal("0.00")
         amount_float = float(amount_candidate) if amount_candidate is not None else 0.0
         invoice_line_payloads.append(
             {
@@ -856,6 +1176,10 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
                 "merchant_name": line.merchant_name or "",
                 "description": line.description or (line.merchant_name or ""),
                 "amount": amount_float,
+                "currency_original": currency_original,
+                "amount_original": float(amount_original) if amount_original is not None else None,
+                "exchange_rate": float(exchange_rate) if exchange_rate is not None else None,
+                "amount_sek": float(amount_sek) if amount_sek is not None else None,
                 "confidence": line.confidence,
                 "raw_text": line.source_text or "",
             }
@@ -864,7 +1188,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
     inserted_invoice_lines = _persist_invoice_lines(file_id, invoice_line_payloads)
 
     metadata = _load_invoice_metadata(file_id) or {}
-    metadata.setdefault("processing_status", InvoiceProcessingStatus.AI_PROCESSING.value)
+    metadata.setdefault("processing_status", _wf3_value(InvoiceProcessingStatus.AI_PROCESSING))
     metadata["creditcard_main_id"] = main_id
     metadata["overall_confidence"] = extraction.overall_confidence
     metadata["invoice_summary"] = {
@@ -911,7 +1235,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
                 "Stop-the-line to avoid matching on incomplete data."
             )
 
-        metadata["processing_status"] = InvoiceProcessingStatus.FAILED.value
+        metadata["processing_status"] = _wf3_value(InvoiceProcessingStatus.FAILED)
         metadata["last_error"] = {
             "code": "invoice_lines_persist_failed",
             "message": reason,
@@ -966,7 +1290,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
         log_finalize_failure(workflow_run_id, reason)
         return workflow_run_id
 
-    metadata["processing_status"] = InvoiceProcessingStatus.READY_FOR_MATCHING.value
+    metadata["processing_status"] = _wf3_value(InvoiceProcessingStatus.READY_FOR_MATCHING)
     _update_invoice_metadata(file_id, metadata)
 
     fc_coordinator.begin_fc_import_stage(
@@ -1129,7 +1453,7 @@ def wf3_firstcard_invoice(workflow_run_id: int) -> int:
         if wfr and wfr.get("file_id"):
             from services.db.files import set_ai_status
 
-            set_ai_status(wfr["file_id"], AiStatus.COMPLETED.value)
+            set_ai_status(wfr["file_id"], _wf3_value(getattr(AiStatus, "COMPLETED", "completed")))
             logger.info(
                 "wf3_firstcard_invoice_complete_status_set",
                 extra={"workflow_run_id": workflow_run_id, "file_id": wfr.get("file_id")},
