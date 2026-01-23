@@ -40,14 +40,32 @@ New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
 # SECTION 0: GIT EVIDENCE (DIRTY WORKTREE AUDIT)
 # ============================================
 Write-Host "[0/5] Git Evidence" -ForegroundColor Yellow
+$repoGitStatus = Join-Path $sourceDir "logs\git_status_porcelain.txt"
+$repoGitDiffStat = Join-Path $sourceDir "logs\git_diff_stat.txt"
+$repoGitDiff = Join-Path $sourceDir "logs\git_diff.txt"
+$repoGitDiffCached = Join-Path $sourceDir "logs\git_diff_cached.txt"
+$repoGitFiles = @($repoGitStatus, $repoGitDiffStat, $repoGitDiff, $repoGitDiffCached)
+$hasRepoGitEvidence = $true
+foreach ($p in $repoGitFiles) {
+    if (-not (Test-Path $p)) { $hasRepoGitEvidence = $false }
+}
+
 try {
-    Push-Location $sourceDir
-    git status --porcelain=v1 | Out-File -FilePath "$logsDir\git_status_porcelain.txt" -Encoding UTF8
-    git diff --stat | Out-File -FilePath "$logsDir\git_diff_stat.txt" -Encoding UTF8
-    git diff | Out-File -FilePath "$logsDir\git_diff.txt" -Encoding UTF8
-    git diff --cached | Out-File -FilePath "$logsDir\git_diff_cached.txt" -Encoding UTF8
-    Pop-Location
-    Write-Host "  Saved git evidence to logs/" -ForegroundColor Gray
+    if ($hasRepoGitEvidence) {
+        Copy-Item $repoGitStatus -Destination "$logsDir\git_status_porcelain.txt" -Force
+        Copy-Item $repoGitDiffStat -Destination "$logsDir\git_diff_stat.txt" -Force
+        Copy-Item $repoGitDiff -Destination "$logsDir\git_diff.txt" -Force
+        Copy-Item $repoGitDiffCached -Destination "$logsDir\git_diff_cached.txt" -Force
+        Write-Host "  Copied repo git evidence to logs/" -ForegroundColor Gray
+    } else {
+        Push-Location $sourceDir
+        git status --porcelain=v1 | Out-File -FilePath "$logsDir\git_status_porcelain.txt" -Encoding UTF8
+        git diff --stat | Out-File -FilePath "$logsDir\git_diff_stat.txt" -Encoding UTF8
+        git diff | Out-File -FilePath "$logsDir\git_diff.txt" -Encoding UTF8
+        git diff --cached | Out-File -FilePath "$logsDir\git_diff_cached.txt" -Encoding UTF8
+        Pop-Location
+        Write-Host "  Saved git evidence to logs/" -ForegroundColor Gray
+    }
 } catch {
     Write-Host "  WARNING: Failed to capture git evidence: $_" -ForegroundColor Yellow
 }
