@@ -51,5 +51,6 @@ _dbdumps/
 database_dump*.sql
 
 # Prevent secrets in Playwright/test reports
+web/test-reports/
 web/test-reports/**/db_dump.sql
 web/test-reports/**/*dump*.sql
